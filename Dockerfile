@@ -1,0 +1,17 @@
+FROM node:22-slim
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --production=false
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+RUN npm run build
+
+RUN npm prune --production
+
+EXPOSE 3777
+
+CMD ["node", "dist/index.js", "--cloud", "--port", "3777"]

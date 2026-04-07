@@ -1,8 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import fs from "node:fs";
-import path from "node:path";
-import { writeVaultFile } from "../utils/vault.js";
+import type { StorageBackend } from "../utils/storage.js";
 
 const CLAUDE_MD_TEMPLATE = `# LLM Knowledge Base — Schema
 
@@ -115,7 +113,10 @@ type: log
 - Schema: CLAUDE.md generated
 `;
 
-export function registerInitTools(server: McpServer, vaultPath: string): void {
+export function registerInitTools(
+  server: McpServer,
+  backend: StorageBackend,
+): void {
   server.tool(
     "kb_init",
     `Initialize the knowledge base structure in the vault. Creates the full folder structure (raw/, wiki/, templates/), generates CLAUDE.md with the wiki schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.`,
@@ -149,50 +150,46 @@ export function registerInitTools(server: McpServer, vaultPath: string): void {
         ];
 
         for (const dir of dirs) {
-          const fullDir = path.join(vaultPath, dir);
-          if (!fs.existsSync(fullDir)) {
-            fs.mkdirSync(fullDir, { recursive: true });
+          if (!(await backend.exists(dir))) {
+            await backend.mkdir(dir);
             created.push(`${dir}/`);
           }
         }
 
         // Create CLAUDE.md
-        const claudePath = path.join(vaultPath, "CLAUDE.md");
-        if (!fs.existsSync(claudePath)) {
+        if (!(await backend.exists("CLAUDE.md"))) {
           const claudeContent = CLAUDE_MD_TEMPLATE.replace(/\{TOPIC\}/g, topic);
-          fs.writeFileSync(claudePath, claudeContent, "utf-8");
+          await backend.writeFile("CLAUDE.md", claudeContent);
           created.push("CLAUDE.md");
         } else {
           skipped.push("CLAUDE.md (already exists)");
         }
 
         // Create wiki/index.md
-        const indexPath = "wiki/index.md";
-        if (!fs.existsSync(path.join(vaultPath, indexPath))) {
+        if (!(await backend.exists("wiki/index.md"))) {
           const indexContent = INDEX_TEMPLATE.replace(
             /\{DATE\}/g,
             today,
           ).replace(/\{TOPIC\}/g, topic);
-          writeVaultFile(vaultPath, indexPath, indexContent);
-          created.push(indexPath);
+          await backend.writeFile("wiki/index.md", indexContent);
+          created.push("wiki/index.md");
         } else {
           skipped.push("wiki/index.md (already exists)");
         }
 
         // Create wiki/log.md
-        const logPath = "wiki/log.md";
-        if (!fs.existsSync(path.join(vaultPath, logPath))) {
+        if (!(await backend.exists("wiki/log.md"))) {
           const logContent = LOG_TEMPLATE.replace(/\{DATE\}/g, today).replace(
             /\{TOPIC\}/g,
             topic,
           );
-          writeVaultFile(vaultPath, logPath, logContent);
-          created.push(logPath);
+          await backend.writeFile("wiki/log.md", logContent);
+          created.push("wiki/log.md");
         } else {
           skipped.push("wiki/log.md (already exists)");
         }
 
-        // Create _index.md stubs for each wiki subfolder
+        // Create _index.md stubs
         const subfolders = [
           "concepts",
           "entities",
@@ -202,9 +199,8 @@ export function registerInitTools(server: McpServer, vaultPath: string): void {
         ];
         for (const sub of subfolders) {
           const indexFile = `wiki/${sub}/_index.md`;
-          if (!fs.existsSync(path.join(vaultPath, indexFile))) {
-            writeVaultFile(
-              vaultPath,
+          if (!(await backend.exists(indexFile))) {
+            await backend.writeFile(
               indexFile,
               [
                 "---",
@@ -223,11 +219,9 @@ export function registerInitTools(server: McpServer, vaultPath: string): void {
         }
 
         // Create source template
-        const templatePath = "templates/source-summary.md";
-        if (!fs.existsSync(path.join(vaultPath, templatePath))) {
-          writeVaultFile(
-            vaultPath,
-            templatePath,
+        if (!(await backend.exists("templates/source-summary.md"))) {
+          await backend.writeFile(
+            "templates/source-summary.md",
             [
               "---",
               'title: "{{title}}"',
@@ -252,14 +246,13 @@ export function registerInitTools(server: McpServer, vaultPath: string): void {
               "## Connections",
             ].join("\n"),
           );
-          created.push(templatePath);
+          created.push("templates/source-summary.md");
         }
 
         const output = [
           `## Knowledge Base Initialized`,
           "",
           `**Topic:** ${topic}`,
-          `**Vault:** ${vaultPath}`,
           "",
           `### Created (${created.length})`,
           ...created.map((f) => `- ${f}`),
@@ -281,7 +274,9 @@ export function registerInitTools(server: McpServer, vaultPath: string): void {
           "5. Run `kb_lint` periodically to maintain quality",
         );
 
-        return { content: [{ type: "text", text: output.join("\n") }] };
+        return {
+          content: [{ type: "text", text: output.join("\n") }],
+        };
       } catch (err: any) {
         return {
           content: [

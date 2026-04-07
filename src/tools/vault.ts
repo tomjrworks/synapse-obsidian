@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { StorageBackend } from "../utils/storage.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -9,8 +10,10 @@ import {
   parseFrontmatter,
 } from "../utils/vault.js";
 
-export function registerVaultTools(server: McpServer, vaultPath: string): void {
-  // --- READ ---
+export function registerVaultTools(
+  server: McpServer,
+  backend: StorageBackend,
+): void {
   server.tool(
     "vault_read",
     "Read a file from the Obsidian vault. Returns the full content including frontmatter.",
@@ -21,7 +24,7 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
     async ({ path: filePath }) => {
       try {
-        const content = readVaultFile(vaultPath, filePath);
+        const content = await readVaultFile(backend, filePath);
         return { content: [{ type: "text", text: content }] };
       } catch (err: any) {
         return {
@@ -34,7 +37,6 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
   );
 
-  // --- WRITE ---
   server.tool(
     "vault_write",
     "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new wiki pages, update existing ones, or save any markdown content.",
@@ -52,7 +54,7 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
     async ({ path: filePath, content }) => {
       try {
-        writeVaultFile(vaultPath, filePath, content);
+        await writeVaultFile(backend, filePath, content);
         return {
           content: [{ type: "text", text: `Written: ${filePath}` }],
         };
@@ -67,7 +69,6 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
   );
 
-  // --- LIST ---
   server.tool(
     "vault_list",
     "List markdown files in the vault or a subdirectory. Returns relative paths.",
@@ -86,7 +87,7 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
     async ({ path: subPath, recursive }) => {
       try {
-        const files = listVaultFiles(vaultPath, subPath, recursive);
+        const files = await listVaultFiles(backend, subPath, recursive);
         if (files.length === 0) {
           return {
             content: [
@@ -118,7 +119,6 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
   );
 
-  // --- SEARCH ---
   server.tool(
     "vault_search",
     "Search the vault for files containing a text query. Returns matching files with line numbers and context. Case-insensitive.",
@@ -136,7 +136,7 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
     async ({ query, path: subPath, maxResults }) => {
       try {
-        const results = searchVault(vaultPath, query, {
+        const results = await searchVault(backend, query, {
           subPath,
           maxResults,
         });
@@ -172,21 +172,23 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
   );
 
-  // --- STATS ---
   server.tool(
     "vault_stats",
     "Get vault statistics: file counts, folder structure, and whether the knowledge base has been initialized.",
     {},
     async () => {
       try {
-        const stats = getVaultStats(vaultPath);
+        const stats = await getVaultStats(backend);
         return {
           content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
         };
       } catch (err: any) {
         return {
           content: [
-            { type: "text", text: `Error getting stats: ${err.message}` },
+            {
+              type: "text",
+              text: `Error getting stats: ${err.message}`,
+            },
           ],
           isError: true,
         };
@@ -194,7 +196,6 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
   );
 
-  // --- FRONTMATTER ---
   server.tool(
     "vault_frontmatter",
     "Read the YAML frontmatter metadata from a vault file. Returns parsed key-value pairs (title, tags, date, status, etc.).",
@@ -203,12 +204,15 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
     },
     async ({ path: filePath }) => {
       try {
-        const content = readVaultFile(vaultPath, filePath);
+        const content = await readVaultFile(backend, filePath);
         const fm = parseFrontmatter(content);
         if (Object.keys(fm).length === 0) {
           return {
             content: [
-              { type: "text", text: "No frontmatter found in this file." },
+              {
+                type: "text",
+                text: "No frontmatter found in this file.",
+              },
             ],
           };
         }
@@ -218,7 +222,10 @@ export function registerVaultTools(server: McpServer, vaultPath: string): void {
       } catch (err: any) {
         return {
           content: [
-            { type: "text", text: `Error reading frontmatter: ${err.message}` },
+            {
+              type: "text",
+              text: `Error reading frontmatter: ${err.message}`,
+            },
           ],
           isError: true,
         };

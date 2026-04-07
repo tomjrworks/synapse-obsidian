@@ -34,9 +34,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^5.1.0",
-    "zod": "^3.25.0",
     "glob": "^11.0.0",
-    "gray-matter": "^4.0.3"
+    "googleapis": "^171.4.0",
+    "gray-matter": "^4.0.3",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

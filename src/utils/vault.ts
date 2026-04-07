@@ -1,78 +1,57 @@
-import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
+import type { StorageBackend } from "./storage.js";
 
 /**
  * Read a file from the vault, returning its content.
  */
-export function readVaultFile(vaultPath: string, filePath: string): string {
-  const fullPath = resolveSafe(vaultPath, filePath);
-  return fs.readFileSync(fullPath, "utf-8");
+export async function readVaultFile(
+  backend: StorageBackend,
+  filePath: string,
+): Promise<string> {
+  return backend.readFile(filePath);
 }
 
 /**
  * Write content to a file in the vault, creating directories as needed.
  */
-export function writeVaultFile(
-  vaultPath: string,
+export async function writeVaultFile(
+  backend: StorageBackend,
   filePath: string,
   content: string,
-): void {
-  const fullPath = resolveSafe(vaultPath, filePath);
-  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-  fs.writeFileSync(fullPath, content, "utf-8");
+): Promise<void> {
+  return backend.writeFile(filePath, content);
 }
 
 /**
  * List markdown files in a directory (or whole vault).
  */
-export function listVaultFiles(
-  vaultPath: string,
+export async function listVaultFiles(
+  backend: StorageBackend,
   subPath?: string,
   recursive = true,
-): string[] {
-  const dir = subPath ? resolveSafe(vaultPath, subPath) : vaultPath;
-
-  if (!fs.existsSync(dir)) return [];
-
-  const results: string[] = [];
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    // Skip hidden dirs like .obsidian, .git, .trash
-    if (entry.name.startsWith(".")) continue;
-
-    const entryPath = path.join(dir, entry.name);
-    const relative = path.relative(vaultPath, entryPath);
-
-    if (entry.isDirectory() && recursive) {
-      results.push(...listVaultFiles(vaultPath, relative, true));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      results.push(relative);
-    }
-  }
-
-  return results;
+): Promise<string[]> {
+  return backend.listFiles(subPath, recursive);
 }
 
 /**
  * Search vault files for a text pattern (case-insensitive).
  * Returns matching files with line numbers and context.
  */
-export function searchVault(
-  vaultPath: string,
+export async function searchVault(
+  backend: StorageBackend,
   query: string,
   options: { subPath?: string; maxResults?: number } = {},
-): SearchResult[] {
+): Promise<SearchResult[]> {
   const { subPath, maxResults = 20 } = options;
-  const files = listVaultFiles(vaultPath, subPath);
+  const files = await listVaultFiles(backend, subPath);
   const results: SearchResult[] = [];
   const lowerQuery = query.toLowerCase();
 
   for (const file of files) {
     if (results.length >= maxResults) break;
 
-    const content = readVaultFile(vaultPath, file);
+    const content = await readVaultFile(backend, file);
     const lines = content.split("\n");
     const matches: SearchMatch[] = [];
 
@@ -113,8 +92,10 @@ export function parseFrontmatter(content: string): Record<string, any> {
 /**
  * Get vault statistics.
  */
-export function getVaultStats(vaultPath: string): VaultStats {
-  const allFiles = listVaultFiles(vaultPath);
+export async function getVaultStats(
+  backend: StorageBackend,
+): Promise<VaultStats> {
+  const allFiles = await listVaultFiles(backend);
   const folders = new Set<string>();
 
   for (const f of allFiles) {
@@ -122,11 +103,10 @@ export function getVaultStats(vaultPath: string): VaultStats {
     if (dir !== ".") folders.add(dir);
   }
 
-  // Check for knowledge base structure
-  const hasRaw = fs.existsSync(path.join(vaultPath, "raw"));
-  const hasWiki = fs.existsSync(path.join(vaultPath, "wiki"));
-  const hasClaudeMd = fs.existsSync(path.join(vaultPath, "CLAUDE.md"));
-  const hasIndex = fs.existsSync(path.join(vaultPath, "wiki", "index.md"));
+  const hasRaw = await backend.exists("raw");
+  const hasWiki = await backend.exists("wiki");
+  const hasClaudeMd = await backend.exists("CLAUDE.md");
+  const hasIndex = await backend.exists("wiki/index.md");
 
   return {
     totalFiles: allFiles.length,
@@ -140,19 +120,6 @@ export function getVaultStats(vaultPath: string): VaultStats {
       hasIndex,
     },
   };
-}
-
-/**
- * Resolve a path safely within the vault (prevent directory traversal).
- */
-function resolveSafe(vaultPath: string, filePath: string): string {
-  const resolved = path.resolve(vaultPath, filePath);
-  if (!resolved.startsWith(vaultPath)) {
-    throw new Error(
-      `Path traversal detected: ${filePath} resolves outside vault`,
-    );
-  }
-  return resolved;
 }
 
 export interface SearchMatch {

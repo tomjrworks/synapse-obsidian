@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
-import fs from "node:fs";
+import type { StorageBackend } from "../utils/storage.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -14,9 +14,8 @@ const TODAY = () => new Date().toISOString().split("T")[0];
 
 export function registerKnowledgeTools(
   server: McpServer,
-  vaultPath: string,
+  backend: StorageBackend,
 ): void {
-  // --- INGEST ---
   server.tool(
     "kb_ingest",
     `Process a raw source file into the knowledge base wiki. Reads the source, generates a summary page in wiki/sources/, identifies concepts and entities, creates or updates their pages, adds [[wikilinks]], and updates the master index and log.
@@ -40,34 +39,26 @@ Steps:
     },
     async ({ sourcePath }) => {
       try {
-        // Read the source
-        const content = readVaultFile(vaultPath, sourcePath);
+        const content = await readVaultFile(backend, sourcePath);
         const fm = parseFrontmatter(content);
 
-        // Check if already processed
-        const sourcesDir = "wiki/sources";
-        const existingSources = listVaultFiles(vaultPath, sourcesDir);
+        const existingSources = await listVaultFiles(backend, "wiki/sources");
         const sourceBasename = path.basename(sourcePath, ".md");
 
         const alreadyProcessed = existingSources.some((f) =>
           f.includes(sourceBasename),
         );
 
-        // Read existing index if it exists
         let existingIndex = "";
-        const indexPath = path.join(vaultPath, "wiki", "index.md");
-        if (fs.existsSync(indexPath)) {
-          existingIndex = fs.readFileSync(indexPath, "utf-8");
+        if (await backend.exists("wiki/index.md")) {
+          existingIndex = await readVaultFile(backend, "wiki/index.md");
         }
 
-        // Read CLAUDE.md if it exists
         let schema = "";
-        const claudePath = path.join(vaultPath, "CLAUDE.md");
-        if (fs.existsSync(claudePath)) {
-          schema = fs.readFileSync(claudePath, "utf-8");
+        if (await backend.exists("CLAUDE.md")) {
+          schema = await readVaultFile(backend, "CLAUDE.md");
         }
 
-        // Return context for the AI to do the actual compilation
         const output = [
           "## Ingest Task Ready",
           "",
@@ -111,7 +102,10 @@ Steps:
       } catch (err: any) {
         return {
           content: [
-            { type: "text", text: `Error preparing ingest: ${err.message}` },
+            {
+              type: "text",
+              text: `Error preparing ingest: ${err.message}`,
+            },
           ],
           isError: true,
         };
@@ -119,15 +113,14 @@ Steps:
     },
   );
 
-  // --- COMPILE ---
   server.tool(
     "kb_compile",
     `Scan for all unprocessed raw sources and compile them into the wiki. Lists which sources exist in raw/ but don't have corresponding summaries in wiki/sources/. Use kb_ingest on each one to process them.`,
     {},
     async () => {
       try {
-        const rawFiles = listVaultFiles(vaultPath, "raw");
-        const wikiSources = listVaultFiles(vaultPath, "wiki/sources");
+        const rawFiles = await listVaultFiles(backend, "raw");
+        const wikiSources = await listVaultFiles(backend, "wiki/sources");
 
         if (rawFiles.length === 0) {
           return {
@@ -140,7 +133,6 @@ Steps:
           };
         }
 
-        // Find unprocessed sources
         const sourceBasenames = new Set(
           wikiSources.map((f) => path.basename(f, ".md").toLowerCase()),
         );
@@ -150,7 +142,6 @@ Steps:
 
         for (const rawFile of rawFiles) {
           const basename = path.basename(rawFile, ".md").toLowerCase();
-          // Check if any wiki source contains this basename
           const isProcessed = [...sourceBasenames].some(
             (s) => s.includes(basename) || basename.includes(s),
           );
@@ -184,7 +175,9 @@ Steps:
           output.push("All sources have been processed. Wiki is up to date.");
         }
 
-        return { content: [{ type: "text", text: output.join("\n") }] };
+        return {
+          content: [{ type: "text", text: output.join("\n") }],
+        };
       } catch (err: any) {
         return {
           content: [
@@ -199,7 +192,6 @@ Steps:
     },
   );
 
-  // --- QUERY ---
   server.tool(
     "kb_query",
     `Research a question against the knowledge base wiki. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. After answering, save the result to wiki/outputs/ using vault_write.`,
@@ -208,14 +200,11 @@ Steps:
     },
     async ({ question }) => {
       try {
-        // Read the index
         let index = "";
-        const indexPath = path.join(vaultPath, "wiki", "index.md");
-        if (fs.existsSync(indexPath)) {
-          index = readVaultFile(vaultPath, "wiki/index.md");
+        if (await backend.exists("wiki/index.md")) {
+          index = await readVaultFile(backend, "wiki/index.md");
         }
 
-        // Search for relevant content
         const keywords = question
           .toLowerCase()
           .split(/\s+/)
@@ -224,7 +213,7 @@ Steps:
         const allResults: Map<string, string> = new Map();
 
         for (const keyword of keywords.slice(0, 5)) {
-          const results = searchVault(vaultPath, keyword, {
+          const results = await searchVault(backend, keyword, {
             subPath: "wiki",
             maxResults: 10,
           });
@@ -235,13 +224,12 @@ Steps:
           }
         }
 
-        // Read the most relevant pages (up to 10)
         const relevantFiles = [...allResults.entries()].slice(0, 10);
         const pageContents: string[] = [];
 
         for (const [file] of relevantFiles) {
           try {
-            const content = readVaultFile(vaultPath, file);
+            const content = await readVaultFile(backend, file);
             pageContents.push(
               `### ${file}\n\`\`\`markdown\n${content.slice(0, 3000)}\n\`\`\``,
             );
@@ -276,7 +264,10 @@ Steps:
       } catch (err: any) {
         return {
           content: [
-            { type: "text", text: `Error researching query: ${err.message}` },
+            {
+              type: "text",
+              text: `Error researching query: ${err.message}`,
+            },
           ],
           isError: true,
         };
@@ -284,14 +275,13 @@ Steps:
     },
   );
 
-  // --- LINT ---
   server.tool(
     "kb_lint",
     `Health-check the knowledge base wiki. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
     {},
     async () => {
       try {
-        const wikiFiles = listVaultFiles(vaultPath, "wiki");
+        const wikiFiles = await listVaultFiles(backend, "wiki");
 
         if (wikiFiles.length === 0) {
           return {
@@ -304,10 +294,8 @@ Steps:
           };
         }
 
-        // Collect all wikilinks and frontmatter
         const allLinks = new Set<string>();
         const allPages = new Set<string>();
-        const issues: string[] = [];
         const orphans: string[] = [];
         const missingFm: string[] = [];
         const stalePages: string[] = [];
@@ -322,15 +310,13 @@ Steps:
         }
 
         for (const file of wikiFiles) {
-          const content = readVaultFile(vaultPath, file);
+          const content = await readVaultFile(backend, file);
           const fm = parseFrontmatter(content);
 
-          // Check frontmatter
           if (!fm.title || !fm.type || !fm.date_created) {
             missingFm.push(file);
           }
 
-          // Check staleness (>6 months)
           if (fm.date_modified || fm.date_created) {
             const date = new Date(fm.date_modified || fm.date_created);
             const sixMonthsAgo = new Date();
@@ -340,25 +326,21 @@ Steps:
             }
           }
 
-          // Extract wikilinks
           const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
           let match;
           while ((match = linkRegex.exec(content)) !== null) {
             const linkTarget = match[1].toLowerCase().replace(/\s+/g, "-");
             allLinks.add(linkTarget);
 
-            // Track inbound links
             const current = inboundLinks.get(linkTarget) || 0;
             inboundLinks.set(linkTarget, current + 1);
 
-            // Check if target exists
             if (!allPages.has(linkTarget)) {
               brokenLinks.push(`${file} -> [[${match[1]}]]`);
             }
           }
         }
 
-        // Find orphans (no inbound links, not index/log)
         for (const file of wikiFiles) {
           const basename = path.basename(file, ".md");
           if (
@@ -372,7 +354,6 @@ Steps:
           }
         }
 
-        // Build report
         const report = [
           "## Wiki Health Check Report",
           `**Date:** ${TODAY()}`,
@@ -453,11 +434,16 @@ Steps:
           );
         }
 
-        return { content: [{ type: "text", text: report.join("\n") }] };
+        return {
+          content: [{ type: "text", text: report.join("\n") }],
+        };
       } catch (err: any) {
         return {
           content: [
-            { type: "text", text: `Error running lint: ${err.message}` },
+            {
+              type: "text",
+              text: `Error running lint: ${err.message}`,
+            },
           ],
           isError: true,
         };

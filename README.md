@@ -60,7 +60,19 @@ Add to `.claude/.mcp.json` in your home directory or project:
 }
 ```
 
-### Option C: Claude.ai (Remote MCP)
+### Option C: Claude.ai via Synapse Cloud (Easiest — No Install)
+
+If your Obsidian vault syncs to Google Drive, you can connect from Claude.ai with zero install:
+
+1. Visit the hosted Synapse server (e.g. `https://synapse.up.railway.app`)
+2. Click **"Connect with Google Drive"**
+3. Sign in and select your vault folder
+4. Copy the MCP URL shown
+5. In Claude.ai: **Settings > Integrations > Add Custom Integration** — paste the URL
+
+Works from your phone, laptop, anywhere. Your vault stays in Google Drive and syncs to all devices.
+
+### Option D: Claude.ai (Self-Hosted)
 
 Run Synapse in HTTP mode and expose it:
 
@@ -75,7 +87,7 @@ npx cloudflared tunnel --url http://localhost:3777
 
 Then in Claude.ai: **Settings > Integrations > Add MCP Server** and enter the tunnel URL + `/mcp` path.
 
-### Option D: Local Install
+### Option E: Local Install
 
 ```bash
 npm install -g synapse-mcp
@@ -128,14 +140,38 @@ Synapse is a standard [MCP server](https://modelcontextprotocol.io). It exposes 
 
 - **Stdio transport** (default) — Claude Desktop and Claude Code pipe messages through stdin/stdout
 - **HTTP transport** (`--http`) — Runs an Express server implementing Streamable HTTP for remote MCP connections
+- **Cloud transport** (`--cloud`) — Hosted mode with Google Drive OAuth, no local vault needed
 
 All file operations are sandboxed to the vault directory. Path traversal is blocked.
 
 ## Environment Variables
 
-| Variable             | Description                                      |
-| -------------------- | ------------------------------------------------ |
-| `SYNAPSE_VAULT_PATH` | Default vault path (alternative to CLI argument) |
+| Variable               | Description                                                            |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `SYNAPSE_VAULT_PATH`   | Default vault path (alternative to CLI argument)                       |
+| `GOOGLE_CLIENT_ID`     | Google OAuth client ID (cloud mode only)                               |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret (cloud mode only)                           |
+| `BASE_URL`             | Public URL of the server (cloud mode, e.g. `https://your.railway.app`) |
+| `PORT`                 | Server port (cloud/http mode, default: 3777)                           |
+
+## Self-Hosting Cloud Mode
+
+To host your own Synapse cloud server:
+
+1. Create a Google Cloud project and enable the Drive API
+2. Create OAuth 2.0 credentials (Web application type)
+3. Set the redirect URI to `https://your-domain.com/auth/callback`
+4. Deploy to Railway, Fly.io, or any Node.js host:
+
+```bash
+# Using Docker
+docker build -t synapse .
+docker run -p 3777:3777 \
+  -e GOOGLE_CLIENT_ID=your-id \
+  -e GOOGLE_CLIENT_SECRET=your-secret \
+  -e BASE_URL=https://your-domain.com \
+  synapse
+```
 
 ## Requirements
 
