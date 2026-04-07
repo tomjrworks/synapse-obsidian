@@ -1,0 +1,50 @@
+{
+  "name": "synapse-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that turns your Obsidian vault into an AI-powered knowledge base. The Karpathy pattern, packaged.",
+  "type": "module",
+  "bin": {
+    "synapse": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "obsidian",
+    "knowledge-base",
+    "ai",
+    "claude",
+    "karpathy",
+    "wiki",
+    "second-brain"
+  ],
+  "license": "MIT",
+  "author": "MainLoop Systems",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mainloop-systems/synapse-mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.1.0",
+    "zod": "^3.25.0",
+    "glob": "^11.0.0",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
