@@ -19,19 +19,19 @@ async function main() {
     // Local mode: filesystem backend
     const backend = new LocalBackend(args.vaultPath);
 
-    const server = new McpServer({
-      name: "synapse",
-      version: "0.1.0",
-    });
-
-    registerVaultTools(server, backend);
-    registerKnowledgeTools(server, backend);
-    registerInitTools(server, backend);
-
     if (args.mode === "http") {
       const { startHttpServer } = await import("./http.js");
-      await startHttpServer(server, args.port);
+      await startHttpServer(backend, args.port);
     } else {
+      const server = new McpServer({
+        name: "synapse",
+        version: "0.1.0",
+      });
+
+      registerVaultTools(server, backend);
+      registerKnowledgeTools(server, backend);
+      registerInitTools(server, backend);
+
       const transport = new StdioServerTransport();
       await server.connect(transport);
     }
