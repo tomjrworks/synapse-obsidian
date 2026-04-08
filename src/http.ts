@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { randomUUID } from "node:crypto";
 import express from "express";
 import type { StorageBackend } from "./utils/storage.js";
 import { registerVaultTools } from "./tools/vault.js";
@@ -24,7 +23,18 @@ export async function startHttpServer(
 ): Promise<void> {
   const app = express();
 
-  // CORS for browser-based clients (must be before routes)
+  app.use(express.json());
+
+  // Request logging
+  app.use((req, res, next) => {
+    const body = req.body ? JSON.stringify(req.body).slice(0, 300) : "";
+    console.error(
+      `[${new Date().toISOString()}] ${req.method} ${req.path} body=${body}`,
+    );
+    next();
+  });
+
+  // CORS
   app.use((_req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header(
@@ -36,9 +46,7 @@ export async function startHttpServer(
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
-  app.use(express.json());
-
-  // Bearer token auth
+  // Bearer token auth (optional)
   const AUTH_TOKEN = process.env.SYNAPSE_AUTH_TOKEN || "";
   if (AUTH_TOKEN) {
     app.use("/mcp", (req, res, next) => {
@@ -52,59 +60,31 @@ export async function startHttpServer(
     });
   }
 
-  // Store transports by session ID
-  const transports = new Map<string, StreamableHTTPServerTransport>();
-
-  // MCP endpoint
+  // Stateless MCP: each request gets a fresh transport + server
+  // This avoids session ID issues with Claude.ai
   app.post("/mcp", async (req, res) => {
-    const sessionId = (req.headers["mcp-session-id"] as string) || undefined;
-
-    let transport: StreamableHTTPServerTransport;
-
-    if (sessionId && transports.has(sessionId)) {
-      transport = transports.get(sessionId)!;
-    } else {
-      // New session — new server instance per connection
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
+    try {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined as any, // stateless mode
       });
-
-      transport.onclose = () => {
-        const sid = (transport as any).sessionId;
-        if (sid) transports.delete(sid);
-      };
-
       const server = createServer(backend);
       await server.connect(transport);
-
-      const newSessionId = (transport as any).sessionId;
-      if (newSessionId) {
-        transports.set(newSessionId, transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err: any) {
+      console.error(`[${new Date().toISOString()}] ERROR: ${err.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message });
       }
     }
-
-    await transport.handleRequest(req, res, req.body);
   });
 
-  // GET for SSE stream (Streamable HTTP spec)
-  app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string;
-    if (!sessionId || !transports.has(sessionId)) {
-      res.status(400).json({ error: "Invalid or missing session ID" });
-      return;
-    }
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
+  app.get("/mcp", async (_req, res) => {
+    res
+      .status(405)
+      .json({ error: "SSE not supported in stateless mode. Use POST." });
   });
 
-  // DELETE for session cleanup
-  app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string;
-    if (sessionId && transports.has(sessionId)) {
-      const transport = transports.get(sessionId)!;
-      await transport.close();
-      transports.delete(sessionId);
-    }
+  app.delete("/mcp", async (_req, res) => {
     res.status(200).json({ ok: true });
   });
 
@@ -114,12 +94,10 @@ export async function startHttpServer(
       status: "ok",
       server: "synapse",
       version: "0.1.0",
-      sessions: transports.size,
     });
   });
 
   app.listen(port, () => {
     console.error(`Synapse MCP server running at http://localhost:${port}/mcp`);
-    console.error(`Health check: http://localhost:${port}/health`);
   });
 }
