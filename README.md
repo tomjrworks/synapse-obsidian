@@ -37,7 +37,7 @@ Synapse connects Claude (Desktop, claude.ai, or Claude Code) to your local Obsid
   "mcpServers": {
     "synapse": {
       "command": "npx",
-      "args": ["-y", "synapse-mcp", "/path/to/your/obsidian-vault"]
+      "args": ["-y", "synapse-obsidian", "/path/to/your/obsidian-vault"]
     }
   }
 }
@@ -54,7 +54,7 @@ Add to `.claude/.mcp.json` in your home directory or project:
   "mcpServers": {
     "synapse": {
       "command": "npx",
-      "args": ["-y", "synapse-mcp", "/path/to/your/obsidian-vault"]
+      "args": ["-y", "synapse-obsidian", "/path/to/your/obsidian-vault"]
     }
   }
 }
@@ -78,7 +78,7 @@ Run Synapse in HTTP mode and expose it:
 
 ```bash
 # Start the HTTP server
-npx synapse-mcp /path/to/vault --http --port 3777
+npx synapse-obsidian /path/to/vault --http --port 3777
 
 # In another terminal, expose with a tunnel (pick one):
 npx cloudflared tunnel --url http://localhost:3777
@@ -90,7 +90,7 @@ Then in Claude.ai: **Settings > Integrations > Add MCP Server** and enter the tu
 ### Option E: Local Install
 
 ```bash
-npm install -g synapse-mcp
+npm install -g synapse-obsidian
 
 # Stdio mode (for Claude Desktop/Code)
 synapse /path/to/vault
