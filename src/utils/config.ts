@@ -20,6 +20,16 @@ export interface SynapseConfig {
   schemaPath: string | null;
   /** Topic (for KB mode) */
   topic: string | null;
+  /** Vault purpose — shapes how Claude uses the tools */
+  purpose:
+    | "knowledge-base"
+    | "business"
+    | "academic"
+    | "life-os"
+    | "custom"
+    | null;
+  /** Custom purpose description (when purpose is "custom") */
+  purposeDescription: string | null;
   /** Timestamp */
   configuredAt: string;
 }
@@ -35,6 +45,8 @@ export function getDefaultConfig(): SynapseConfig {
     useWikilinks: true,
     schemaPath: null,
     topic: null,
+    purpose: null,
+    purposeDescription: null,
     configuredAt: "",
   };
 }

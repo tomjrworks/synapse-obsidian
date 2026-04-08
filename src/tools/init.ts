@@ -474,7 +474,21 @@ After the user chooses, call kb_configure with their selection.`,
         output.push(
           "---",
           "",
-          "**Ask the user which option they prefer**, then call `kb_configure` with their choice.",
+          "### Also ask: What will you use this vault for?",
+          "",
+          "This helps Synapse tailor how it saves and organizes content:",
+          "",
+          '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
+          '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
+          '- **"academic"** — Papers, literature review, citations, coursework',
+          '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
+          '- **"custom"** — Something else (ask them to describe it)',
+          "",
+          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `kb_configure`.",
+          "",
+          "---",
+          "",
+          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `kb_configure` with both.",
         );
 
         return {
@@ -533,6 +547,14 @@ After the user chooses, call kb_configure with their selection.`,
         .describe(
           "File naming convention (default: auto-detect or kebab-case)",
         ),
+      purpose: z
+        .enum(["knowledge-base", "business", "academic", "life-os", "custom"])
+        .optional()
+        .describe("What the user will use this vault for"),
+      purposeDescription: z
+        .string()
+        .optional()
+        .describe("Custom purpose description (when purpose is 'custom')"),
     },
     async ({
       mode,
@@ -541,10 +563,14 @@ After the user chooses, call kb_configure with their selection.`,
       outputsFolder,
       topic,
       fileNaming,
+      purpose,
+      purposeDescription,
     }) => {
       try {
         const config: SynapseConfig = getDefaultConfig();
         config.mode = mode;
+        config.purpose = purpose || null;
+        config.purposeDescription = purposeDescription || null;
         config.configuredAt = new Date().toISOString();
 
         if (mode === "existing") {
@@ -579,6 +605,7 @@ After the user chooses, call kb_configure with their selection.`,
                   `- **Frontmatter:** ${config.useFrontmatter ? "enabled" : "disabled"}`,
                   `- **Wikilinks:** ${config.useWikilinks ? "enabled" : "disabled"}`,
                   `- **CLAUDE.md:** ${config.schemaPath || "none"}`,
+                  `- **Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
                   "",
                   "Config saved to `.synapse/config.json`. All tools will now use these settings.",
                   "",

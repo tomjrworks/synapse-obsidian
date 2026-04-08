@@ -281,6 +281,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
         if (config) {
           output.push(
             `**Mode:** ${config.mode}`,
+            `**Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
             `**Sources folder:** ${config.sourcesFolder}`,
             `**Outputs folder:** ${config.outputsFolder}`,
             `**Wiki folder:** ${config.wikiFolder || "(vault root)"}`,
