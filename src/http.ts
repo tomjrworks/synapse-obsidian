@@ -5,6 +5,7 @@ import type { StorageBackend } from "./utils/storage.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
+import { registerOAuthRoutes, requireAuth } from "./oauth.js";
 
 function createServer(backend: StorageBackend): McpServer {
   const server = new McpServer({
@@ -23,10 +24,12 @@ export async function startHttpServer(
 ): Promise<void> {
   const app = express();
 
+  // Parse both JSON and URL-encoded bodies (OAuth forms use URL-encoded)
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
   // Request logging
-  app.use((req, res, next) => {
+  app.use((req, _res, next) => {
     const body = req.body ? JSON.stringify(req.body).slice(0, 300) : "";
     console.error(
       `[${new Date().toISOString()}] ${req.method} ${req.path} body=${body}`,
@@ -46,26 +49,21 @@ export async function startHttpServer(
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
-  // Bearer token auth (optional)
-  const AUTH_TOKEN = process.env.SYNAPSE_AUTH_TOKEN || "";
-  if (AUTH_TOKEN) {
-    app.use("/mcp", (req, res, next) => {
-      if (req.method === "OPTIONS") return next();
-      const header = req.headers.authorization;
-      if (header !== `Bearer ${AUTH_TOKEN}`) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      next();
-    });
+  // OAuth routes (only if SYNAPSE_PASSWORD is set)
+  const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
+  if (process.env.SYNAPSE_PASSWORD) {
+    registerOAuthRoutes(app, baseUrl);
+    console.error(`[OAuth] Enabled. Password protected.`);
   }
 
-  // Stateless MCP: each request gets a fresh transport + server
-  // This avoids session ID issues with Claude.ai
+  // MCP endpoint — stateless, one transport per request
   app.post("/mcp", async (req, res) => {
+    // Check auth if enabled
+    if (requireAuth(req, res)) return;
+
     try {
       const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined as any, // stateless mode
+        sessionIdGenerator: undefined as any,
       });
       const server = createServer(backend);
       await server.connect(transport);
@@ -78,10 +76,9 @@ export async function startHttpServer(
     }
   });
 
-  app.get("/mcp", async (_req, res) => {
-    res
-      .status(405)
-      .json({ error: "SSE not supported in stateless mode. Use POST." });
+  app.get("/mcp", async (req, res) => {
+    if (requireAuth(req, res)) return;
+    res.status(405).json({ error: "Use POST" });
   });
 
   app.delete("/mcp", async (_req, res) => {
