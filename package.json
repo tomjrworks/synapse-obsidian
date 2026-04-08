@@ -30,7 +30,7 @@
   "author": "MainLoop Systems",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mainloop-systems/synapse-mcp"
+    "url": "https://github.com/tomjrworks/synapse-obsidian"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
