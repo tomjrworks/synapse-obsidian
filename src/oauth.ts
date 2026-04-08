@@ -1,7 +1,35 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { Express, Request, Response } from "express";
 
-// In-memory stores (sufficient for personal use)
+// Persist tokens to file so they survive restarts
+const TOKEN_FILE = path.join(
+  process.env.HOME || "/tmp",
+  ".synapse-tokens.json",
+);
+
+function loadTokens(): Set<string> {
+  try {
+    const data = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf-8"));
+    return new Set(data.tokens || []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveTokens(tokens: Set<string>): void {
+  try {
+    fs.writeFileSync(
+      TOKEN_FILE,
+      JSON.stringify({ tokens: [...tokens] }),
+      "utf-8",
+    );
+  } catch (err) {
+    console.error(`[OAuth] Failed to persist tokens: ${err}`);
+  }
+}
+
 const clients = new Map<string, { name: string; redirectUris: string[] }>();
 const authCodes = new Map<
   string,
@@ -13,7 +41,7 @@ const authCodes = new Map<
     expiresAt: number;
   }
 >();
-const accessTokens = new Set<string>();
+const accessTokens = loadTokens();
 
 const OWNER_PASSWORD = process.env.SYNAPSE_PASSWORD || "synapse";
 
@@ -204,19 +232,18 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
         .update(code_verifier)
         .digest("base64url");
       if (expectedChallenge !== authCode.codeChallenge) {
-        res
-          .status(400)
-          .json({
-            error: "invalid_grant",
-            error_description: "PKCE verification failed",
-          });
+        res.status(400).json({
+          error: "invalid_grant",
+          error_description: "PKCE verification failed",
+        });
         return;
       }
     }
 
-    // Issue access token
+    // Issue access token and persist to disk
     const token = randomBytes(32).toString("hex");
     accessTokens.add(token);
+    saveTokens(accessTokens);
 
     console.error(`[OAuth] Issued access token for client ${client_id}`);
 
