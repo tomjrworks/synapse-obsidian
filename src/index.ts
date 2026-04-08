@@ -8,7 +8,9 @@ import { registerInitTools } from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
 import { LocalBackend } from "./utils/storage.js";
 import { parseArgs } from "./utils/args.js";
+import { printBanner } from "./banner.js";
 
+printBanner();
 const args = parseArgs();
 
 async function main() {
