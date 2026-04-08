@@ -88,6 +88,12 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           "Where to save, relative to vault root (default: 'raw/articles')",
         ),
     },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     async ({ title, url, content, folder }) => {
       try {
         if (!url && !content) {
@@ -218,6 +224,12 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
     "kb_status",
     `One-shot onboarding and status overview. Returns everything needed to understand the knowledge base state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async () => {
       try {
         const config = await loadConfig(backend);
@@ -422,6 +434,12 @@ Steps:
           "Path to the raw source file relative to vault (e.g. 'raw/articles/my-article.md')",
         ),
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async ({ sourcePath }) => {
       try {
         const config = await loadConfig(backend);
@@ -517,6 +535,12 @@ Steps:
     "kb_compile",
     `Scan for all unprocessed raw sources and compile them into the wiki. Lists which sources exist in the sources folder but don't have corresponding summaries in the wiki. Use kb_ingest on each one to process them.`,
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async () => {
       try {
         const config = await loadConfig(backend);
@@ -610,6 +634,12 @@ Steps:
         .describe(
           "Whether to save the answer to wiki/outputs/ (default: true). Set false for quick lookups.",
         ),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({ question, save }) => {
       try {
@@ -729,6 +759,12 @@ Steps:
     "kb_lint",
     `Health-check the knowledge base wiki. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async () => {
       try {
         const config = await loadConfig(backend);

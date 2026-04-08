@@ -22,6 +22,12 @@ export function registerVaultTools(
         .string()
         .describe("Relative path to the file (e.g. 'wiki/index.md')"),
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async ({ path: filePath }) => {
       try {
         const content = await readVaultFile(backend, filePath);
@@ -51,6 +57,12 @@ export function registerVaultTools(
         .describe(
           "Full markdown content to write (including frontmatter if needed)",
         ),
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({ path: filePath, content }) => {
       try {
@@ -84,6 +96,12 @@ export function registerVaultTools(
         .optional()
         .default(true)
         .describe("Whether to list files in subdirectories (default: true)"),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({ path: subPath, recursive }) => {
       try {
@@ -134,6 +152,12 @@ export function registerVaultTools(
         .default(20)
         .describe("Maximum number of matching files to return (default: 20)"),
     },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async ({ query, path: subPath, maxResults }) => {
       try {
         const results = await searchVault(backend, query, {
@@ -176,6 +200,12 @@ export function registerVaultTools(
     "vault_stats",
     "Get vault statistics: file counts, folder structure, and whether the knowledge base has been initialized.",
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async () => {
       try {
         const stats = await getVaultStats(backend);
@@ -201,6 +231,12 @@ export function registerVaultTools(
     "Read the YAML frontmatter metadata from a vault file. Returns parsed key-value pairs (title, tags, date, status, etc.).",
     {
       path: z.string().describe("Relative path to the file"),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({ path: filePath }) => {
       try {

@@ -386,6 +386,12 @@ export function registerInitTools(
 
 After the user chooses, call kb_configure with their selection.`,
     {},
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async () => {
       try {
         // Check if already configured
@@ -555,6 +561,12 @@ After the user chooses, call kb_configure with their selection.`,
         .string()
         .optional()
         .describe("Custom purpose description (when purpose is 'custom')"),
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({
       mode,
@@ -754,6 +766,12 @@ After the user chooses, call kb_configure with their selection.`,
         .describe(
           "The topic or domain for this knowledge base (e.g. 'DeFi protocols', 'machine learning', 'competitive intelligence')",
         ),
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
     async ({ topic }) => {
       try {
