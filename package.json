@@ -1,6 +1,6 @@
 {
   "name": "synapse-obsidian",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "MCP server that turns your Obsidian vault into an AI-powered knowledge base. The Karpathy pattern, packaged.",
   "type": "module",
   "bin": {

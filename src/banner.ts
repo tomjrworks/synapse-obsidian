@@ -1,21 +1,42 @@
-const GREEN = "\x1b[32m";
-const DIM = "\x1b[2m";
-const BOLD = "\x1b[1m";
-const RESET = "\x1b[0m";
-const WHITE = "\x1b[97m";
+const G = "\x1b[32m";
+const GD = "\x1b[2;32m";
+const GB = "\x1b[1;32m";
+const W = "\x1b[97m";
+const B = "\x1b[1m";
+const D = "\x1b[2m";
+const R = "\x1b[0m";
 
 export function printBanner(): void {
+  const v = process.env.npm_package_version || "0.2.3";
   console.error(`
-${GREEN}    ╭───────────────────────────────╮
-    │                               │
-    │   ${WHITE}${BOLD}⚡ S Y N A P S E${RESET}${GREEN}             │
-    │                               │
-    │   ${DIM}the nervous system between${RESET}${GREEN}   │
-    │   ${DIM}your AI and your notes${RESET}${GREEN}       │
-    │                               │
-    ╰───────────────────────────────╯${RESET}
+${GD}  ·         ·              ·         ·
+   ╲       ╱ ╲            ╱ ╲       ╱
+    ·──${G}●${GD}──·   ·─────${G}●${GD}───·   ·──${G}●${GD}──·
+   ╱   │   ╲ ╱     │     ╲ ╱   │   ╲
+  ·    │    ·      │      ·    │    ·
+   ╲   │   ╱ ╲     │     ╱ ╲   │   ╱
+    ·──┼──·   ·────┼────·   ·──┼──·
+       │           │           │${R}
+${GD} ─────╰───────────╨───────────╯──────${R}
 
-  ${DIM}v${process.env.npm_package_version || "0.2.2"} · by Main Loop Systems${RESET}
-  ${DIM}github.com/tomjrworks/synapse-obsidian${RESET}
+${W}${B}  ███████╗██╗   ██╗███╗   ██╗ █████╗ ██████╗ ███████╗███████╗${R}
+${W}${B}  ██╔════╝╚██╗ ██╔╝████╗  ██║██╔══██╗██╔══██╗██╔════╝██╔════╝${R}
+${G}  ███████╗ ╚████╔╝ ██╔██╗ ██║███████║██████╔╝███████╗█████╗${R}
+${G}  ╚════██║  ╚██╔╝  ██║╚██╗██║██╔══██║██╔═══╝ ╚════██║██╔══╝${R}
+${GB}  ███████║   ██║   ██║ ╚████║██║  ██║██║     ███████║███████╗${R}
+${GB}  ╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝${R}
+
+${GD} ─────╭───────────╥───────────╮──────${R}
+${GD}       │           │           │
+    ·──┼──·   ·────┼────·   ·──┼──·
+   ╱   │   ╲ ╱     │     ╲ ╱   │   ╲
+  ·    │    ·      │      ·    │    ·
+   ╲   │   ╱ ╲     │     ╱ ╲   │   ╱
+    ·──${G}●${GD}──·   ·─────${G}●${GD}───·   ·──${G}●${GD}──·
+   ╱       ╲ ╱            ╲ ╱       ╲
+  ·         ·              ·         ·${R}
+
+  ${D}the nervous system between your AI and your notes${R}
+  ${GD}v${v}${R}  ${D}·${R}  ${GD}Main Loop Systems${R}
 `);
 }
