@@ -51,12 +51,19 @@ export async function startHttpServer(
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
-  // OAuth routes (only if SYNAPSE_PASSWORD is set)
+  // OAuth: auto-generate password for HTTP mode if not set
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
-  if (process.env.SYNAPSE_PASSWORD) {
-    registerOAuthRoutes(app, baseUrl);
-    console.error(`[OAuth] Enabled. Password protected.`);
+  if (!process.env.SYNAPSE_PASSWORD) {
+    const { randomBytes } = await import("node:crypto");
+    const generated = randomBytes(6).toString("hex").match(/.{4}/g)!.join("-");
+    process.env.SYNAPSE_PASSWORD = generated;
+    console.error(`\n  Your Synapse password: ${generated}`);
+    console.error(
+      `  (needed when connecting from Claude.ai or other remote clients)\n`,
+    );
   }
+  registerOAuthRoutes(app, baseUrl);
+  console.error(`[OAuth] Enabled. Password protected.`);
 
   // MCP endpoint — stateless, one transport per request
   app.post("/mcp", async (req, res) => {

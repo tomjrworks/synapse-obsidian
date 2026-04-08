@@ -114,35 +114,135 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
-    // Show approval page
+    // Show approval page — MainLoop branded
     res.send(`<!DOCTYPE html>
 <html>
 <head>
   <title>Synapse \u2014 Authorize</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 400px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; }
-    h1 { font-size: 24px; }
-    p { color: #666; line-height: 1.6; }
-    input[type=password] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; margin: 8px 0; box-sizing: border-box; }
-    button { width: 100%; padding: 14px; background: #1a1a1a; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; margin-top: 8px; }
-    button:hover { background: #333; }
-    .app-name { font-weight: 600; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #F2F0EB;
+      color: #3D3529;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 40px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 2px 12px rgba(61,53,41,0.08);
+      border: 1px solid rgba(61,53,41,0.06);
+    }
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo-dot { width: 8px; height: 8px; background: #2ECC71; border-radius: 50%; }
+    .by { font-size: 12px; color: #8B9490; margin-bottom: 28px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
+    .request {
+      background: rgba(26,92,50,0.05);
+      border: 1px solid rgba(26,92,50,0.1);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .request p { font-size: 14px; line-height: 1.6; color: #3D3529; }
+    .app-name { font-weight: 600; color: #1A5C32; }
+    .permissions { margin-bottom: 24px; }
+    .permissions p { font-size: 12px; color: #8B9490; margin-bottom: 8px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.1em; }
+    .permissions ul { list-style: none; }
+    .permissions li {
+      font-size: 14px;
+      padding: 6px 0;
+      color: rgba(61,53,41,0.7);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .permissions li::before { content: ''; width: 6px; height: 6px; background: #2ECC71; border-radius: 50%; flex-shrink: 0; }
+    input[type=password] {
+      width: 100%;
+      padding: 14px 16px;
+      border: 1px solid rgba(61,53,41,0.15);
+      border-radius: 6px;
+      font-size: 15px;
+      margin-bottom: 12px;
+      background: #F2F0EB;
+      color: #3D3529;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type=password]:focus { border-color: #1A5C32; }
+    input[type=password]::placeholder { color: #8B9490; }
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #1A5C32;
+      color: #F2F0EB;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover { background: #16472a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(26,92,50,0.2); }
+    .security {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(61,53,41,0.06);
+      font-size: 12px;
+      color: #8B9490;
+      line-height: 1.6;
+      text-align: center;
+    }
+    .security a { color: #1A5C32; text-decoration: none; }
   </style>
 </head>
 <body>
-  <h1>Synapse</h1>
-  <p><span class="app-name">${client.name}</span> wants to access your Obsidian vault.</p>
-  <p>It will be able to read, write, and search your vault files.</p>
-  <form method="POST" action="/authorize">
-    <input type="hidden" name="client_id" value="${client_id}">
-    <input type="hidden" name="redirect_uri" value="${redirect_uri}">
-    <input type="hidden" name="code_challenge" value="${code_challenge}">
-    <input type="hidden" name="code_challenge_method" value="${code_challenge_method || "S256"}">
-    <input type="hidden" name="state" value="${state || ""}">
-    <input type="password" name="password" placeholder="Enter your Synapse password" autofocus>
-    <button type="submit">Approve</button>
-  </form>
+  <div class="card">
+    <div class="logo"><span class="logo-dot"></span> Synapse</div>
+    <div class="by">by Main Loop Systems</div>
+    <div class="request">
+      <p><span class="app-name">${client.name}</span> is requesting access to your vault.</p>
+    </div>
+    <div class="permissions">
+      <p>This will allow</p>
+      <ul>
+        <li>Read files in your vault</li>
+        <li>Write and create new files</li>
+        <li>Search across your notes</li>
+      </ul>
+    </div>
+    <form method="POST" action="/authorize">
+      <input type="hidden" name="client_id" value="${client_id}">
+      <input type="hidden" name="redirect_uri" value="${redirect_uri}">
+      <input type="hidden" name="code_challenge" value="${code_challenge}">
+      <input type="hidden" name="code_challenge_method" value="${code_challenge_method || "S256"}">
+      <input type="hidden" name="state" value="${state || ""}">
+      <input type="password" name="password" placeholder="Enter your Synapse password" autofocus>
+      <button type="submit">Approve Access</button>
+    </form>
+    <div class="security">
+      Your data never leaves your machine. Synapse runs locally and<br>
+      only connects your vault to your AI client.<br>
+      <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://mainloopsystems.com">MainLoop Systems</a>
+    </div>
+  </div>
 </body>
 </html>`);
   });
@@ -160,10 +260,18 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 
     if (password !== OWNER_PASSWORD) {
       res.status(403).send(`<!DOCTYPE html>
-<html><head><title>Wrong password</title>
+<html><head><title>Synapse \u2014 Wrong Password</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:sans-serif;max-width:400px;margin:80px auto;padding:0 20px;}</style>
-</head><body><h1>Wrong password</h1><p>Go back and try again.</p></body></html>`);
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #F2F0EB; color: #3D3529; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { background: white; border-radius: 12px; padding: 40px; max-width: 400px; width: 100%; box-shadow: 0 2px 12px rgba(61,53,41,0.08); border: 1px solid rgba(61,53,41,0.06); text-align: center; }
+  h1 { font-size: 20px; margin-bottom: 8px; }
+  p { color: #8B9490; font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
+  a { display: inline-block; padding: 12px 24px; background: #1A5C32; color: #F2F0EB; border-radius: 6px; text-decoration: none; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
+  a:hover { background: #16472a; }
+</style>
+</head><body><div class="card"><h1>Wrong password</h1><p>The password you entered doesn't match. Check your terminal for the correct password.</p><a href="javascript:history.back()">Try Again</a></div></body></html>`);
       return;
     }
 
