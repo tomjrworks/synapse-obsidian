@@ -9,8 +9,12 @@ import {
   searchVault,
   parseFrontmatter,
 } from "../utils/vault.js";
+import { loadConfig, getDefaultConfig } from "../utils/config.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
+
+const SETUP_TIP =
+  "\n\n> **Tip:** Run `kb_setup` to configure Synapse for your vault.";
 
 /**
  * Strip HTML tags and decode common entities to get plain text.
@@ -98,7 +102,10 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           };
         }
 
-        const targetFolder = folder || "raw/articles";
+        const config = await loadConfig(backend);
+        const defaults = getDefaultConfig();
+        const targetFolder =
+          folder || config?.sourcesFolder || defaults.sourcesFolder;
         const filename = slugify(title) + ".md";
         const filePath = `${targetFolder}/${filename}`;
 
@@ -174,19 +181,21 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
 
         const wordCount = body.split(/\s+/).length;
 
+        const responseText = [
+          `Saved to: ${filePath}`,
+          `Words: ~${wordCount}`,
+          sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
+          "",
+          '**Next:** Run `kb_ingest({ sourcePath: "' +
+            filePath +
+            '" })` to process this into the wiki.',
+        ].join("\n");
+
         return {
           content: [
             {
               type: "text",
-              text: [
-                `Saved to: ${filePath}`,
-                `Words: ~${wordCount}`,
-                sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
-                "",
-                '**Next:** Run `kb_ingest({ sourcePath: "' +
-                  filePath +
-                  '" })` to process this into the wiki.',
-              ].join("\n"),
+              text: config ? responseText : responseText + SETUP_TIP,
             },
           ],
         };
@@ -207,20 +216,28 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
   // ── kb_status ───────────────────────────────────────────────────────
   server.tool(
     "kb_status",
-    `One-shot onboarding and status overview. Returns everything needed to understand the knowledge base state: initialization status, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
+    `One-shot onboarding and status overview. Returns everything needed to understand the knowledge base state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
     {},
     async () => {
       try {
-        const hasRaw = await backend.exists("raw");
-        const hasWiki = await backend.exists("wiki");
+        const config = await loadConfig(backend);
+
         const hasClaudeMd = await backend.exists("CLAUDE.md");
-        const initialized = hasRaw && hasWiki && hasClaudeMd;
+
+        // Use config-aware paths for file counting
+        const sourcesFolder = config?.sourcesFolder || "raw";
+        const wikiFolder = config?.wikiFolder || "wiki";
+        const wikiSourcesFolder = config?.wikiFolder
+          ? `${config.wikiFolder}/sources`
+          : "wiki/sources";
 
         // File counts
         const allFiles = await listVaultFiles(backend);
-        const rawFiles = await listVaultFiles(backend, "raw");
-        const wikiFiles = await listVaultFiles(backend, "wiki");
-        const wikiSources = await listVaultFiles(backend, "wiki/sources");
+        const rawFiles = await listVaultFiles(backend, sourcesFolder);
+        const wikiFiles = config?.wikiFolder
+          ? await listVaultFiles(backend, wikiFolder)
+          : await listVaultFiles(backend, "wiki");
+        const wikiSources = await listVaultFiles(backend, wikiSourcesFolder);
 
         // Count unprocessed sources
         const sourceBasenames = new Set(
@@ -236,9 +253,12 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
         }
 
         // Recent activity from wiki/log.md
+        const logPath = config?.wikiFolder
+          ? `${config.wikiFolder}/log.md`
+          : "wiki/log.md";
         let recentLog = "(No log yet)";
-        if (await backend.exists("wiki/log.md")) {
-          const logContent = await readVaultFile(backend, "wiki/log.md");
+        if (await backend.exists(logPath)) {
+          const logContent = await readVaultFile(backend, logPath);
           const logLines = logContent
             .split("\n")
             .filter((l) => l.startsWith("## ["));
@@ -250,20 +270,61 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
 
         // CLAUDE.md schema
         let schema = "";
-        if (hasClaudeMd) {
-          schema = await readVaultFile(backend, "CLAUDE.md");
+        const schemaPath = config?.schemaPath || "CLAUDE.md";
+        if (await backend.exists(schemaPath)) {
+          schema = await readVaultFile(backend, schemaPath);
+        }
+
+        const output: string[] = ["## Synapse Knowledge Base Status", ""];
+
+        // Config section
+        if (config) {
+          output.push(
+            `**Mode:** ${config.mode}`,
+            `**Sources folder:** ${config.sourcesFolder}`,
+            `**Outputs folder:** ${config.outputsFolder}`,
+            `**Wiki folder:** ${config.wikiFolder || "(vault root)"}`,
+            config.topic ? `**Topic:** ${config.topic}` : "",
+            `**Configured:** ${config.configuredAt || "unknown"}`,
+            "",
+          );
+        } else {
+          output.push(
+            "**Synapse hasn't been configured yet.** Run `kb_setup` to get started.",
+            "",
+          );
+        }
+
+        // Check initialization based on mode
+        const hasRaw = await backend.exists(sourcesFolder);
+        const hasWiki = await backend.exists(wikiFolder);
+        const initialized = config ? true : hasRaw && hasWiki && hasClaudeMd;
+
+        output.push(
+          `**Total vault files:** ${allFiles.length}`,
+          `**Raw sources:** ${rawFiles.length}`,
+          `**Wiki pages:** ${wikiFiles.length}`,
+          `**Unprocessed sources:** ${unprocessedCount}`,
+          "",
+        );
+
+        if (recentLog !== "(No log yet)") {
+          output.push("### Recent Activity");
+          output.push(recentLog);
+          output.push("");
         }
 
         // Build suggested actions
         const actions: string[] = [];
-        if (!initialized) {
+        if (!config) {
           actions.push(
-            "1. **Initialize:** Run `kb_init` with your topic to set up the knowledge base structure.",
+            "1. **Set up Synapse:** Run `kb_setup` to configure Synapse for your vault.",
           );
         }
-        if (initialized && rawFiles.length === 0) {
+        if (rawFiles.length === 0) {
+          const saveFolder = config?.sourcesFolder || "raw/articles";
           actions.push(
-            "1. **Add sources:** Save articles with `kb_save` (paste text or provide a URL), or add markdown files to `raw/articles/`.",
+            `1. **Add sources:** Save articles with \`kb_save\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
           );
         }
         if (unprocessedCount > 0) {
@@ -283,23 +344,6 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           actions.push(
             "4. **Health check:** Run `kb_lint` to check for broken links, orphan pages, and stale content.",
           );
-        }
-
-        const output = [
-          "## Synapse Knowledge Base Status",
-          "",
-          `**Initialized:** ${initialized ? "Yes" : "No"}`,
-          `**Total vault files:** ${allFiles.length}`,
-          `**Raw sources:** ${rawFiles.length}`,
-          `**Wiki pages:** ${wikiFiles.length}`,
-          `**Unprocessed sources:** ${unprocessedCount}`,
-          "",
-        ];
-
-        if (recentLog !== "(No log yet)") {
-          output.push("### Recent Activity");
-          output.push(recentLog);
-          output.push("");
         }
 
         if (actions.length > 0) {
@@ -324,7 +368,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
         );
         output.push("");
         output.push(
-          "1. **Save** sources with `kb_save` (URL or pasted text) or add files to `raw/`",
+          "1. **Save** sources with `kb_save` (URL or pasted text) or add files to your sources folder",
         );
         output.push(
           "2. **Process** them with `kb_compile` + `kb_ingest` to build structured wiki pages",
@@ -337,7 +381,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
         );
         output.push("");
         output.push(
-          "**Available tools:** kb_init, kb_save, kb_status, kb_compile, kb_ingest, kb_query, kb_lint, vault_read, vault_write, vault_list, vault_search, vault_stats, vault_frontmatter",
+          "**Available tools:** kb_setup, kb_configure, kb_init, kb_save, kb_status, kb_compile, kb_ingest, kb_query, kb_lint, vault_read, vault_write, vault_list, vault_search, vault_stats, vault_frontmatter",
         );
 
         return { content: [{ type: "text", text: output.join("\n") }] };
@@ -379,24 +423,33 @@ Steps:
     },
     async ({ sourcePath }) => {
       try {
+        const config = await loadConfig(backend);
+        const wikiFolder = config?.wikiFolder || "wiki";
+        const wikiSourcesFolder = `${wikiFolder}/sources`;
+        const schemaPath = config?.schemaPath || "CLAUDE.md";
+
         const content = await readVaultFile(backend, sourcePath);
         const fm = parseFrontmatter(content);
 
-        const existingSources = await listVaultFiles(backend, "wiki/sources");
+        const existingSources = await listVaultFiles(
+          backend,
+          wikiSourcesFolder,
+        );
         const sourceBasename = path.basename(sourcePath, ".md");
 
         const alreadyProcessed = existingSources.some((f) =>
           f.includes(sourceBasename),
         );
 
+        const indexPath = `${wikiFolder}/index.md`;
         let existingIndex = "";
-        if (await backend.exists("wiki/index.md")) {
-          existingIndex = await readVaultFile(backend, "wiki/index.md");
+        if (await backend.exists(indexPath)) {
+          existingIndex = await readVaultFile(backend, indexPath);
         }
 
         let schema = "";
-        if (await backend.exists("CLAUDE.md")) {
-          schema = await readVaultFile(backend, "CLAUDE.md");
+        if (await backend.exists(schemaPath)) {
+          schema = await readVaultFile(backend, schemaPath);
         }
 
         const output = [
@@ -428,17 +481,23 @@ Steps:
           "### Instructions",
           "",
           "Now use `vault_write` to create/update the following files:",
-          "1. `wiki/sources/{author}-{year}-{short-title}.md` — 200-500 word summary with frontmatter",
-          "2. `wiki/concepts/{concept-name}.md` — for each key concept (create if 2+ mentions, stub if 1)",
-          "3. `wiki/entities/{entity-name}.md` — for people, orgs, tools mentioned",
-          "4. `wiki/index.md` — updated master index with new entries",
-          "5. `wiki/log.md` — append ingest record",
+          `1. \`${wikiSourcesFolder}/{author}-{year}-{short-title}.md\` — 200-500 word summary with frontmatter`,
+          `2. \`${wikiFolder}/concepts/{concept-name}.md\` — for each key concept (create if 2+ mentions, stub if 1)`,
+          `3. \`${wikiFolder}/entities/{entity-name}.md\` — for people, orgs, tools mentioned`,
+          `4. \`${indexPath}\` — updated master index with new entries`,
+          `5. \`${wikiFolder}/log.md\` — append ingest record`,
           "",
           "Use [[wikilinks]] for all cross-references. Use kebab-case filenames.",
           "Every page MUST have YAML frontmatter (title, date_created, date_modified, summary, tags, type, status).",
-        ].join("\n");
+        ];
 
-        return { content: [{ type: "text", text: output }] };
+        if (!config) {
+          output.push("", SETUP_TIP);
+        }
+
+        return {
+          content: [{ type: "text", text: output.join("\n") }],
+        };
       } catch (err: any) {
         return {
           content: [
@@ -455,19 +514,26 @@ Steps:
 
   server.tool(
     "kb_compile",
-    `Scan for all unprocessed raw sources and compile them into the wiki. Lists which sources exist in raw/ but don't have corresponding summaries in wiki/sources/. Use kb_ingest on each one to process them.`,
+    `Scan for all unprocessed raw sources and compile them into the wiki. Lists which sources exist in the sources folder but don't have corresponding summaries in the wiki. Use kb_ingest on each one to process them.`,
     {},
     async () => {
       try {
-        const rawFiles = await listVaultFiles(backend, "raw");
-        const wikiSources = await listVaultFiles(backend, "wiki/sources");
+        const config = await loadConfig(backend);
+        const sourcesFolder = config?.sourcesFolder || "raw";
+        const wikiSourcesFolder = config?.wikiFolder
+          ? `${config.wikiFolder}/sources`
+          : "wiki/sources";
+
+        const rawFiles = await listVaultFiles(backend, sourcesFolder);
+        const wikiSources = await listVaultFiles(backend, wikiSourcesFolder);
 
         if (rawFiles.length === 0) {
+          const tipSuffix = config ? "" : SETUP_TIP;
           return {
             content: [
               {
                 type: "text",
-                text: "No files found in raw/. Add source articles to raw/articles/ first.",
+                text: `No files found in ${sourcesFolder}/. Add source articles to \`${sourcesFolder}\` first.${tipSuffix}`,
               },
             ],
           };
@@ -546,13 +612,18 @@ Steps:
     },
     async ({ question, save }) => {
       try {
+        const config = await loadConfig(backend);
+        const wikiFolder = config?.wikiFolder || "wiki";
+        const outputsFolder = config?.outputsFolder || `${wikiFolder}/outputs`;
+
         const shouldSave = save !== false;
         const outputSlug = slugify(question);
-        const outputPath = `wiki/outputs/${outputSlug}.md`;
+        const outputPath = `${outputsFolder}/${outputSlug}.md`;
 
+        const indexPath = `${wikiFolder}/index.md`;
         let index = "";
-        if (await backend.exists("wiki/index.md")) {
-          index = await readVaultFile(backend, "wiki/index.md");
+        if (await backend.exists(indexPath)) {
+          index = await readVaultFile(backend, indexPath);
         }
 
         const keywords = question
@@ -562,9 +633,14 @@ Steps:
 
         const allResults: Map<string, string> = new Map();
 
+        // Search wiki folder if it exists, otherwise search whole vault
+        const searchPath = (await backend.exists(wikiFolder))
+          ? wikiFolder
+          : undefined;
+
         for (const keyword of keywords.slice(0, 5)) {
           const results = await searchVault(backend, keyword, {
-            subPath: "wiki",
+            subPath: searchPath,
             maxResults: 10,
           });
           for (const r of results) {
@@ -625,8 +701,12 @@ Steps:
             ),
             "```",
             "",
-            "Then update wiki/index.md (add entry under Outputs) and append to wiki/log.md.",
+            `Then update ${wikiFolder}/index.md (add entry under Outputs) and append to ${wikiFolder}/log.md.`,
           );
+        }
+
+        if (!config) {
+          output.push("", SETUP_TIP);
         }
 
         return { content: [{ type: "text", text: output.join("\n") }] };
@@ -650,14 +730,25 @@ Steps:
     {},
     async () => {
       try {
-        const wikiFiles = await listVaultFiles(backend, "wiki");
+        const config = await loadConfig(backend);
+        const wikiFolder = config?.wikiFolder || "wiki";
+        const outputsFolder = config?.outputsFolder || `${wikiFolder}/outputs`;
+
+        // If no wikiFolder configured and no wiki/ exists, scan the whole vault
+        const scanPath = (await backend.exists(wikiFolder))
+          ? wikiFolder
+          : undefined;
+        const wikiFiles = scanPath
+          ? await listVaultFiles(backend, scanPath)
+          : await listVaultFiles(backend);
 
         if (wikiFiles.length === 0) {
+          const tipSuffix = config ? "" : SETUP_TIP;
           return {
             content: [
               {
                 type: "text",
-                text: "No wiki files found. Run kb_init to set up the knowledge base first.",
+                text: `No wiki files found. Run kb_setup to configure Synapse, or kb_init to set up a knowledge base.${tipSuffix}`,
               },
             ],
           };
@@ -799,8 +890,12 @@ Steps:
           }
           report.push("");
           report.push(
-            `Save this report using vault_write to: wiki/outputs/lint-report-${TODAY()}.md`,
+            `Save this report using vault_write to: ${outputsFolder}/lint-report-${TODAY()}.md`,
           );
+        }
+
+        if (!config) {
+          report.push("", SETUP_TIP);
         }
 
         return {

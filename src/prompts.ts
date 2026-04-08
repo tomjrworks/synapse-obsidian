@@ -13,7 +13,7 @@ async function getSchema(backend: StorageBackend): Promise<string> {
   } catch {
     // ignore read errors
   }
-  return "(No CLAUDE.md found — run kb_init first to set up the knowledge base schema.)";
+  return "(No CLAUDE.md found — run kb_setup to configure Synapse, or kb_init to set up a knowledge base schema.)";
 }
 
 export function registerPrompts(
@@ -180,13 +180,14 @@ export function registerPrompts(
                 "I just connected Synapse to my Obsidian vault. Help me get started.",
                 "",
                 "## Steps",
-                "1. Call `kb_status` to check my knowledge base state",
-                "2. Based on the status:",
-                "   - If NOT initialized: explain what Synapse does and offer to run `kb_init`",
-                "   - If initialized but empty: explain how to add sources (kb_save with URLs or pasting text)",
-                "   - If sources exist: explain the compile/ingest workflow and offer to process them",
-                "   - If wiki exists: show what's available and suggest queries or a health check",
-                "3. Give me a clear, friendly overview of what I can do",
+                "1. Call `kb_setup` to scan my vault and see configuration options",
+                "2. Based on the scan results, present the three options to me:",
+                "   - Option A: Use my existing vault structure (if I already have files)",
+                "   - Option B: Set up a Karpathy Knowledge Base (for building a structured wiki on a topic)",
+                "   - Option C: Start fresh with custom settings",
+                "3. After I choose, call `kb_configure` with my selection",
+                "4. Then call `kb_status` to confirm everything is set up",
+                "5. Give me a clear, friendly overview of what I can do next",
                 "",
                 "Be concise and actionable. Don't overwhelm with information — guide me to the most useful next step.",
               ].join("\n"),
