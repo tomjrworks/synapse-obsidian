@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
+import { registerPrompts } from "./prompts.js";
 import { LocalBackend } from "./utils/storage.js";
 import { parseArgs } from "./utils/args.js";
 
@@ -31,6 +32,7 @@ async function main() {
       registerVaultTools(server, backend);
       registerKnowledgeTools(server, backend);
       registerInitTools(server, backend);
+      registerPrompts(server, backend);
 
       const transport = new StdioServerTransport();
       await server.connect(transport);

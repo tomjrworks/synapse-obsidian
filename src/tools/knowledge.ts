@@ -12,10 +12,350 @@ import {
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
+/**
+ * Strip HTML tags and decode common entities to get plain text.
+ * Intentionally simple — the AI will process the content during ingest anyway.
+ */
+function htmlToText(html: string): string {
+  let text = html;
+
+  // Remove script and style blocks entirely
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
+
+  // Convert common block elements to newlines
+  text = text.replace(/<\/?(p|div|br|h[1-6]|li|tr|blockquote)[^>]*>/gi, "\n");
+  text = text.replace(/<\/?(ul|ol|table|thead|tbody)[^>]*>/gi, "\n");
+
+  // Convert headings with markdown markers
+  text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n");
+  text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n");
+  text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n");
+
+  // Strip all remaining tags
+  text = text.replace(/<[^>]+>/g, "");
+
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  text = text.replace(/&nbsp;/g, " ");
+  text = text.replace(/&#(\d+);/g, (_m, code) =>
+    String.fromCharCode(parseInt(code, 10)),
+  );
+
+  // Normalize whitespace: collapse runs of spaces/tabs, collapse 3+ newlines to 2
+  text = text.replace(/[ \t]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.trim();
+
+  return text;
+}
+
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
+  // ── kb_save ─────────────────────────────────────────────────────────
+  server.tool(
+    "kb_save",
+    `Save content to the vault's raw/ folder from a URL or pasted text. Ideal for mobile users who find articles and want to save them without a web clipper.
+
+If a URL is provided, fetches the page and converts it to markdown. If content is provided directly, saves it as-is. Always adds frontmatter with metadata.`,
+    {
+      title: z.string().describe("Title for the saved note"),
+      url: z
+        .string()
+        .optional()
+        .describe("URL to fetch and convert to markdown"),
+      content: z
+        .string()
+        .optional()
+        .describe("Raw text or markdown content to save directly"),
+      folder: z
+        .string()
+        .optional()
+        .describe(
+          "Where to save, relative to vault root (default: 'raw/articles')",
+        ),
+    },
+    async ({ title, url, content, folder }) => {
+      try {
+        if (!url && !content) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: Provide either a `url` to fetch or `content` to save directly.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const targetFolder = folder || "raw/articles";
+        const filename = slugify(title) + ".md";
+        const filePath = `${targetFolder}/${filename}`;
+
+        let body: string;
+        let sourceUrl = url || "";
+
+        if (url) {
+          try {
+            const response = await fetch(url, {
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (compatible; Synapse/1.0; +https://github.com/tomjrworks/synapse-obsidian)",
+                Accept: "text/html,application/xhtml+xml,text/plain,*/*",
+              },
+              signal: AbortSignal.timeout(15000),
+            });
+
+            if (!response.ok) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Error fetching URL: HTTP ${response.status} ${response.statusText}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const contentType = response.headers.get("content-type") || "";
+            const rawBody = await response.text();
+
+            if (
+              contentType.includes("text/html") ||
+              contentType.includes("application/xhtml")
+            ) {
+              body = htmlToText(rawBody);
+            } else {
+              // Plain text, markdown, etc. — use as-is
+              body = rawBody;
+            }
+          } catch (fetchErr: any) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Error fetching URL: ${fetchErr.message}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        } else {
+          body = content!;
+        }
+
+        const frontmatter = [
+          "---",
+          `title: "${title.replace(/"/g, '\\"')}"`,
+          sourceUrl ? `source: "${sourceUrl}"` : "",
+          `date_created: ${TODAY()}`,
+          `type: article`,
+          `status: raw`,
+          `tags: [raw]`,
+          "---",
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        const fullContent = `${frontmatter}\n\n# ${title}\n\n${body}`;
+
+        await writeVaultFile(backend, filePath, fullContent);
+
+        const wordCount = body.split(/\s+/).length;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: [
+                `Saved to: ${filePath}`,
+                `Words: ~${wordCount}`,
+                sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
+                "",
+                '**Next:** Run `kb_ingest({ sourcePath: "' +
+                  filePath +
+                  '" })` to process this into the wiki.',
+              ].join("\n"),
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error saving content: ${err.message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── kb_status ───────────────────────────────────────────────────────
+  server.tool(
+    "kb_status",
+    `One-shot onboarding and status overview. Returns everything needed to understand the knowledge base state: initialization status, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
+    {},
+    async () => {
+      try {
+        const hasRaw = await backend.exists("raw");
+        const hasWiki = await backend.exists("wiki");
+        const hasClaudeMd = await backend.exists("CLAUDE.md");
+        const initialized = hasRaw && hasWiki && hasClaudeMd;
+
+        // File counts
+        const allFiles = await listVaultFiles(backend);
+        const rawFiles = await listVaultFiles(backend, "raw");
+        const wikiFiles = await listVaultFiles(backend, "wiki");
+        const wikiSources = await listVaultFiles(backend, "wiki/sources");
+
+        // Count unprocessed sources
+        const sourceBasenames = new Set(
+          wikiSources.map((f) => path.basename(f, ".md").toLowerCase()),
+        );
+        let unprocessedCount = 0;
+        for (const rawFile of rawFiles) {
+          const basename = path.basename(rawFile, ".md").toLowerCase();
+          const isProcessed = [...sourceBasenames].some(
+            (s) => s.includes(basename) || basename.includes(s),
+          );
+          if (!isProcessed) unprocessedCount++;
+        }
+
+        // Recent activity from wiki/log.md
+        let recentLog = "(No log yet)";
+        if (await backend.exists("wiki/log.md")) {
+          const logContent = await readVaultFile(backend, "wiki/log.md");
+          const logLines = logContent
+            .split("\n")
+            .filter((l) => l.startsWith("## ["));
+          recentLog =
+            logLines.length > 0
+              ? logLines.slice(-5).reverse().join("\n")
+              : "(No entries yet)";
+        }
+
+        // CLAUDE.md schema
+        let schema = "";
+        if (hasClaudeMd) {
+          schema = await readVaultFile(backend, "CLAUDE.md");
+        }
+
+        // Build suggested actions
+        const actions: string[] = [];
+        if (!initialized) {
+          actions.push(
+            "1. **Initialize:** Run `kb_init` with your topic to set up the knowledge base structure.",
+          );
+        }
+        if (initialized && rawFiles.length === 0) {
+          actions.push(
+            "1. **Add sources:** Save articles with `kb_save` (paste text or provide a URL), or add markdown files to `raw/articles/`.",
+          );
+        }
+        if (unprocessedCount > 0) {
+          actions.push(
+            `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`kb_compile\` to see them, then \`kb_ingest\` each one.`,
+          );
+        }
+        if (initialized && rawFiles.length > 0 && wikiFiles.length <= 3) {
+          actions.push(
+            "2. **Build the wiki:** Run `kb_compile` to process raw sources into wiki pages.",
+          );
+        }
+        if (initialized && wikiFiles.length > 5) {
+          actions.push(
+            "3. **Query:** Ask questions with `kb_query` to research your knowledge base.",
+          );
+          actions.push(
+            "4. **Health check:** Run `kb_lint` to check for broken links, orphan pages, and stale content.",
+          );
+        }
+
+        const output = [
+          "## Synapse Knowledge Base Status",
+          "",
+          `**Initialized:** ${initialized ? "Yes" : "No"}`,
+          `**Total vault files:** ${allFiles.length}`,
+          `**Raw sources:** ${rawFiles.length}`,
+          `**Wiki pages:** ${wikiFiles.length}`,
+          `**Unprocessed sources:** ${unprocessedCount}`,
+          "",
+        ];
+
+        if (recentLog !== "(No log yet)") {
+          output.push("### Recent Activity");
+          output.push(recentLog);
+          output.push("");
+        }
+
+        if (actions.length > 0) {
+          output.push("### Suggested Next Actions");
+          output.push(...actions);
+          output.push("");
+        }
+
+        if (schema) {
+          output.push("### Wiki Schema (CLAUDE.md)");
+          output.push("```markdown");
+          output.push(schema.slice(0, 4000));
+          if (schema.length > 4000) output.push("... (truncated)");
+          output.push("```");
+          output.push("");
+        }
+
+        output.push("### How to Use Synapse");
+        output.push("");
+        output.push(
+          "Synapse turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
+        );
+        output.push("");
+        output.push(
+          "1. **Save** sources with `kb_save` (URL or pasted text) or add files to `raw/`",
+        );
+        output.push(
+          "2. **Process** them with `kb_compile` + `kb_ingest` to build structured wiki pages",
+        );
+        output.push(
+          "3. **Query** your knowledge with `kb_query` — get answers with citations",
+        );
+        output.push(
+          "4. **Maintain** quality with `kb_lint` — finds broken links, orphans, stale content",
+        );
+        output.push("");
+        output.push(
+          "**Available tools:** kb_init, kb_save, kb_status, kb_compile, kb_ingest, kb_query, kb_lint, vault_read, vault_write, vault_list, vault_search, vault_stats, vault_frontmatter",
+        );
+
+        return { content: [{ type: "text", text: output.join("\n") }] };
+      } catch (err: any) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error getting status: ${err.message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── kb_ingest ───────────────────────────────────────────────────────
   server.tool(
     "kb_ingest",
     `Process a raw source file into the knowledge base wiki. Reads the source, generates a summary page in wiki/sources/, identifies concepts and entities, creates or updates their pages, adds [[wikilinks]], and updates the master index and log.
@@ -194,12 +534,22 @@ Steps:
 
   server.tool(
     "kb_query",
-    `Research a question against the knowledge base wiki. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. After answering, save the result to wiki/outputs/ using vault_write.`,
+    `Research a question against the knowledge base wiki. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to wiki/outputs/ using vault_write after responding.`,
     {
       question: z.string().describe("The question to research"),
+      save: z
+        .boolean()
+        .optional()
+        .describe(
+          "Whether to save the answer to wiki/outputs/ (default: true). Set false for quick lookups.",
+        ),
     },
-    async ({ question }) => {
+    async ({ question, save }) => {
       try {
+        const shouldSave = save !== false;
+        const outputSlug = slugify(question);
+        const outputPath = `wiki/outputs/${outputSlug}.md`;
+
         let index = "";
         if (await backend.exists("wiki/index.md")) {
           index = await readVaultFile(backend, "wiki/index.md");
@@ -255,12 +605,31 @@ Steps:
           "Synthesize an answer to the question using the wiki content above.",
           "- Cite sources using [[wikilinks]]",
           "- If information is insufficient, say what's missing",
-          `- Save your answer using vault_write to: wiki/outputs/${slugify(question)}.md`,
-          "- Include frontmatter: title, date_created, summary, tags, type: output",
-          "- Update wiki/index.md and wiki/log.md",
-        ].join("\n");
+        ];
 
-        return { content: [{ type: "text", text: output }] };
+        if (shouldSave) {
+          output.push(
+            "",
+            "### REQUIRED: Save Your Answer",
+            "",
+            `After synthesizing your answer, you MUST call vault_write with exactly these parameters:`,
+            "",
+            "```json",
+            JSON.stringify(
+              {
+                path: outputPath,
+                content: `---\ntitle: "${question}"\ndate_created: ${TODAY()}\nsummary: "Answer to: ${question}"\ntags: [query, output]\ntype: output\nstatus: final\n---\n\n# ${question}\n\n[YOUR SYNTHESIZED ANSWER HERE — use [[wikilinks]] for citations]`,
+              },
+              null,
+              2,
+            ),
+            "```",
+            "",
+            "Then update wiki/index.md (add entry under Outputs) and append to wiki/log.md.",
+          );
+        }
+
+        return { content: [{ type: "text", text: output.join("\n") }] };
       } catch (err: any) {
         return {
           content: [

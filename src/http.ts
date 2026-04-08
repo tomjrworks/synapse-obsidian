@@ -5,6 +5,7 @@ import type { StorageBackend } from "./utils/storage.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
+import { registerPrompts } from "./prompts.js";
 import { registerOAuthRoutes, requireAuth } from "./oauth.js";
 
 function createServer(backend: StorageBackend): McpServer {
@@ -15,6 +16,7 @@ function createServer(backend: StorageBackend): McpServer {
   registerVaultTools(server, backend);
   registerKnowledgeTools(server, backend);
   registerInitTools(server, backend);
+  registerPrompts(server, backend);
   return server;
 }
 
