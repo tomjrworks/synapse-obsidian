@@ -20,6 +20,20 @@ export async function startHttpServer(
 
   app.use(express.json());
 
+  // Bearer token auth
+  const AUTH_TOKEN = process.env.SYNAPSE_AUTH_TOKEN || "";
+  if (AUTH_TOKEN) {
+    app.use("/mcp", (req, res, next) => {
+      if (req.method === "OPTIONS") return next();
+      const header = req.headers.authorization;
+      if (header !== `Bearer ${AUTH_TOKEN}`) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      next();
+    });
+  }
+
   // Store transports by session ID
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
