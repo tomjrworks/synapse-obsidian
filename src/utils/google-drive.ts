@@ -45,7 +45,7 @@ export class GoogleDriveBackend implements StorageBackend {
 
       if (meta.data.mimeType === "application/vnd.google-apps.document") {
         const res = await this.drive.files.export(
-          { fileId, mimeType: "text/plain" },
+          { fileId, mimeType: "text/markdown" },
           { responseType: "text" },
         );
         return res.data as string;
