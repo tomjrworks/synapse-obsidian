@@ -168,8 +168,12 @@ export function registerPrompts(
   // ── getting-started ───────────────────────────────────────────────
   server.prompt(
     "getting-started",
-    "Set up your brain — one click. Scans your files, configures everything, and compiles your knowledge base.",
+    "Build my brain — reads your files, organizes everything, and makes it searchable. One click.",
     async () => {
+      // Detect vault structure to give Claude the right instructions
+      const hasSourcesFolder = await backend.exists("sources");
+      const sourcesFolder = hasSourcesFolder ? "sources" : "raw";
+
       return {
         messages: [
           {
@@ -177,20 +181,34 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                "I just connected my files. Set up my brain and make it work.",
+                "I just connected my files. Build my brain.",
                 "",
-                "## What to do (run these steps automatically, don't ask me questions)",
-                "1. Call `kb_setup` to scan my vault",
-                "2. Call `kb_configure` with purpose 'knowledge-base' and accept the defaults from the scan",
-                "3. Call `kb_status` to confirm setup worked",
-                "4. Call `kb_compile` to find all sources that need processing",
-                "5. For each unprocessed source, call `kb_ingest` with its path",
-                "6. After ingesting each source, use `vault_write` to create the wiki pages",
-                "7. When done, give me a friendly summary of what my brain now contains",
+                "## IMPORTANT RULES FOR THIS CONVERSATION",
+                "- Talk to me like a normal person. NO technical jargon.",
+                "- Never show me tool names, function names, or code.",
+                "- Never ask me to make decisions. Just use smart defaults.",
+                "- Narrate what you're doing in plain, friendly English.",
+                '- Say things like "Reading your files..." not "Calling kb_compile..."',
+                '- Say "Found 12 topics in your notes" not "Detected 12 unprocessed sources in raw/"',
                 "",
-                "Do NOT ask me to choose options or make decisions. Just use sensible defaults and go.",
-                "Narrate what you're doing in plain English as you go — I want to see the magic happen.",
-                "If there are too many sources to process in one go, do the first 10 and tell me to say 'continue' for more.",
+                "## What to do (silently, behind the scenes)",
+                `1. Run kb_setup to scan the vault`,
+                `2. Run kb_configure with: sourcesFolder="${sourcesFolder}", purpose="knowledge-base", mode="kb". Accept all other defaults from the scan.`,
+                "3. Run kb_compile to find files that need processing",
+                "4. For each file, run kb_ingest then vault_write to create wiki pages",
+                "5. When done, tell me what my brain now contains in plain English",
+                "",
+                "## How to narrate to the user",
+                '"Scanning your files..." (while running setup)',
+                '"Found X documents across Y topics. Building your brain..." (after compile)',
+                '"Processing: [filename]... done." (for each ingest, keep it brief)',
+                '"Your brain is ready! Here\'s what I built: [summary]"',
+                "",
+                "If there are more than 10 files to process, do the first 10,",
+                "then say \"I've processed 10 so far. Say **continue** and I'll do the next batch.\"",
+                "",
+                "The user does NOT know what a knowledge base is. They just want",
+                "their files organized and searchable. Talk to them accordingly.",
               ].join("\n"),
             },
           },
