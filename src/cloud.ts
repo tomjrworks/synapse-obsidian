@@ -1246,12 +1246,14 @@ export async function startCloudServer(port: number): Promise<void> {
 
     // NOW sessionId is set — store for subsequent requests
     const sid = (transport as any).sessionId as string;
-    const newKey = `${sessionToken}:${sid}`;
-    mcpSessions.set(newKey, { transport, server });
+    if (sid) {
+      const newKey = `${sessionToken}:${sid}`;
+      mcpSessions.set(newKey, { transport, server });
 
-    transport.onclose = () => {
-      mcpSessions.delete(newKey);
-    };
+      transport.onclose = () => {
+        mcpSessions.delete(newKey);
+      };
+    }
   });
 
   app.get("/mcp/:sessionToken", async (req, res) => {
