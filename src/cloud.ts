@@ -288,8 +288,16 @@ export async function startCloudServer(port: number): Promise<void> {
         <li>Adds a welcome note and starter structure</li>
         <li>Ready to use immediately with Claude</li>
       </ul>
-      <button type="submit" class="btn">Create Vault</button>
+      <button type="submit" class="btn" id="submit-btn">Create Vault</button>
     </form>
+    <script>
+      document.querySelector('form').addEventListener('submit', function() {
+        const btn = document.getElementById('submit-btn');
+        btn.textContent = 'Creating...';
+        btn.style.opacity = '0.6';
+        btn.style.pointerEvents = 'none';
+      });
+    </script>
   </div>
 </body>
 </html>`);
@@ -340,7 +348,23 @@ export async function startCloudServer(port: number): Promise<void> {
         `/select-folder?session=${sessionToken}&folderId=${folderId}&folderName=${encodeURIComponent(name)}`,
       );
     } catch (err: any) {
-      res.status(500).send(`Error creating vault: ${err.message}`);
+      console.error(`[Create Vault] Error: ${err.message}`);
+      res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Error</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>Something went wrong</h1>
+    <p class="subtitle">${err.message}</p>
+    <a href="javascript:history.back()" class="btn">Try Again</a>
+  </div>
+</body>
+</html>`);
     }
   });
 
@@ -491,12 +515,21 @@ export async function startCloudServer(port: number): Promise<void> {
       </div>
       <ul class="check-list">
         <li>Creates a new folder in your Drive</li>
-        <li>Copies files from selected folders (originals untouched)</li>
-        <li>Docs and Sheets converted to markdown</li>
-        <li>Preserves subfolder structure</li>
+        <li>Links your source folders (originals untouched)</li>
+        <li>Claude compiles everything into a wiki when you're ready</li>
       </ul>
-      <button type="submit" class="btn">Consolidate &amp; Connect</button>
+      <button type="submit" class="btn" id="submit-btn">Consolidate &amp; Connect</button>
     </form>
+    <script>
+      document.querySelector('form').addEventListener('submit', function(e) {
+        const checked = document.querySelectorAll('input[name="folderIds"]:checked');
+        if (checked.length === 0) { e.preventDefault(); alert('Select at least one folder.'); return; }
+        const btn = document.getElementById('submit-btn');
+        btn.textContent = 'Setting up...';
+        btn.style.opacity = '0.6';
+        btn.style.pointerEvents = 'none';
+      });
+    </script>
   </div>
 </body>
 </html>`);
@@ -546,75 +579,43 @@ export async function startCloudServer(port: number): Promise<void> {
 
       const vaultId = vaultFolder.data.id!;
 
-      // Copy contents from each selected folder
+      // Create a "sources" subfolder to hold shortcuts/references
+      const sourcesFolder = await drive.files.create({
+        requestBody: {
+          name: "sources",
+          parents: [vaultId],
+          mimeType: "application/vnd.google-apps.folder",
+        },
+        fields: "id",
+      });
+
+      // For each selected folder, create a shortcut in the vault
+      // and a manifest file so Claude knows where to find the content
+      const folderManifest: string[] = [];
+
       for (const sourceFolderId of ids) {
-        // Get source folder name
         const folderMeta = await drive.files.get({
           fileId: sourceFolderId,
           fields: "name",
         });
-        const subfolderName = folderMeta.data.name || "folder";
+        const folderName = folderMeta.data.name || "folder";
 
-        // Create a subfolder in the vault for this source
-        const subfolder = await drive.files.create({
+        // Create a shortcut to the original folder
+        await drive.files.create({
           requestBody: {
-            name: subfolderName,
-            parents: [vaultId],
-            mimeType: "application/vnd.google-apps.folder",
+            name: folderName,
+            parents: [sourcesFolder.data.id!],
+            mimeType: "application/vnd.google-apps.shortcut",
+            shortcutDetails: {
+              targetId: sourceFolderId,
+            },
           },
-          fields: "id",
         });
 
-        // List files in the source folder
-        const files = await drive.files.list({
-          q: `'${sourceFolderId}' in parents and trashed = false`,
-          fields: "files(id, name, mimeType)",
-          pageSize: 500,
-        });
-
-        // Copy each file
-        for (const file of files.data.files || []) {
-          if (file.mimeType === "application/vnd.google-apps.folder") continue; // skip nested folders for now
-
-          if (
-            file.mimeType === "application/vnd.google-apps.document" ||
-            file.mimeType === "application/vnd.google-apps.spreadsheet"
-          ) {
-            // Export Google Docs/Sheets as markdown/CSV then save as .md
-            const exportMime =
-              file.mimeType === "application/vnd.google-apps.document"
-                ? "text/plain"
-                : "text/csv";
-            const exported = await drive.files.export(
-              { fileId: file.id!, mimeType: exportMime },
-              { responseType: "text" },
-            );
-
-            await drive.files.create({
-              requestBody: {
-                name: `${file.name}.md`,
-                parents: [subfolder.data.id!],
-                mimeType: "text/markdown",
-              },
-              media: {
-                mimeType: "text/markdown",
-                body: `# ${file.name}\n\n${exported.data as string}`,
-              },
-            });
-          } else {
-            // Copy the file directly
-            await drive.files.copy({
-              fileId: file.id!,
-              requestBody: {
-                name: file.name!,
-                parents: [subfolder.data.id!],
-              },
-            });
-          }
-        }
+        folderManifest.push(`- [[sources/${folderName}|${folderName}]]`);
       }
 
-      // Create welcome note
+      // Create welcome note with manifest
       await drive.files.create({
         requestBody: {
           name: "Welcome to Synapse.md",
@@ -623,7 +624,7 @@ export async function startCloudServer(port: number): Promise<void> {
         },
         media: {
           mimeType: "text/markdown",
-          body: `# Welcome to ${name}\n\nThis vault was created by consolidating your existing folders. Your original folders are untouched.\n\nStart by telling Claude:\n\n> "Run a health check on my vault"\n\n> "What's in my vault?"\n\n> "Help me organize these notes"\n`,
+          body: `# Welcome to ${name}\n\nThis vault was created from ${ids.length} folder${ids.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.\n\n## Source folders\n${folderManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your source folders, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
         },
       });
 
@@ -631,7 +632,23 @@ export async function startCloudServer(port: number): Promise<void> {
         `/select-folder?session=${sessionToken}&folderId=${vaultId}&folderName=${encodeURIComponent(name)}`,
       );
     } catch (err: any) {
-      res.status(500).send(`Error consolidating: ${err.message}`);
+      console.error(`[Condense] Error: ${err.message}`);
+      res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Error</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>Something went wrong</h1>
+    <p class="subtitle">${err.message}</p>
+    <a href="javascript:history.back()" class="btn">Try Again</a>
+  </div>
+</body>
+</html>`);
     }
   });
 
