@@ -26,18 +26,21 @@ export class GoogleDriveBackend implements StorageBackend {
       throw new Error(`File not found: ${filePath}`);
     }
 
-    // Check if it's a Google Doc (needs export, not download)
-    const meta = await this.drive.files.get({
-      fileId,
-      fields: "mimeType",
-    });
+    // Google Docs need export (can't use alt:media). Skip the metadata
+    // check for .md files to avoid an extra API call per read.
+    if (!filePath.endsWith(".md")) {
+      const meta = await this.drive.files.get({
+        fileId,
+        fields: "mimeType",
+      });
 
-    if (meta.data.mimeType === "application/vnd.google-apps.document") {
-      const res = await this.drive.files.export(
-        { fileId, mimeType: "text/plain" },
-        { responseType: "text" },
-      );
-      return res.data as string;
+      if (meta.data.mimeType === "application/vnd.google-apps.document") {
+        const res = await this.drive.files.export(
+          { fileId, mimeType: "text/plain" },
+          { responseType: "text" },
+        );
+        return res.data as string;
+      }
     }
 
     const res = await this.drive.files.get(
@@ -271,14 +274,28 @@ export class GoogleDriveBackend implements StorageBackend {
         continue;
       }
 
-      // Try to find existing folder
+      // Try to find existing folder or shortcut-to-folder
       const res = await this.drive.files.list({
-        q: `'${currentId}' in parents and name = '${escapeDriveQuery(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        fields: "files(id)",
-        pageSize: 1,
+        q: `'${currentId}' in parents and name = '${escapeDriveQuery(part)}' and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false`,
+        fields: "files(id, mimeType, shortcutDetails)",
+        pageSize: 5,
       });
 
-      let folderId = res.data.files?.[0]?.id;
+      let folderId: string | undefined;
+      for (const f of res.data.files || []) {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderId = f.id || undefined;
+          break;
+        }
+        if (
+          f.mimeType === "application/vnd.google-apps.shortcut" &&
+          f.shortcutDetails?.targetMimeType ===
+            "application/vnd.google-apps.folder"
+        ) {
+          folderId = f.shortcutDetails.targetId || undefined;
+          break;
+        }
+      }
 
       if (!folderId) {
         // Create the folder
