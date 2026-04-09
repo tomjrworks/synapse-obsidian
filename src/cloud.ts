@@ -10,6 +10,7 @@ import { GoogleDriveBackend } from "./utils/google-drive.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
+import { registerPrompts } from "./prompts.js";
 
 interface UserSession {
   accessToken: string;
@@ -1257,6 +1258,7 @@ export async function startCloudServer(port: number): Promise<void> {
     registerVaultTools(server, backend);
     registerKnowledgeTools(server, backend);
     registerInitTools(server, backend);
+    registerPrompts(server, backend);
     return server;
   }
 

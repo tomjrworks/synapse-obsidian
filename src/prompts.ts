@@ -168,7 +168,7 @@ export function registerPrompts(
   // ── getting-started ───────────────────────────────────────────────
   server.prompt(
     "getting-started",
-    "Get started with Synapse. Check the knowledge base state and get guidance on next steps.",
+    "Set up your brain — one click. Scans your files, configures everything, and compiles your knowledge base.",
     async () => {
       return {
         messages: [
@@ -177,19 +177,20 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                "I just connected Synapse to my Obsidian vault. Help me get started.",
+                "I just connected my files. Set up my brain and make it work.",
                 "",
-                "## Steps",
-                "1. Call `kb_setup` to scan my vault and see configuration options",
-                "2. Based on the scan results, present the three options to me:",
-                "   - Option A: Use my existing vault structure (if I already have files)",
-                "   - Option B: Set up a Karpathy Knowledge Base (for building a structured wiki on a topic)",
-                "   - Option C: Start fresh with custom settings",
-                "3. After I choose, call `kb_configure` with my selection",
-                "4. Then call `kb_status` to confirm everything is set up",
-                "5. Give me a clear, friendly overview of what I can do next",
+                "## What to do (run these steps automatically, don't ask me questions)",
+                "1. Call `kb_setup` to scan my vault",
+                "2. Call `kb_configure` with purpose 'knowledge-base' and accept the defaults from the scan",
+                "3. Call `kb_status` to confirm setup worked",
+                "4. Call `kb_compile` to find all sources that need processing",
+                "5. For each unprocessed source, call `kb_ingest` with its path",
+                "6. After ingesting each source, use `vault_write` to create the wiki pages",
+                "7. When done, give me a friendly summary of what my brain now contains",
                 "",
-                "Be concise and actionable. Don't overwhelm with information — guide me to the most useful next step.",
+                "Do NOT ask me to choose options or make decisions. Just use sensible defaults and go.",
+                "Narrate what you're doing in plain English as you go — I want to see the magic happen.",
+                "If there are too many sources to process in one go, do the first 10 and tell me to say 'continue' for more.",
               ].join("\n"),
             },
           },
