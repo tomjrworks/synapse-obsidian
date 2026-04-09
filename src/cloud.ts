@@ -16,9 +16,6 @@ interface UserSession {
   refreshToken?: string;
   folderId: string;
   folderName: string;
-  serverFolderId: string; // tracks which folder the MCP server was created for
-  transport: StreamableHTTPServerTransport;
-  server: McpServer;
 }
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
@@ -162,9 +159,6 @@ export async function startCloudServer(port: number): Promise<void> {
         refreshToken: tokens.refresh_token || undefined,
         folderId: "",
         folderName: "",
-        serverFolderId: "",
-        transport: null as any,
-        server: null as any,
       });
 
       // Redirect to folder picker
@@ -1008,26 +1002,6 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Set up MCP server once — recreate if user went back and picked a different folder
-    if (!session.server || session.serverFolderId !== session.folderId) {
-      const backend = new GoogleDriveBackend(
-        session.accessToken,
-        session.folderId,
-      );
-
-      const server = new McpServer({
-        name: "synapse",
-        version: pkg.version,
-      });
-
-      registerVaultTools(server, backend);
-      registerKnowledgeTools(server, backend);
-      registerInitTools(server, backend);
-
-      session.server = server;
-      session.serverFolderId = session.folderId;
-    }
-
     res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -1073,7 +1047,7 @@ export async function startCloudServer(port: number): Promise<void> {
     const purpose = sanitizePurpose((req.query.purpose as string) || "");
     const session = sessions.get(sessionToken);
 
-    if (!session || !session.server) {
+    if (!session || !session.folderId) {
       res.status(400).send("Invalid session");
       return;
     }
@@ -1217,15 +1191,31 @@ export async function startCloudServer(port: number): Promise<void> {
 </html>`);
   });
 
-  // --- MCP Endpoint (per-session) ---
+  // --- MCP Endpoint (per-transport) ---
+  // McpServer only supports one transport, so we create a fresh server+transport pair per MCP session.
 
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const mcpSessions = new Map<
+    string,
+    { transport: StreamableHTTPServerTransport; server: McpServer }
+  >();
+
+  function createMcpServer(accessToken: string, folderId: string): McpServer {
+    const backend = new GoogleDriveBackend(accessToken, folderId);
+    const server = new McpServer({
+      name: "synapse",
+      version: pkg.version,
+    });
+    registerVaultTools(server, backend);
+    registerKnowledgeTools(server, backend);
+    registerInitTools(server, backend);
+    return server;
+  }
 
   app.post("/mcp/:sessionToken", async (req, res) => {
     const { sessionToken } = req.params;
     const session = sessions.get(sessionToken);
 
-    if (!session || !session.server) {
+    if (!session || !session.folderId) {
       res.status(401).json({
         error: "Invalid session. Visit /auth/google to connect your vault.",
       });
@@ -1233,42 +1223,42 @@ export async function startCloudServer(port: number): Promise<void> {
     }
 
     const mcpSessionId = (req.headers["mcp-session-id"] as string) || undefined;
-    let transport: StreamableHTTPServerTransport;
-
     const transportKey = `${sessionToken}:${mcpSessionId || "new"}`;
 
-    if (mcpSessionId && transports.has(transportKey)) {
-      transport = transports.get(transportKey)!;
-    } else {
-      transport = new StreamableHTTPServerTransport({
+    let entry = mcpSessionId ? mcpSessions.get(transportKey) : undefined;
+
+    if (!entry) {
+      const server = createMcpServer(session.accessToken, session.folderId);
+      const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
       });
 
       transport.onclose = () => {
-        transports.delete(transportKey);
+        mcpSessions.delete(transportKey);
       };
 
-      await session.server.connect(transport);
+      await server.connect(transport);
 
       const newKey = `${sessionToken}:${(transport as any).sessionId}`;
-      transports.set(newKey, transport);
+      mcpSessions.set(newKey, { transport, server });
+      entry = { transport, server };
     }
 
-    await transport.handleRequest(req, res, req.body);
+    await entry.transport.handleRequest(req, res, req.body);
   });
 
   app.get("/mcp/:sessionToken", async (req, res) => {
     const { sessionToken } = req.params;
     const mcpSessionId = req.headers["mcp-session-id"] as string;
     const transportKey = `${sessionToken}:${mcpSessionId}`;
-    const transport = transports.get(transportKey);
+    const entry = mcpSessions.get(transportKey);
 
-    if (!transport) {
+    if (!entry) {
       res.status(400).json({ error: "Invalid session" });
       return;
     }
 
-    await transport.handleRequest(req, res);
+    await entry.transport.handleRequest(req, res);
   });
 
   app.delete("/mcp/:sessionToken", async (req, res) => {
@@ -1276,10 +1266,10 @@ export async function startCloudServer(port: number): Promise<void> {
     const mcpSessionId = req.headers["mcp-session-id"] as string;
     const transportKey = `${sessionToken}:${mcpSessionId}`;
 
-    if (transports.has(transportKey)) {
-      const transport = transports.get(transportKey)!;
-      await transport.close();
-      transports.delete(transportKey);
+    const entry = mcpSessions.get(transportKey);
+    if (entry) {
+      await entry.transport.close();
+      mcpSessions.delete(transportKey);
     }
 
     res.status(200).json({ ok: true });
