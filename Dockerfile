@@ -3,7 +3,7 @@ FROM node:22-slim
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --production=false
+RUN npm ci --production=false --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src/ ./src/
