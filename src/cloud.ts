@@ -16,6 +16,7 @@ interface UserSession {
   refreshToken?: string;
   folderId: string;
   folderName: string;
+  serverFolderId: string; // tracks which folder the MCP server was created for
   transport: StreamableHTTPServerTransport;
   server: McpServer;
 }
@@ -150,6 +151,7 @@ export async function startCloudServer(port: number): Promise<void> {
         refreshToken: tokens.refresh_token || undefined,
         folderId: "",
         folderName: "",
+        serverFolderId: "",
         transport: null as any,
         server: null as any,
       });
@@ -157,7 +159,7 @@ export async function startCloudServer(port: number): Promise<void> {
       // Redirect to folder picker
       res.redirect(`/pick-folder?session=${sessionToken}`);
     } catch (err: any) {
-      res.status(500).send(`OAuth error: ${err.message}`);
+      res.status(500).type("text").send(`OAuth error: ${err.message}`);
     }
   });
 
@@ -376,7 +378,7 @@ export async function startCloudServer(port: number): Promise<void> {
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
-      const name = vaultName || "Synapse";
+      const name = vaultName || "My Brain";
 
       // Create the vault folder
       const folder = await drive.files.create({
@@ -527,7 +529,10 @@ export async function startCloudServer(port: number): Promise<void> {
 </body>
 </html>`);
     } catch (err: any) {
-      res.status(500).send(`Error listing folders: ${err.message}`);
+      res
+        .status(500)
+        .type("text")
+        .send(`Error listing folders: ${err.message}`);
     }
   });
 
@@ -629,7 +634,7 @@ export async function startCloudServer(port: number): Promise<void> {
 </body>
 </html>`);
     } catch (err: any) {
-      res.status(500).send(`Error: ${err.message}`);
+      res.status(500).type("text").send(`Error: ${err.message}`);
     }
   });
 
@@ -990,8 +995,8 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Set up MCP server once — skip if already created (back/forward navigation)
-    if (!session.server) {
+    // Set up MCP server once — recreate if user went back and picked a different folder
+    if (!session.server || session.serverFolderId !== session.folderId) {
       const backend = new GoogleDriveBackend(
         session.accessToken,
         session.folderId,
@@ -1007,6 +1012,7 @@ export async function startCloudServer(port: number): Promise<void> {
       registerInitTools(server, backend);
 
       session.server = server;
+      session.serverFolderId = session.folderId;
     }
 
     res.send(`<!DOCTYPE html>
