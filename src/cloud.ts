@@ -590,7 +590,39 @@ export async function startCloudServer(port: number): Promise<void> {
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
-      const name = vaultName || "Synapse";
+      const name = vaultName || "My Brain";
+
+      // First: scan source folders to count what's being pulled in
+      let totalFiles = 0;
+      let totalFolders = ids.length; // the source folders themselves
+      let totalMd = 0;
+      let totalDocs = 0;
+      const sourceNames: string[] = [];
+
+      for (const sourceFolderId of ids) {
+        const folderMeta = await drive.files.get({
+          fileId: sourceFolderId,
+          fields: "name",
+        });
+        sourceNames.push(folderMeta.data.name || "folder");
+
+        const files = await drive.files.list({
+          q: `'${sourceFolderId}' in parents and trashed = false`,
+          fields: "files(name, mimeType)",
+          pageSize: 500,
+        });
+
+        for (const f of files.data.files || []) {
+          if (f.mimeType === "application/vnd.google-apps.folder") {
+            totalFolders++;
+          } else {
+            totalFiles++;
+            if (f.name?.endsWith(".md")) totalMd++;
+            if (f.mimeType === "application/vnd.google-apps.document")
+              totalDocs++;
+          }
+        }
+      }
 
       // Create the vault folder
       const vaultFolder = await drive.files.create({
@@ -603,7 +635,7 @@ export async function startCloudServer(port: number): Promise<void> {
 
       const vaultId = vaultFolder.data.id!;
 
-      // Create a "sources" subfolder to hold shortcuts/references
+      // Create a "sources" subfolder to hold shortcuts
       const sourcesFolder = await drive.files.create({
         requestBody: {
           name: "sources",
@@ -613,33 +645,26 @@ export async function startCloudServer(port: number): Promise<void> {
         fields: "id",
       });
 
-      // For each selected folder, create a shortcut in the vault
-      // and a manifest file so Claude knows where to find the content
+      // Create shortcuts to each source folder
       const folderManifest: string[] = [];
 
-      for (const sourceFolderId of ids) {
-        const folderMeta = await drive.files.get({
-          fileId: sourceFolderId,
-          fields: "name",
-        });
-        const folderName = folderMeta.data.name || "folder";
-
-        // Create a shortcut to the original folder
+      for (let i = 0; i < ids.length; i++) {
         await drive.files.create({
           requestBody: {
-            name: folderName,
+            name: sourceNames[i],
             parents: [sourcesFolder.data.id!],
             mimeType: "application/vnd.google-apps.shortcut",
             shortcutDetails: {
-              targetId: sourceFolderId,
+              targetId: ids[i],
             },
           },
         });
-
-        folderManifest.push(`- [[sources/${folderName}|${folderName}]]`);
+        folderManifest.push(
+          `- [[sources/${sourceNames[i]}|${sourceNames[i]}]]`,
+        );
       }
 
-      // Create welcome note with manifest
+      // Create welcome note
       await drive.files.create({
         requestBody: {
           name: "Welcome to Synapse.md",
@@ -652,8 +677,12 @@ export async function startCloudServer(port: number): Promise<void> {
         },
       });
 
+      // Store folder and redirect — pass source stats via query params
+      session.folderId = vaultId;
+      session.folderName = name;
+
       res.redirect(
-        `/select-folder?session=${sessionToken}&folderId=${vaultId}&folderName=${encodeURIComponent(name)}`,
+        `/vault-purpose?session=${sessionToken}&source=condense&files=${totalFiles}&folders=${totalFolders}&md=${totalMd}&docs=${totalDocs}&sourceNames=${encodeURIComponent(sourceNames.join(","))}`,
       );
     } catch (err: any) {
       console.error(`[Condense] Error: ${err.message}`);
@@ -707,6 +736,19 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
+    // Forward condense stats if they exist
+    const source = (req.query.source as string) || "";
+    const files = (req.query.files as string) || "";
+    const folders = (req.query.folders as string) || "";
+    const md = (req.query.md as string) || "";
+    const docs = (req.query.docs as string) || "";
+    const sourceNames = (req.query.sourceNames as string) || "";
+
+    const extra =
+      source === "condense"
+        ? `&source=condense&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${encodeURIComponent(sourceNames)}`
+        : "";
+
     res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -720,22 +762,22 @@ export async function startCloudServer(port: number): Promise<void> {
     <h1>What will you use this for?</h1>
     <p class="subtitle">This helps us tailor your experience. You can always change this later.</p>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=research" class="option-card">
+    <a href="/vault-preview?session=${sessionToken}&purpose=research${extra}" class="option-card">
       <h3>Research</h3>
       <p>Collecting articles, papers, and notes on a topic. Building expertise over time.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=business" class="option-card">
+    <a href="/vault-preview?session=${sessionToken}&purpose=business${extra}" class="option-card">
       <h3>Business</h3>
       <p>Company knowledge, processes, client notes, competitive intel. Your team's brain.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=personal" class="option-card">
+    <a href="/vault-preview?session=${sessionToken}&purpose=personal${extra}" class="option-card">
       <h3>Personal</h3>
       <p>Life organization — ideas, journals, bookmarks, things you want to remember.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=academic" class="option-card">
+    <a href="/vault-preview?session=${sessionToken}&purpose=academic${extra}" class="option-card">
       <h3>Academic</h3>
       <p>Coursework, lecture notes, research papers, thesis materials.</p>
     </a>
@@ -748,6 +790,7 @@ export async function startCloudServer(port: number): Promise<void> {
   app.get("/vault-preview", async (req, res) => {
     const sessionToken = req.query.session as string;
     const purpose = (req.query.purpose as string) || "personal";
+    const source = req.query.source as string; // "condense" if from consolidation
     const session = sessions.get(sessionToken);
 
     if (!session || !session.folderId) {
@@ -755,69 +798,84 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Scan the folder to show stats
-    const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ access_token: session.accessToken });
-    const drive = google.drive({ version: "v3", auth: oauth2Client });
-
     let fileCount = 0;
     let folderCount = 0;
     let mdCount = 0;
     let docCount = 0;
+    let sourceNames: string[] = [];
+    let isCondense = source === "condense";
 
-    try {
-      const result = await drive.files.list({
-        q: `'${session.folderId}' in parents and trashed = false`,
-        fields: "files(id, name, mimeType)",
-        pageSize: 500,
-      });
+    if (isCondense) {
+      // Stats were passed from the consolidation step
+      fileCount = parseInt(req.query.files as string) || 0;
+      folderCount = parseInt(req.query.folders as string) || 0;
+      mdCount = parseInt(req.query.md as string) || 0;
+      docCount = parseInt(req.query.docs as string) || 0;
+      sourceNames = ((req.query.sourceNames as string) || "")
+        .split(",")
+        .filter(Boolean);
+    } else {
+      // Scan the selected folder directly
+      const oauth2Client = getOAuth2Client();
+      oauth2Client.setCredentials({ access_token: session.accessToken });
+      const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-      const files = result.data.files || [];
-      for (const f of files) {
-        if (f.mimeType === "application/vnd.google-apps.folder") {
-          folderCount++;
-        } else {
-          fileCount++;
-          if (f.name?.endsWith(".md")) mdCount++;
-          if (f.mimeType === "application/vnd.google-apps.document") docCount++;
+      try {
+        const result = await drive.files.list({
+          q: `'${session.folderId}' in parents and trashed = false`,
+          fields: "files(id, name, mimeType)",
+          pageSize: 500,
+        });
+
+        const files = result.data.files || [];
+        for (const f of files) {
+          if (f.mimeType === "application/vnd.google-apps.folder") {
+            folderCount++;
+          } else {
+            fileCount++;
+            if (f.name?.endsWith(".md")) mdCount++;
+            if (f.mimeType === "application/vnd.google-apps.document")
+              docCount++;
+          }
         }
+      } catch {
+        // If scan fails, still let them continue
       }
-    } catch {
-      // If scan fails, still let them continue
     }
 
     const hasContent = fileCount > 0 || folderCount > 0;
 
+    const statCard = (num: number, label: string) =>
+      `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
+        <div style="font-size:28px;font-weight:700;color:#1A5C32;">${num}</div>
+        <div style="font-size:13px;color:#8B9490;">${label}</div>
+      </div>`;
+
     const statsHtml = hasContent
       ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:24px;">
-          <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${fileCount}</div>
-            <div style="font-size:13px;color:#8B9490;">files</div>
-          </div>
-          <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${folderCount}</div>
-            <div style="font-size:13px;color:#8B9490;">folders</div>
-          </div>
-          ${
-            mdCount > 0
-              ? `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${mdCount}</div>
-            <div style="font-size:13px;color:#8B9490;">markdown files</div>
-          </div>`
-              : ""
-          }
-          ${
-            docCount > 0
-              ? `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${docCount}</div>
-            <div style="font-size:13px;color:#8B9490;">Google Docs</div>
-          </div>`
-              : ""
-          }
+          ${statCard(fileCount, "files")}
+          ${statCard(folderCount, "folders")}
+          ${mdCount > 0 ? statCard(mdCount, "markdown files") : ""}
+          ${docCount > 0 ? statCard(docCount, "Google Docs") : ""}
         </div>`
       : `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:20px;margin-bottom:24px;text-align:center;">
           <p style="font-size:15px;color:#8B9490;">Empty folder — your brain starts fresh. That's perfect.</p>
         </div>`;
+
+    const sourceList =
+      isCondense && sourceNames.length > 0
+        ? `<div style="margin-bottom:20px;">
+          <p style="font-size:13px;color:#8B9490;margin-bottom:8px;">Pulling from:</p>
+          ${sourceNames.map((n) => `<span style="display:inline-block;font-size:13px;padding:4px 10px;background:rgba(26,92,50,0.06);border-radius:20px;color:#1A5C32;margin:0 4px 4px 0;">${n}</span>`).join("")}
+        </div>`
+        : "";
+
+    const title = isCondense ? session.folderName : session.folderName;
+    const subtitle = isCondense
+      ? `We found ${fileCount} files across ${sourceNames.length} folder${sourceNames.length > 1 ? "s" : ""}. Claude will compile these into your brain.`
+      : hasContent
+        ? "Here's what we found in your folder."
+        : "A blank canvas for your knowledge.";
 
     res.send(`<!DOCTYPE html>
 <html>
@@ -829,9 +887,10 @@ export async function startCloudServer(port: number): Promise<void> {
 <body>
   <div class="container">
     ${pageHeader}
-    <h1>${session.folderName}</h1>
-    <p class="subtitle">${hasContent ? "Here's what we found in your folder." : "A blank canvas for your knowledge."}</p>
+    <h1>${title}</h1>
+    <p class="subtitle">${subtitle}</p>
 
+    ${sourceList}
     ${statsHtml}
 
     <a href="/connect?session=${sessionToken}&purpose=${purpose}" class="btn" style="display:block;text-align:center;">
