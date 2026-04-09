@@ -578,7 +578,7 @@ export async function startCloudServer(port: number): Promise<void> {
           return `<label class="folder-check">
             <input type="checkbox" name="itemIds" value="${f.id}">
             <span>${icon} ${escapeHtml(f.name || "")}</span>
-            <span style="font-size:12px;color:#8B9490;">${isFolder ? "folder" : isDoc ? "doc" : (f.name || "").split(".").pop()}</span>
+            <span style="font-size:12px;color:#8B9490;">${isFolder ? "folder" : isDoc ? "doc" : (f.name || "").includes(".") ? (f.name || "").split(".").pop() : "file"}</span>
           </label>`;
         })
         .join("\n");
