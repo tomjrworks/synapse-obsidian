@@ -26,6 +26,20 @@ export class GoogleDriveBackend implements StorageBackend {
       throw new Error(`File not found: ${filePath}`);
     }
 
+    // Check if it's a Google Doc (needs export, not download)
+    const meta = await this.drive.files.get({
+      fileId,
+      fields: "mimeType",
+    });
+
+    if (meta.data.mimeType === "application/vnd.google-apps.document") {
+      const res = await this.drive.files.export(
+        { fileId, mimeType: "text/plain" },
+        { responseType: "text" },
+      );
+      return res.data as string;
+    }
+
     const res = await this.drive.files.get(
       { fileId, alt: "media" },
       { responseType: "text" },
@@ -114,7 +128,7 @@ export class GoogleDriveBackend implements StorageBackend {
     do {
       const res = await this.drive.files.list({
         q: `'${folderId}' in parents and trashed = false`,
-        fields: "nextPageToken, files(id, name, mimeType)",
+        fields: "nextPageToken, files(id, name, mimeType, shortcutDetails)",
         pageSize: 1000,
         pageToken,
       });
@@ -126,15 +140,28 @@ export class GoogleDriveBackend implements StorageBackend {
 
         const relativePath = prefix ? `${prefix}/${file.name}` : file.name;
 
-        if (file.mimeType === "application/vnd.google-apps.folder") {
-          if (recursive && file.id) {
-            // Cache this folder ID
-            this.folderIdCache.set(relativePath, file.id);
+        // Resolve shortcuts to their targets
+        let mimeType = file.mimeType;
+        let fileId = file.id;
+        if (
+          mimeType === "application/vnd.google-apps.shortcut" &&
+          file.shortcutDetails
+        ) {
+          mimeType = file.shortcutDetails.targetMimeType || "";
+          fileId = file.shortcutDetails.targetId || file.id;
+        }
+
+        if (mimeType === "application/vnd.google-apps.folder") {
+          if (recursive && fileId) {
+            this.folderIdCache.set(relativePath, fileId);
             results.push(
-              ...(await this.listFilesRecursive(file.id, relativePath, true)),
+              ...(await this.listFilesRecursive(fileId, relativePath, true)),
             );
           }
         } else if (file.name.endsWith(".md")) {
+          results.push(relativePath);
+        } else if (mimeType === "application/vnd.google-apps.document") {
+          // Include Google Docs (users can compile these)
           results.push(relativePath);
         }
       }
@@ -158,11 +185,22 @@ export class GoogleDriveBackend implements StorageBackend {
 
     const res = await this.drive.files.list({
       q: `'${parentId}' in parents and name = '${escapeDriveQuery(fileName)}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
-      fields: "files(id)",
+      fields: "files(id, mimeType, shortcutDetails)",
       pageSize: 1,
     });
 
-    return res.data.files?.[0]?.id || null;
+    const file = res.data.files?.[0];
+    if (!file) return null;
+
+    // Resolve shortcut to target file
+    if (
+      file.mimeType === "application/vnd.google-apps.shortcut" &&
+      file.shortcutDetails?.targetId
+    ) {
+      return file.shortcutDetails.targetId;
+    }
+
+    return file.id || null;
   }
 
   private async resolveFolderId(dirPath: string): Promise<string | null> {
@@ -186,13 +224,28 @@ export class GoogleDriveBackend implements StorageBackend {
         continue;
       }
 
+      // Look for folders OR shortcuts (which might point to folders)
       const res = await this.drive.files.list({
-        q: `'${currentId}' in parents and name = '${escapeDriveQuery(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        fields: "files(id)",
-        pageSize: 1,
+        q: `'${currentId}' in parents and name = '${escapeDriveQuery(part)}' and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false`,
+        fields: "files(id, mimeType, shortcutDetails)",
+        pageSize: 5,
       });
 
-      const folderId = res.data.files?.[0]?.id;
+      let folderId: string | undefined;
+      for (const f of res.data.files || []) {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderId = f.id || undefined;
+          break;
+        }
+        if (
+          f.mimeType === "application/vnd.google-apps.shortcut" &&
+          f.shortcutDetails?.targetMimeType ===
+            "application/vnd.google-apps.folder"
+        ) {
+          folderId = f.shortcutDetails.targetId || undefined;
+          break;
+        }
+      }
       if (!folderId) return null;
 
       this.folderIdCache.set(currentPath, folderId);
