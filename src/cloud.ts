@@ -33,6 +33,7 @@ function getOAuth2Client() {
 }
 
 export async function startCloudServer(port: number): Promise<void> {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
   const app = express();
 
   // CORS
@@ -1198,17 +1199,20 @@ export async function startCloudServer(port: number): Promise<void> {
 
   // --- Health & Landing ---
 
+  const pkg = JSON.parse(
+    readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
+  );
+
   app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
       server: "synapse-cloud",
-      version: "0.1.0",
+      version: pkg.version,
       activeSessions: sessions.size,
     });
   });
 
   // Serve polished landing page from landing/index.html
-  const __dirname = dirname(fileURLToPath(import.meta.url));
   const landingHtml = readFileSync(
     resolve(__dirname, "../landing/index.html"),
     "utf-8",
