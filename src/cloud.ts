@@ -43,6 +43,9 @@ function escapeHtml(str: string): string {
 
 export async function startCloudServer(port: number): Promise<void> {
   const __dirname = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(
+    readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
+  );
   const app = express();
 
   // CORS
@@ -987,22 +990,24 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // NOW set up the MCP server
-    const backend = new GoogleDriveBackend(
-      session.accessToken,
-      session.folderId,
-    );
+    // Set up MCP server once — skip if already created (back/forward navigation)
+    if (!session.server) {
+      const backend = new GoogleDriveBackend(
+        session.accessToken,
+        session.folderId,
+      );
 
-    const server = new McpServer({
-      name: "synapse",
-      version: "0.2.4",
-    });
+      const server = new McpServer({
+        name: "synapse",
+        version: pkg.version,
+      });
 
-    registerVaultTools(server, backend);
-    registerKnowledgeTools(server, backend);
-    registerInitTools(server, backend);
+      registerVaultTools(server, backend);
+      registerKnowledgeTools(server, backend);
+      registerInitTools(server, backend);
 
-    session.server = server;
+      session.server = server;
+    }
 
     res.send(`<!DOCTYPE html>
 <html>
@@ -1262,10 +1267,6 @@ export async function startCloudServer(port: number): Promise<void> {
   });
 
   // --- Health & Landing ---
-
-  const pkg = JSON.parse(
-    readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
-  );
 
   app.get("/health", (_req, res) => {
     res.json({
