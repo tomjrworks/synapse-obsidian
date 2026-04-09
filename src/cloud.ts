@@ -676,7 +676,7 @@ export async function startCloudServer(port: number): Promise<void> {
     }
   });
 
-  // Step 4: User selects a folder
+  // Step 4: Store folder selection, move to purpose step
   app.get("/select-folder", async (req, res) => {
     const sessionToken = req.query.session as string;
     const folderId = req.query.folderId as string;
@@ -690,29 +690,294 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Set up the MCP server with Google Drive backend
-    const backend = new GoogleDriveBackend(session.accessToken, folderId);
+    // Store folder info on session (don't set up MCP yet)
+    session.folderId = folderId;
+    session.folderName = folderName;
+
+    res.redirect(`/vault-purpose?session=${sessionToken}`);
+  });
+
+  // Step 5: What's this brain for?
+  app.get("/vault-purpose", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const session = sessions.get(sessionToken);
+
+    if (!session || !session.folderId) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — What's this for?</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>What will you use this for?</h1>
+    <p class="subtitle">This helps us tailor your experience. You can always change this later.</p>
+
+    <a href="/vault-preview?session=${sessionToken}&purpose=research" class="option-card">
+      <h3>Research</h3>
+      <p>Collecting articles, papers, and notes on a topic. Building expertise over time.</p>
+    </a>
+
+    <a href="/vault-preview?session=${sessionToken}&purpose=business" class="option-card">
+      <h3>Business</h3>
+      <p>Company knowledge, processes, client notes, competitive intel. Your team's brain.</p>
+    </a>
+
+    <a href="/vault-preview?session=${sessionToken}&purpose=personal" class="option-card">
+      <h3>Personal</h3>
+      <p>Life organization — ideas, journals, bookmarks, things you want to remember.</p>
+    </a>
+
+    <a href="/vault-preview?session=${sessionToken}&purpose=academic" class="option-card">
+      <h3>Academic</h3>
+      <p>Coursework, lecture notes, research papers, thesis materials.</p>
+    </a>
+  </div>
+</body>
+</html>`);
+  });
+
+  // Step 6: Vault scan preview
+  app.get("/vault-preview", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const purpose = (req.query.purpose as string) || "personal";
+    const session = sessions.get(sessionToken);
+
+    if (!session || !session.folderId) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    // Scan the folder to show stats
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: session.accessToken });
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
+
+    let fileCount = 0;
+    let folderCount = 0;
+    let mdCount = 0;
+    let docCount = 0;
+
+    try {
+      const result = await drive.files.list({
+        q: `'${session.folderId}' in parents and trashed = false`,
+        fields: "files(id, name, mimeType)",
+        pageSize: 500,
+      });
+
+      const files = result.data.files || [];
+      for (const f of files) {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderCount++;
+        } else {
+          fileCount++;
+          if (f.name?.endsWith(".md")) mdCount++;
+          if (f.mimeType === "application/vnd.google-apps.document") docCount++;
+        }
+      }
+    } catch {
+      // If scan fails, still let them continue
+    }
+
+    const hasContent = fileCount > 0 || folderCount > 0;
+
+    const statsHtml = hasContent
+      ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:24px;">
+          <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${fileCount}</div>
+            <div style="font-size:13px;color:#8B9490;">files</div>
+          </div>
+          <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${folderCount}</div>
+            <div style="font-size:13px;color:#8B9490;">folders</div>
+          </div>
+          ${
+            mdCount > 0
+              ? `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${mdCount}</div>
+            <div style="font-size:13px;color:#8B9490;">markdown files</div>
+          </div>`
+              : ""
+          }
+          ${
+            docCount > 0
+              ? `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:700;color:#1A5C32;">${docCount}</div>
+            <div style="font-size:13px;color:#8B9490;">Google Docs</div>
+          </div>`
+              : ""
+          }
+        </div>`
+      : `<div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:20px;margin-bottom:24px;text-align:center;">
+          <p style="font-size:15px;color:#8B9490;">Empty folder — your brain starts fresh. That's perfect.</p>
+        </div>`;
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Your Vault</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>${session.folderName}</h1>
+    <p class="subtitle">${hasContent ? "Here's what we found in your folder." : "A blank canvas for your knowledge."}</p>
+
+    ${statsHtml}
+
+    <a href="/connect?session=${sessionToken}&purpose=${purpose}" class="btn" style="display:block;text-align:center;">
+      ${hasContent ? "Connect this vault" : "Get started"}
+    </a>
+  </div>
+</body>
+</html>`);
+  });
+
+  // Step 7: Which AI client?
+  app.get("/connect", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const purpose = (req.query.purpose as string) || "personal";
+    const session = sessions.get(sessionToken);
+
+    if (!session || !session.folderId) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    // NOW set up the MCP server
+    const backend = new GoogleDriveBackend(
+      session.accessToken,
+      session.folderId,
+    );
 
     const server = new McpServer({
       name: "synapse",
-      version: "0.1.0",
+      version: "0.2.4",
     });
 
     registerVaultTools(server, backend);
     registerKnowledgeTools(server, backend);
     registerInitTools(server, backend);
 
-    // Update session
-    session.folderId = folderId;
-    session.folderName = folderName;
     session.server = server;
-
-    const mcpUrl = `${BASE_URL}/mcp/${sessionToken}`;
 
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Connected!</title>
+  <title>Synapse — Connect Your AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>Almost there</h1>
+    <p class="subtitle">Which AI do you use? We'll show you exactly how to connect.</p>
+
+    <a href="/setup-complete?session=${sessionToken}&client=claude&purpose=${purpose}" class="option-card">
+      <h3>Claude.ai</h3>
+      <p>Anthropic's web app — works on desktop and mobile.</p>
+    </a>
+
+    <a href="/setup-complete?session=${sessionToken}&client=chatgpt&purpose=${purpose}" class="option-card">
+      <h3>ChatGPT</h3>
+      <p>OpenAI's web app with MCP integration support.</p>
+    </a>
+
+    <a href="/setup-complete?session=${sessionToken}&client=cursor&purpose=${purpose}" class="option-card">
+      <h3>Cursor / Windsurf</h3>
+      <p>AI-powered code editors with MCP support.</p>
+    </a>
+
+    <a href="/setup-complete?session=${sessionToken}&client=other&purpose=${purpose}" class="option-card">
+      <h3>Other MCP client</h3>
+      <p>Any app that supports the Model Context Protocol.</p>
+    </a>
+  </div>
+</body>
+</html>`);
+  });
+
+  // Step 8: Tailored success page
+  app.get("/setup-complete", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const client = (req.query.client as string) || "claude";
+    const purpose = (req.query.purpose as string) || "personal";
+    const session = sessions.get(sessionToken);
+
+    if (!session || !session.server) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    const mcpUrl = `${BASE_URL}/mcp/${sessionToken}`;
+
+    const clientInstructions: Record<string, string> = {
+      claude: `
+        <ol class="steps">
+          <li>Go to <strong>claude.ai</strong></li>
+          <li>Click your <strong>name</strong> (bottom-left) &rarr; <strong>Settings</strong></li>
+          <li>Click <strong>Integrations</strong> in the sidebar</li>
+          <li>Click <strong>"Add Custom Integration"</strong></li>
+          <li>Paste your MCP URL and click <strong>Connect</strong></li>
+        </ol>`,
+      chatgpt: `
+        <ol class="steps">
+          <li>Go to <strong>chatgpt.com</strong></li>
+          <li>Click your <strong>name</strong> (bottom-left) &rarr; <strong>Settings</strong></li>
+          <li>Go to <strong>Connected apps</strong> or <strong>Plugins</strong></li>
+          <li>Add a <strong>custom MCP integration</strong></li>
+          <li>Paste your MCP URL and click <strong>Save</strong></li>
+        </ol>`,
+      cursor: `
+        <ol class="steps">
+          <li>Open <strong>Settings</strong> (Cmd/Ctrl + ,)</li>
+          <li>Go to <strong>MCP Servers</strong></li>
+          <li>Click <strong>"Add Server"</strong></li>
+          <li>Choose <strong>"Streamable HTTP"</strong> as the transport</li>
+          <li>Paste your MCP URL and save</li>
+        </ol>`,
+      other: `
+        <ol class="steps">
+          <li>Open your MCP client's <strong>settings</strong></li>
+          <li>Find the <strong>MCP integrations</strong> or <strong>server</strong> section</li>
+          <li>Add a new <strong>Streamable HTTP</strong> server</li>
+          <li>Paste your MCP URL</li>
+        </ol>`,
+    };
+
+    const purposePrompts: Record<string, string> = {
+      research: `
+        <div class="prompt-card"><p class="prompt-label">Build your research wiki:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Save a paper or article:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Query across everything:</p><p class="prompt-text">"What does my research say about [topic]?"</p></div>`,
+      business: `
+        <div class="prompt-card"><p class="prompt-label">Organize your company knowledge:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Save competitive intel:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Get instant answers:</p><p class="prompt-text">"What do we know about [client/competitor/process]?"</p></div>`,
+      personal: `
+        <div class="prompt-card"><p class="prompt-label">Build your personal wiki:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Save something interesting:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Search your brain:</p><p class="prompt-text">"What do my notes say about [topic]?"</p></div>`,
+      academic: `
+        <div class="prompt-card"><p class="prompt-label">Organize your course materials:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Save lecture notes or papers:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Study across your notes:</p><p class="prompt-text">"Summarize what I know about [topic]"</p></div>`,
+    };
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — You're Connected!</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}
     .url-box {
@@ -726,6 +991,7 @@ export async function startCloudServer(port: number): Promise<void> {
       cursor: pointer;
       color: rgba(242,240,235,0.7);
       transition: all 0.15s;
+      position: relative;
     }
     .url-box:hover { background: #161b18; }
     .steps { list-style: none; counter-reset: step; padding: 0; }
@@ -740,18 +1006,22 @@ export async function startCloudServer(port: number): Promise<void> {
     }
     .steps li::before {
       content: counter(step);
-      width: 24px;
-      height: 24px;
+      width: 24px; height: 24px;
       background: rgba(26,92,50,0.1);
       color: #1A5C32;
       border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
-      font-weight: 600;
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 600; flex-shrink: 0;
     }
+    .prompt-card {
+      background: white;
+      border: 1px solid rgba(61,53,41,0.08);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 8px;
+    }
+    .prompt-label { font-size: 13px; color: #8B9490; margin-bottom: 4px; }
+    .prompt-text { font-size: 15px; font-style: italic; color: #3D3529; }
   </style>
   <script>
     function copyUrl() {
@@ -765,38 +1035,23 @@ export async function startCloudServer(port: number): Promise<void> {
 <body>
   <div class="container">
     ${pageHeader}
-    <h1>Connected to "${folderName}"</h1>
-    <p class="subtitle">Your brain is live. Copy the URL below and add it to Claude.ai to start using it.</p>
+    <h1>You're connected</h1>
+    <p class="subtitle">"${session.folderName}" is live. Here's how to start using it.</p>
 
+    <h3 style="font-size:14px;font-family:monospace;text-transform:uppercase;letter-spacing:0.1em;color:#8B9490;margin-bottom:8px;">Step 1 — Copy your URL</h3>
     <div class="url-box" onclick="copyUrl()">
       ${mcpUrl}
       <span id="copied" style="display:none; color: #2ECC71; margin-left: 8px;">Copied!</span>
     </div>
 
-    <h3 style="font-size:15px;margin-top:28px;margin-bottom:12px;">Connect to Claude.ai</h3>
-    <ol class="steps">
-      <li>Go to <strong>Claude.ai</strong></li>
-      <li>Open <strong>Settings</strong> &rarr; <strong>Integrations</strong></li>
-      <li>Click <strong>"Add Custom Integration"</strong></li>
-      <li>Paste the URL above</li>
-    </ol>
+    <h3 style="font-size:14px;font-family:monospace;text-transform:uppercase;letter-spacing:0.1em;color:#8B9490;margin-top:28px;margin-bottom:8px;">Step 2 — Add to ${client === "claude" ? "Claude" : client === "chatgpt" ? "ChatGPT" : client === "cursor" ? "Cursor" : "your client"}</h3>
+    ${clientInstructions[client] || clientInstructions.other}
 
-    <h3 style="font-size:15px;margin-top:28px;margin-bottom:12px;">Then tell Claude</h3>
-    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
-      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">First time? Build your brain:</p>
-      <p style="font-size:15px;font-style:italic;">"Compile my knowledge base"</p>
-    </div>
-    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
-      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">Save something from your phone:</p>
-      <p style="font-size:15px;font-style:italic;">"Save this article: [paste any URL]"</p>
-    </div>
-    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
-      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">Ask across everything you've saved:</p>
-      <p style="font-size:15px;font-style:italic;">"What do my notes say about [topic]?"</p>
-    </div>
+    <h3 style="font-size:14px;font-family:monospace;text-transform:uppercase;letter-spacing:0.1em;color:#8B9490;margin-top:28px;margin-bottom:8px;">Step 3 — Try these</h3>
+    ${purposePrompts[purpose] || purposePrompts.personal}
 
     <p class="note">
-      "Compile my knowledge base" turns your raw files into a wiki — summaries, concept pages, and entity pages, all cross-linked. Every time you compile, the brain gets smarter.
+      "Compile my knowledge base" is the magic one — it turns your raw files into a wiki with summaries, concept pages, and cross-linked notes. Every compile makes the brain smarter.
     </p>
   </div>
 </body>
