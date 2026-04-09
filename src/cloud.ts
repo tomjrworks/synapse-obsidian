@@ -33,6 +33,17 @@ function getOAuth2Client() {
   );
 }
 
+const VALID_PURPOSES = ["research", "business", "personal", "academic"];
+const VALID_CLIENTS = ["claude", "chatgpt", "cursor", "other"];
+
+function sanitizePurpose(val: string): string {
+  return VALID_PURPOSES.includes(val) ? val : "personal";
+}
+
+function sanitizeClient(val: string): string {
+  return VALID_CLIENTS.includes(val) ? val : "other";
+}
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -346,7 +357,7 @@ export async function startCloudServer(port: number): Promise<void> {
       </div>
       <ul class="check-list">
         <li>Creates a folder in your Drive root</li>
-        <li>Adds a welcome note and starter structure</li>
+        <li>Adds a welcome note to get you started</li>
         <li>Ready to use immediately with Claude</li>
       </ul>
       <button type="submit" class="btn" id="submit-btn">Create Vault</button>
@@ -814,17 +825,19 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Forward condense stats if they exist
+    // Forward condense stats if they exist — parseInt to prevent injection via query params
     const source = (req.query.source as string) || "";
-    const files = (req.query.files as string) || "";
-    const folders = (req.query.folders as string) || "";
-    const md = (req.query.md as string) || "";
-    const docs = (req.query.docs as string) || "";
-    const sourceNames = (req.query.sourceNames as string) || "";
+    const files = parseInt((req.query.files as string) || "0") || 0;
+    const folders = parseInt((req.query.folders as string) || "0") || 0;
+    const md = parseInt((req.query.md as string) || "0") || 0;
+    const docs = parseInt((req.query.docs as string) || "0") || 0;
+    const sourceNames = encodeURIComponent(
+      (req.query.sourceNames as string) || "",
+    );
 
     const extra =
       source === "condense"
-        ? `&source=condense&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${encodeURIComponent(sourceNames)}`
+        ? `&source=condense&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${sourceNames}`
         : "";
 
     // New vaults skip preview (nothing to show) — go straight to client picker
@@ -871,7 +884,7 @@ export async function startCloudServer(port: number): Promise<void> {
   // Step 6: Vault scan preview
   app.get("/vault-preview", async (req, res) => {
     const sessionToken = req.query.session as string;
-    const purpose = (req.query.purpose as string) || "personal";
+    const purpose = sanitizePurpose((req.query.purpose as string) || "");
     const source = req.query.source as string; // "condense" if from consolidation
     const session = sessions.get(sessionToken);
 
@@ -987,7 +1000,7 @@ export async function startCloudServer(port: number): Promise<void> {
   // Step 7: Which AI client?
   app.get("/connect", async (req, res) => {
     const sessionToken = req.query.session as string;
-    const purpose = (req.query.purpose as string) || "personal";
+    const purpose = sanitizePurpose((req.query.purpose as string) || "");
     const session = sessions.get(sessionToken);
 
     if (!session || !session.folderId) {
@@ -1056,8 +1069,8 @@ export async function startCloudServer(port: number): Promise<void> {
   // Step 8: Tailored success page
   app.get("/setup-complete", async (req, res) => {
     const sessionToken = req.query.session as string;
-    const client = (req.query.client as string) || "claude";
-    const purpose = (req.query.purpose as string) || "personal";
+    const client = sanitizeClient((req.query.client as string) || "");
+    const purpose = sanitizePurpose((req.query.purpose as string) || "");
     const session = sessions.get(sessionToken);
 
     if (!session || !session.server) {
