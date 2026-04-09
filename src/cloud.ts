@@ -286,7 +286,7 @@ export async function startCloudServer(port: number): Promise<void> {
     <a href="/create-vault?session=${sessionToken}" class="option-card">
       <span class="tag tag-quick">Quick start</span>
       <h3>Create a new vault</h3>
-      <p>Start fresh. We'll create a "Synapse" folder in your Drive with a ready-to-use structure.</p>
+      <p>Start fresh. We'll create a folder in your Drive with a welcome note — ready to use immediately.</p>
     </a>
 
     <a href="/browse-folders?session=${sessionToken}" class="option-card">
@@ -591,7 +591,7 @@ export async function startCloudServer(port: number): Promise<void> {
     ${pageHeader}
     <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
     <h1>Consolidate into one vault</h1>
-    <p class="subtitle">Select the folders you want to combine. We'll copy their contents into a new vault folder — nothing gets deleted from the originals.</p>
+    <p class="subtitle">Select the folders you want to combine. We'll link them into one vault — your originals stay exactly where they are.</p>
 
     <form method="POST" action="/condense-folders">
       <input type="hidden" name="session" value="${sessionToken}">
