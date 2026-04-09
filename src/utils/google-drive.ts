@@ -12,12 +12,21 @@ export class GoogleDriveBackend implements StorageBackend {
   // Cache folder IDs to avoid repeated lookups
   private folderIdCache = new Map<string, string>();
 
-  constructor(accessToken: string, rootFolderId: string) {
-    const auth = new google.auth.OAuth2();
-    auth.setCredentials({ access_token: accessToken });
+  constructor(opts: {
+    accessToken: string;
+    refreshToken?: string;
+    clientId?: string;
+    clientSecret?: string;
+    rootFolderId: string;
+  }) {
+    const auth = new google.auth.OAuth2(opts.clientId, opts.clientSecret);
+    auth.setCredentials({
+      access_token: opts.accessToken,
+      refresh_token: opts.refreshToken,
+    });
     this.drive = google.drive({ version: "v3", auth });
-    this.rootFolderId = rootFolderId;
-    this.folderIdCache.set("", rootFolderId);
+    this.rootFolderId = opts.rootFolderId;
+    this.folderIdCache.set("", opts.rootFolderId);
   }
 
   async readFile(filePath: string): Promise<string> {
@@ -97,7 +106,12 @@ export class GoogleDriveBackend implements StorageBackend {
 
     if (!folderId) return [];
 
-    return this.listFilesRecursive(folderId, subPath || "", recursive);
+    return this.listFilesRecursive(
+      folderId,
+      subPath || "",
+      recursive,
+      new Set(),
+    );
   }
 
   async exists(filePath: string): Promise<boolean> {
@@ -124,7 +138,12 @@ export class GoogleDriveBackend implements StorageBackend {
     folderId: string,
     prefix: string,
     recursive: boolean,
+    visited: Set<string>,
   ): Promise<string[]> {
+    // Cycle detection — shortcuts can create loops
+    if (visited.has(folderId)) return [];
+    visited.add(folderId);
+
     const results: string[] = [];
 
     let pageToken: string | undefined;
@@ -158,7 +177,12 @@ export class GoogleDriveBackend implements StorageBackend {
           if (recursive && fileId) {
             this.folderIdCache.set(relativePath, fileId);
             results.push(
-              ...(await this.listFilesRecursive(fileId, relativePath, true)),
+              ...(await this.listFilesRecursive(
+                fileId,
+                relativePath,
+                true,
+                visited,
+              )),
             );
           }
         } else if (file.name.endsWith(".md")) {

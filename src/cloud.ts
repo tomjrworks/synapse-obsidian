@@ -1199,8 +1199,18 @@ export async function startCloudServer(port: number): Promise<void> {
     { transport: StreamableHTTPServerTransport; server: McpServer }
   >();
 
-  function createMcpServer(accessToken: string, folderId: string): McpServer {
-    const backend = new GoogleDriveBackend(accessToken, folderId);
+  function createMcpServer(
+    accessToken: string,
+    refreshToken: string | undefined,
+    folderId: string,
+  ): McpServer {
+    const backend = new GoogleDriveBackend({
+      accessToken,
+      refreshToken,
+      clientId: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
+      rootFolderId: folderId,
+    });
     const server = new McpServer({
       name: "synapse",
       version: pkg.version,
@@ -1235,7 +1245,11 @@ export async function startCloudServer(port: number): Promise<void> {
     }
 
     // New MCP session — create fresh server + transport
-    const server = createMcpServer(session.accessToken, session.folderId);
+    const server = createMcpServer(
+      session.accessToken,
+      session.refreshToken,
+      session.folderId,
+    );
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
     });
