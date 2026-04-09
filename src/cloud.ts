@@ -732,16 +732,30 @@ export async function startCloudServer(port: number): Promise<void> {
       <span id="copied" style="display:none; color: #2ECC71; margin-left: 8px;">Copied!</span>
     </div>
 
+    <h3 style="font-size:15px;margin-top:28px;margin-bottom:12px;">Connect to Claude.ai</h3>
     <ol class="steps">
       <li>Go to <strong>Claude.ai</strong></li>
       <li>Open <strong>Settings</strong> &rarr; <strong>Integrations</strong></li>
       <li>Click <strong>"Add Custom Integration"</strong></li>
       <li>Paste the URL above</li>
-      <li>Start chatting — Claude now has access to your vault</li>
     </ol>
 
+    <h3 style="font-size:15px;margin-top:28px;margin-bottom:12px;">Then tell Claude</h3>
+    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
+      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">First time? Build your brain:</p>
+      <p style="font-size:15px;font-style:italic;">"Compile my knowledge base"</p>
+    </div>
+    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
+      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">Save something from your phone:</p>
+      <p style="font-size:15px;font-style:italic;">"Save this article: [paste any URL]"</p>
+    </div>
+    <div style="background:white;border:1px solid rgba(61,53,41,0.08);border-radius:8px;padding:16px 20px;margin-bottom:10px;">
+      <p style="font-size:14px;color:#8B9490;margin-bottom:6px;">Ask across everything you've saved:</p>
+      <p style="font-size:15px;font-style:italic;">"What do my notes say about [topic]?"</p>
+    </div>
+
     <p class="note">
-      Try saying: "What's in my vault?" or "Save this article: [paste any URL]"
+      "Compile my knowledge base" turns your raw files into a wiki — summaries, concept pages, and entity pages, all cross-linked. Every time you compile, the brain gets smarter.
     </p>
   </div>
 </body>
