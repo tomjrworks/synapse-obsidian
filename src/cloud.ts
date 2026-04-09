@@ -86,10 +86,35 @@ export async function startCloudServer(port: number): Promise<void> {
 
   // Step 2: Google redirects back here
   app.get("/auth/callback", async (req, res) => {
-    const { code, state } = req.query;
+    const { code, state, error } = req.query;
 
-    if (!code || !state || !pendingAuth.has(state as string)) {
-      res.status(400).send("Invalid OAuth callback");
+    // User denied access or something went wrong at Google's end
+    if (error || !code) {
+      const denied = error === "access_denied";
+      res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — ${denied ? "Access Denied" : "Connection Error"}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>${denied ? "No worries" : "Something went wrong"}</h1>
+    <p class="subtitle">${denied ? "Synapse needs access to your Google Drive to connect your notes. No data is stored on our servers — your files stay in Drive." : "Google returned an error. This is usually temporary."}</p>
+    <a href="/auth/google" class="btn">Try Again</a>
+    <p class="note" style="margin-top:24px;">${denied ? "We only request read access to your Drive folders. You choose exactly which folder to connect." : `Error: ${error || "no authorization code received"}`}</p>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    if (!state || !pendingAuth.has(state as string)) {
+      res
+        .status(400)
+        .send("Invalid OAuth callback — session expired. Please try again.");
       return;
     }
 
