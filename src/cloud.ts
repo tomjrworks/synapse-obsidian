@@ -556,28 +556,37 @@ export async function startCloudServer(port: number): Promise<void> {
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
+      // List ALL items at root — folders and files
       const result = await drive.files.list({
-        q: "mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false",
-        fields: "files(id, name)",
-        pageSize: 100,
-        orderBy: "name",
+        q: "'root' in parents and trashed = false",
+        fields: "files(id, name, mimeType)",
+        pageSize: 200,
+        orderBy: "folder,name",
       });
 
-      const folders = result.data.files || [];
+      const items = result.data.files || [];
 
-      const checkboxes = folders
-        .map(
-          (f) => `<label class="folder-check">
-            <input type="checkbox" name="folderIds" value="${f.id}" data-name="${escapeHtml(f.name || "")}">
-            <span>${escapeHtml(f.name || "")}</span>
-          </label>`,
-        )
+      const checkboxes = items
+        .map((f) => {
+          const isFolder = f.mimeType === "application/vnd.google-apps.folder";
+          const isDoc = f.mimeType === "application/vnd.google-apps.document";
+          const icon = isFolder
+            ? "&#128193;"
+            : isDoc
+              ? "&#128196;"
+              : "&#128196;";
+          return `<label class="folder-check">
+            <input type="checkbox" name="itemIds" value="${f.id}">
+            <span>${icon} ${escapeHtml(f.name || "")}</span>
+            <span style="font-size:12px;color:#8B9490;">${isFolder ? "folder" : isDoc ? "doc" : (f.name || "").split(".").pop()}</span>
+          </label>`;
+        })
         .join("\n");
 
       res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Consolidate Folders</title>
+  <title>Synapse — Consolidate</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     ${pageStyles}
@@ -597,14 +606,29 @@ export async function startCloudServer(port: number): Promise<void> {
     .folder-check:hover { border-color: rgba(26,92,50,0.3); }
     .folder-check input { width: 18px; height: 18px; accent-color: #1A5C32; }
     .folder-check span { flex: 1; }
+    .select-all-btn {
+      font-size: 13px;
+      color: #1A5C32;
+      background: none;
+      border: 1px solid rgba(26,92,50,0.3);
+      border-radius: 4px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-family: monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 12px;
+    }
+    .select-all-btn:hover { background: rgba(26,92,50,0.05); }
+    .items-scroll { max-height: 400px; overflow-y: auto; margin-bottom: 16px; }
   </style>
 </head>
 <body>
   <div class="container">
     ${pageHeader}
     <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
-    <h1>Consolidate into one vault</h1>
-    <p class="subtitle">Select the folders you want to combine. We'll link them into one vault — your originals stay exactly where they are.</p>
+    <h1>Build your brain</h1>
+    <p class="subtitle">Select everything you want in your vault — folders, docs, files. We'll link them all. Originals stay exactly where they are.</p>
 
     <form method="POST" action="/condense-folders">
       <input type="hidden" name="session" value="${sessionToken}">
@@ -615,20 +639,27 @@ export async function startCloudServer(port: number): Promise<void> {
         <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Work Notes</span>
         <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Knowledge Base</span>
       </div>
-      <div style="margin-bottom:16px;">
-        ${checkboxes || "<p style='color:#8B9490;'>No folders found in Google Drive root.</p>"}
+      <button type="button" class="select-all-btn" onclick="toggleAll()">Select All</button>
+      <div class="items-scroll">
+        ${checkboxes || "<p style='color:#8B9490;'>No files found in Google Drive.</p>"}
       </div>
       <ul class="check-list">
         <li>Creates a new folder in your Drive</li>
-        <li>Links your source folders (originals untouched)</li>
+        <li>Links your sources (originals untouched)</li>
         <li>Claude compiles everything into a wiki when you're ready</li>
       </ul>
       <button type="submit" class="btn" id="submit-btn">Consolidate &amp; Connect</button>
     </form>
     <script>
+      function toggleAll() {
+        const boxes = document.querySelectorAll('input[name="itemIds"]');
+        const allChecked = [...boxes].every(b => b.checked);
+        boxes.forEach(b => b.checked = !allChecked);
+        document.querySelector('.select-all-btn').textContent = allChecked ? 'Select All' : 'Deselect All';
+      }
       document.querySelector('form').addEventListener('submit', function(e) {
-        const checked = document.querySelectorAll('input[name="folderIds"]:checked');
-        if (checked.length === 0) { e.preventDefault(); alert('Select at least one folder.'); return; }
+        const checked = document.querySelectorAll('input[name="itemIds"]:checked');
+        if (checked.length === 0) { e.preventDefault(); alert('Select at least one item.'); return; }
         const btn = document.getElementById('submit-btn');
         btn.textContent = 'Setting up...';
         btn.style.opacity = '0.6';
@@ -644,7 +675,7 @@ export async function startCloudServer(port: number): Promise<void> {
   });
 
   app.post("/condense-folders", async (req, res) => {
-    const { session: sessionToken, vaultName, folderIds } = req.body || {};
+    const { session: sessionToken, vaultName, itemIds } = req.body || {};
     const session = sessions.get(sessionToken);
 
     if (!session) {
@@ -652,17 +683,15 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // folderIds can be a string (single) or array (multiple)
-    const ids: string[] = Array.isArray(folderIds)
-      ? folderIds
-      : folderIds
-        ? [folderIds]
+    // itemIds can be a string (single) or array (multiple)
+    const ids: string[] = Array.isArray(itemIds)
+      ? itemIds
+      : itemIds
+        ? [itemIds]
         : [];
 
     if (ids.length === 0) {
-      res
-        .status(400)
-        .send("No folders selected. Go back and pick at least one.");
+      res.status(400).send("No items selected. Go back and pick at least one.");
       return;
     }
 
@@ -673,35 +702,45 @@ export async function startCloudServer(port: number): Promise<void> {
     try {
       const name = vaultName || "My Brain";
 
-      // First: scan source folders to count what's being pulled in
+      // Scan selected items — could be folders or individual files
       let totalFiles = 0;
-      let totalFolders = ids.length; // the source folders themselves
+      let totalFolders = 0;
       let totalMd = 0;
       let totalDocs = 0;
       const sourceNames: string[] = [];
 
-      for (const sourceFolderId of ids) {
-        const folderMeta = await drive.files.get({
-          fileId: sourceFolderId,
-          fields: "name",
+      for (const itemId of ids) {
+        const meta = await drive.files.get({
+          fileId: itemId,
+          fields: "name, mimeType",
         });
-        sourceNames.push(folderMeta.data.name || "folder");
+        sourceNames.push(meta.data.name || "item");
 
-        const files = await drive.files.list({
-          q: `'${sourceFolderId}' in parents and trashed = false`,
-          fields: "files(name, mimeType)",
-          pageSize: 500,
-        });
+        if (meta.data.mimeType === "application/vnd.google-apps.folder") {
+          totalFolders++;
+          // Count children for folders
+          const files = await drive.files.list({
+            q: `'${itemId}' in parents and trashed = false`,
+            fields: "files(name, mimeType)",
+            pageSize: 500,
+          });
 
-        for (const f of files.data.files || []) {
-          if (f.mimeType === "application/vnd.google-apps.folder") {
-            totalFolders++;
-          } else {
-            totalFiles++;
-            if (f.name?.endsWith(".md")) totalMd++;
-            if (f.mimeType === "application/vnd.google-apps.document")
-              totalDocs++;
+          for (const f of files.data.files || []) {
+            if (f.mimeType === "application/vnd.google-apps.folder") {
+              totalFolders++;
+            } else {
+              totalFiles++;
+              if (f.name?.endsWith(".md")) totalMd++;
+              if (f.mimeType === "application/vnd.google-apps.document")
+                totalDocs++;
+            }
           }
+        } else {
+          // Individual file
+          totalFiles++;
+          if (meta.data.name?.endsWith(".md")) totalMd++;
+          if (meta.data.mimeType === "application/vnd.google-apps.document")
+            totalDocs++;
         }
       }
 
@@ -726,8 +765,8 @@ export async function startCloudServer(port: number): Promise<void> {
         fields: "id",
       });
 
-      // Create shortcuts to each source folder
-      const folderManifest: string[] = [];
+      // Create shortcuts to each selected item (folders and files)
+      const sourceManifest: string[] = [];
 
       for (let i = 0; i < ids.length; i++) {
         await drive.files.create({
@@ -740,7 +779,7 @@ export async function startCloudServer(port: number): Promise<void> {
             },
           },
         });
-        folderManifest.push(
+        sourceManifest.push(
           `- [[sources/${sourceNames[i]}|${sourceNames[i]}]]`,
         );
       }
@@ -754,7 +793,7 @@ export async function startCloudServer(port: number): Promise<void> {
         },
         media: {
           mimeType: "text/markdown",
-          body: `# Welcome to ${name}\n\nThis vault was created from ${ids.length} folder${ids.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.\n\n## Source folders\n${folderManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your source folders, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
+          body: `# Welcome to ${name}\n\nThis vault was created from ${ids.length} item${ids.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
         },
       });
 
