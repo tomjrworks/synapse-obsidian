@@ -2,6 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { google } from "googleapis";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { GoogleDriveBackend } from "./utils/google-drive.js";
 import { registerVaultTools } from "./tools/vault.js";
@@ -1201,40 +1204,15 @@ export async function startCloudServer(port: number): Promise<void> {
     });
   });
 
+  // Serve polished landing page from landing/index.html
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const landingHtml = readFileSync(
+    resolve(__dirname, "../landing/index.html"),
+    "utf-8",
+  );
+
   app.get("/", (_req, res) => {
-    res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Synapse — Connect Your Obsidian Vault to Claude</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; text-align: center; }
-    h1 { font-size: 32px; margin-bottom: 8px; }
-    .subtitle { color: #666; font-size: 18px; margin-bottom: 40px; }
-    .connect-btn { display: inline-block; padding: 16px 32px; background: #1a1a1a; color: white; text-decoration: none; border-radius: 8px; font-size: 18px; font-weight: 500; }
-    .connect-btn:hover { background: #333; }
-    .features { text-align: left; margin: 40px 0; line-height: 1.8; }
-    .features li { margin: 8px 0; }
-  </style>
-</head>
-<body>
-  <h1>Synapse</h1>
-  <p class="subtitle">Connect your Obsidian vault to Claude.ai</p>
-
-  <a href="/auth/google" class="connect-btn">Connect with Google Drive</a>
-
-  <ul class="features">
-    <li><strong>Zero install</strong> — works from your phone, laptop, anywhere</li>
-    <li><strong>Knowledge base tools</strong> — ingest, compile, query, lint</li>
-    <li><strong>Your vault stays in Drive</strong> — syncs to all your devices</li>
-    <li><strong>11 AI tools</strong> — Claude reads, writes, and maintains your wiki</li>
-  </ul>
-
-  <p style="font-size: 14px; color: #999; margin-top: 40px;">
-    Open source — <a href="https://github.com/mainloop-systems/synapse-mcp" style="color: #666;">GitHub</a> |
-    By <a href="https://mainloopsystems.com" style="color: #666;">MainLoop Systems</a>
-  </p>
-</body>
-</html>`);
+    res.type("html").send(landingHtml);
   });
 
   app.listen(port, () => {
