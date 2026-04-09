@@ -1223,28 +1223,35 @@ export async function startCloudServer(port: number): Promise<void> {
     }
 
     const mcpSessionId = (req.headers["mcp-session-id"] as string) || undefined;
-    const transportKey = `${sessionToken}:${mcpSessionId || "new"}`;
+    const transportKey = mcpSessionId
+      ? `${sessionToken}:${mcpSessionId}`
+      : undefined;
 
-    let entry = mcpSessionId ? mcpSessions.get(transportKey) : undefined;
+    const entry = transportKey ? mcpSessions.get(transportKey) : undefined;
 
-    if (!entry) {
-      const server = createMcpServer(session.accessToken, session.folderId);
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-
-      transport.onclose = () => {
-        mcpSessions.delete(transportKey);
-      };
-
-      await server.connect(transport);
-
-      const newKey = `${sessionToken}:${(transport as any).sessionId}`;
-      mcpSessions.set(newKey, { transport, server });
-      entry = { transport, server };
+    if (entry) {
+      await entry.transport.handleRequest(req, res, req.body);
+      return;
     }
 
-    await entry.transport.handleRequest(req, res, req.body);
+    // New MCP session — create fresh server + transport
+    const server = createMcpServer(session.accessToken, session.folderId);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    await server.connect(transport);
+    // handleRequest generates the session ID on first call
+    await transport.handleRequest(req, res, req.body);
+
+    // NOW sessionId is set — store for subsequent requests
+    const sid = (transport as any).sessionId as string;
+    const newKey = `${sessionToken}:${sid}`;
+    mcpSessions.set(newKey, { transport, server });
+
+    transport.onclose = () => {
+      mcpSessions.delete(newKey);
+    };
   });
 
   app.get("/mcp/:sessionToken", async (req, res) => {
