@@ -767,6 +767,7 @@ export async function startCloudServer(port: number): Promise<void> {
 <body>
   <div class="container">
     ${pageHeader}
+    <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
     <h1>What will you use this for?</h1>
     <p class="subtitle">This helps us tailor your experience. You can always change this later.</p>
 
@@ -895,6 +896,7 @@ export async function startCloudServer(port: number): Promise<void> {
 <body>
   <div class="container">
     ${pageHeader}
+    <a href="javascript:history.back()" class="back-link">&larr; Back</a>
     <h1>${title}</h1>
     <p class="subtitle">${subtitle}</p>
 
@@ -947,6 +949,7 @@ export async function startCloudServer(port: number): Promise<void> {
 <body>
   <div class="container">
     ${pageHeader}
+    <a href="javascript:history.back()" class="back-link">&larr; Back</a>
     <h1>Almost there</h1>
     <p class="subtitle">Which AI do you use? We'll show you exactly how to connect.</p>
 
