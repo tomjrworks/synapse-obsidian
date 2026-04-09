@@ -32,6 +32,15 @@ function getOAuth2Client() {
   );
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function startCloudServer(port: number): Promise<void> {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const app = express();
@@ -104,7 +113,7 @@ export async function startCloudServer(port: number): Promise<void> {
     <h1>${denied ? "No worries" : "Something went wrong"}</h1>
     <p class="subtitle">${denied ? "Synapse needs access to your Google Drive to connect your notes. No data is stored on our servers — your files stay in Drive." : "Google returned an error. This is usually temporary."}</p>
     <a href="/auth/google" class="btn">Try Again</a>
-    <p class="note" style="margin-top:24px;">${denied ? "We only request read access to your Drive folders. You choose exactly which folder to connect." : `Error: ${error || "no authorization code received"}`}</p>
+    <p class="note" style="margin-top:24px;">${denied ? "We only request read access to your Drive folders. You choose exactly which folder to connect." : `Error: ${escapeHtml(String(error || "no authorization code received"))}`}</p>
   </div>
 </body>
 </html>`);
@@ -407,7 +416,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     <h1>Something went wrong</h1>
-    <p class="subtitle">${err.message}</p>
+    <p class="subtitle">${escapeHtml(err.message)}</p>
     <a href="javascript:history.back()" class="btn">Try Again</a>
   </div>
 </body>
@@ -477,7 +486,7 @@ export async function startCloudServer(port: number): Promise<void> {
           const countText = parts.length > 0 ? parts.join(", ") : "empty";
           return `<li>
             <a href="/browse-folders?session=${sessionToken}&parentId=${f.id}&parentName=${encodeURIComponent(f.name || "")}">
-              <span>${f.name}</span>
+              <span>${escapeHtml(f.name || "")}</span>
               <span style="float:right;color:#8B9490;font-size:13px;">${countText} &rarr;</span>
             </a>
           </li>`;
@@ -486,7 +495,7 @@ export async function startCloudServer(port: number): Promise<void> {
 
       const selectCurrentBtn =
         parentId !== "root"
-          ? `<a href="/select-folder?session=${sessionToken}&folderId=${parentId}&folderName=${encodeURIComponent(parentName)}" class="btn" style="margin-bottom:24px;">Use "${parentName}" as my vault</a>`
+          ? `<a href="/select-folder?session=${sessionToken}&folderId=${parentId}&folderName=${encodeURIComponent(parentName)}" class="btn" style="margin-bottom:24px;">Use "${escapeHtml(parentName)}" as my vault</a>`
           : "";
 
       const backLink =
@@ -505,7 +514,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     ${backLink}
-    <h1>${parentId === "root" ? "Choose a folder" : parentName}</h1>
+    <h1>${parentId === "root" ? "Choose a folder" : escapeHtml(parentName)}</h1>
     <p class="subtitle">${parentId === "root" ? "Navigate to the folder you want to use as your vault." : "Select this folder or browse deeper."}</p>
     ${selectCurrentBtn}
     <ul class="folder-list">
@@ -546,8 +555,8 @@ export async function startCloudServer(port: number): Promise<void> {
       const checkboxes = folders
         .map(
           (f) => `<label class="folder-check">
-            <input type="checkbox" name="folderIds" value="${f.id}" data-name="${f.name}">
-            <span>${f.name}</span>
+            <input type="checkbox" name="folderIds" value="${f.id}" data-name="${escapeHtml(f.name || "")}">
+            <span>${escapeHtml(f.name || "")}</span>
           </label>`,
         )
         .join("\n");
@@ -756,7 +765,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     <h1>Something went wrong</h1>
-    <p class="subtitle">${err.message}</p>
+    <p class="subtitle">${escapeHtml(err.message)}</p>
     <a href="javascript:history.back()" class="btn">Try Again</a>
   </div>
 </body>
@@ -931,11 +940,11 @@ export async function startCloudServer(port: number): Promise<void> {
       isCondense && sourceNames.length > 0
         ? `<div style="margin-bottom:20px;">
           <p style="font-size:13px;color:#8B9490;margin-bottom:8px;">Pulling from:</p>
-          ${sourceNames.map((n) => `<span style="display:inline-block;font-size:13px;padding:4px 10px;background:rgba(26,92,50,0.06);border-radius:20px;color:#1A5C32;margin:0 4px 4px 0;">${n}</span>`).join("")}
+          ${sourceNames.map((n) => `<span style="display:inline-block;font-size:13px;padding:4px 10px;background:rgba(26,92,50,0.06);border-radius:20px;color:#1A5C32;margin:0 4px 4px 0;">${escapeHtml(n)}</span>`).join("")}
         </div>`
         : "";
 
-    const title = isCondense ? session.folderName : session.folderName;
+    const title = escapeHtml(session.folderName);
     const subtitle = isCondense
       ? `We found ${fileCount} files across ${sourceNames.length} folder${sourceNames.length > 1 ? "s" : ""}. Claude will compile these into your brain.`
       : hasContent
@@ -1162,7 +1171,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     <h1>You're connected</h1>
-    <p class="subtitle">"${session.folderName}" is live. Here's how to start using it.</p>
+    <p class="subtitle">"${escapeHtml(session.folderName)}" is live. Here's how to start using it.</p>
 
     <h3 style="font-size:14px;font-family:monospace;text-transform:uppercase;letter-spacing:0.1em;color:#8B9490;margin-bottom:8px;">Step 1 — Copy your URL</h3>
     <div class="url-box" onclick="copyUrl()">
