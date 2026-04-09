@@ -443,15 +443,45 @@ export async function startCloudServer(port: number): Promise<void> {
 
       const folders = result.data.files || [];
 
+      // Fetch file counts per folder in parallel
+      const folderCounts = await Promise.all(
+        folders.map(async (f) => {
+          try {
+            const contents = await drive.files.list({
+              q: `'${f.id}' in parents and trashed = false`,
+              fields: "files(mimeType)",
+              pageSize: 200,
+            });
+            const items = contents.data.files || [];
+            const fileCount = items.filter(
+              (i) => i.mimeType !== "application/vnd.google-apps.folder",
+            ).length;
+            const subfolderCount = items.length - fileCount;
+            return { fileCount, subfolderCount };
+          } catch {
+            return { fileCount: 0, subfolderCount: 0 };
+          }
+        }),
+      );
+
       const folderList = folders
-        .map(
-          (f) => `<li>
+        .map((f, i) => {
+          const { fileCount, subfolderCount } = folderCounts[i];
+          const parts: string[] = [];
+          if (fileCount > 0)
+            parts.push(`${fileCount} file${fileCount !== 1 ? "s" : ""}`);
+          if (subfolderCount > 0)
+            parts.push(
+              `${subfolderCount} folder${subfolderCount !== 1 ? "s" : ""}`,
+            );
+          const countText = parts.length > 0 ? parts.join(", ") : "empty";
+          return `<li>
             <a href="/browse-folders?session=${sessionToken}&parentId=${f.id}&parentName=${encodeURIComponent(f.name || "")}">
-              ${f.name}
-              <span style="float:right;color:#8B9490;font-size:13px;">browse &rarr;</span>
+              <span>${f.name}</span>
+              <span style="float:right;color:#8B9490;font-size:13px;">${countText} &rarr;</span>
             </a>
-          </li>`,
-        )
+          </li>`;
+        })
         .join("\n");
 
       const selectCurrentBtn =
