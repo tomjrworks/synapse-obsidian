@@ -204,6 +204,17 @@ export async function startCloudServer(port: number): Promise<void> {
     .check-list li { padding: 6px 0; font-size: 14px; color: #8B9490; display: flex; align-items: center; gap: 8px; }
     .check-list li::before { content: ''; width: 6px; height: 6px; background: #2ECC71; border-radius: 50%; flex-shrink: 0; }
     .note { font-size: 13px; color: #8B9490; margin-top: 20px; line-height: 1.6; }
+    .name-sug {
+      font-size: 12px;
+      padding: 4px 10px;
+      background: rgba(61,53,41,0.05);
+      border: 1px solid rgba(61,53,41,0.1);
+      border-radius: 20px;
+      color: #8B9490;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .name-sug:hover { border-color: rgba(26,92,50,0.3); color: #1A5C32; }
   `;
 
   const pageHeader = `
@@ -282,7 +293,14 @@ export async function startCloudServer(port: number): Promise<void> {
 
     <form method="POST" action="/create-vault">
       <input type="hidden" name="session" value="${sessionToken}">
-      <input type="text" name="vaultName" placeholder="Vault name (e.g. My Brain, Research, Work)" value="Synapse" autofocus>
+      <input type="text" name="vaultName" placeholder="Name your vault" value="My Brain" autofocus>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">My Brain</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Research</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Work Notes</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Knowledge Base</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Second Brain</span>
+      </div>
       <ul class="check-list">
         <li>Creates a folder in your Drive root</li>
         <li>Adds a welcome note and starter structure</li>
@@ -509,7 +527,13 @@ export async function startCloudServer(port: number): Promise<void> {
 
     <form method="POST" action="/condense-folders">
       <input type="hidden" name="session" value="${sessionToken}">
-      <input type="text" name="vaultName" placeholder="New vault name" value="Synapse" style="margin-bottom:16px;">
+      <input type="text" name="vaultName" placeholder="Name your vault" value="My Brain" style="margin-bottom:4px;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">My Brain</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Research</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Work Notes</span>
+        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Knowledge Base</span>
+      </div>
       <div style="margin-bottom:16px;">
         ${checkboxes || "<p style='color:#8B9490;'>No folders found in Google Drive root.</p>"}
       </div>
