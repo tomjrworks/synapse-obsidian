@@ -45,6 +45,7 @@ export async function startCloudServer(port: number): Promise<void> {
   app.options("/{*splat}", (_req, res) => res.sendStatus(204));
 
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
   // Session storage (in-memory for v1, database for v2)
   const sessions = new Map<string, UserSession>();
@@ -119,7 +120,98 @@ export async function startCloudServer(port: number): Promise<void> {
     }
   });
 
-  // Step 3: Folder picker page
+  // Shared page styles (MainLoop branded)
+  const pageStyles = `
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #F2F0EB;
+      color: #3D3529;
+      min-height: 100vh;
+      padding: 60px 20px;
+    }
+    .container { max-width: 640px; margin: 0 auto; }
+    .logo { font-size: 18px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+    .logo-dot { width: 8px; height: 8px; background: #2ECC71; border-radius: 50%; }
+    .by { font-size: 12px; color: #8B9490; margin-bottom: 32px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
+    h1 { font-family: Georgia, serif; font-size: 28px; font-weight: 400; margin-bottom: 8px; }
+    .subtitle { color: #8B9490; font-size: 15px; margin-bottom: 36px; line-height: 1.6; }
+    .option-card {
+      background: white;
+      border: 1px solid rgba(61,53,41,0.08);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      display: block;
+      color: inherit;
+      transition: all 0.2s;
+    }
+    .option-card:hover { border-color: rgba(26,92,50,0.3); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(61,53,41,0.06); }
+    .option-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .option-card p { font-size: 14px; color: #8B9490; line-height: 1.5; }
+    .option-card .tag { display: inline-block; font-size: 11px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.1em; padding: 3px 8px; border-radius: 4px; margin-bottom: 8px; }
+    .tag-quick { background: rgba(46,204,113,0.1); color: #1A5C32; }
+    .tag-existing { background: rgba(61,53,41,0.06); color: #8B9490; }
+    .tag-power { background: rgba(26,92,50,0.08); color: #1A5C32; }
+    .folder-list { list-style: none; padding: 0; max-height: 400px; overflow-y: auto; }
+    .folder-list li { margin: 6px 0; }
+    .folder-list a {
+      display: block;
+      padding: 12px 16px;
+      background: white;
+      border: 1px solid rgba(61,53,41,0.08);
+      border-radius: 8px;
+      color: #3D3529;
+      text-decoration: none;
+      font-size: 15px;
+      transition: all 0.15s;
+    }
+    .folder-list a:hover { border-color: rgba(26,92,50,0.3); background: rgba(26,92,50,0.02); }
+    .back-link { display: inline-block; margin-bottom: 24px; color: #8B9490; text-decoration: none; font-size: 14px; }
+    .back-link:hover { color: #3D3529; }
+    input[type=text] {
+      width: 100%;
+      padding: 14px 16px;
+      border: 1px solid rgba(61,53,41,0.15);
+      border-radius: 6px;
+      font-size: 15px;
+      margin-bottom: 12px;
+      background: white;
+      color: #3D3529;
+      outline: none;
+    }
+    input[type=text]:focus { border-color: #1A5C32; }
+    input[type=text]::placeholder { color: #8B9490; }
+    .btn {
+      display: inline-block;
+      padding: 14px 28px;
+      background: #1A5C32;
+      color: #F2F0EB;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+    .btn:hover { background: #16472a; transform: translateY(-1px); }
+    .check-list { list-style: none; padding: 0; margin: 16px 0; }
+    .check-list li { padding: 6px 0; font-size: 14px; color: #8B9490; display: flex; align-items: center; gap: 8px; }
+    .check-list li::before { content: ''; width: 6px; height: 6px; background: #2ECC71; border-radius: 50%; flex-shrink: 0; }
+    .note { font-size: 13px; color: #8B9490; margin-top: 20px; line-height: 1.6; }
+  `;
+
+  const pageHeader = `
+    <div class="logo"><span class="logo-dot"></span> Synapse</div>
+    <div class="by">by Main Loop Systems</div>
+  `;
+
+  // Step 3: Onboarding — choose how to set up vault
   app.get("/pick-folder", async (req, res) => {
     const sessionToken = req.query.session as string;
     const session = sessions.get(sessionToken);
@@ -129,15 +221,216 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // List top-level folders in Drive
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Set Up Your Brain</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <h1>Set up your brain</h1>
+    <p class="subtitle">Choose how you want to get started. Your files stay in Google Drive — Synapse just connects them to your AI.</p>
+
+    <a href="/create-vault?session=${sessionToken}" class="option-card">
+      <span class="tag tag-quick">Quick start</span>
+      <h3>Create a new vault</h3>
+      <p>Start fresh. We'll create a "Synapse" folder in your Drive with a ready-to-use structure.</p>
+    </a>
+
+    <a href="/browse-folders?session=${sessionToken}" class="option-card">
+      <span class="tag tag-existing">Existing notes</span>
+      <h3>Use an existing folder</h3>
+      <p>Already have notes in Google Drive? Pick the folder and Synapse adapts to your structure.</p>
+    </a>
+
+    <a href="/condense-folders?session=${sessionToken}" class="option-card">
+      <span class="tag tag-power">Consolidate</span>
+      <h3>Combine scattered folders</h3>
+      <p>Notes spread across multiple Drive folders? We'll gather them into one vault without deleting anything.</p>
+    </a>
+  </div>
+</body>
+</html>`);
+  });
+
+  // Option 1: Create a new vault folder
+  app.get("/create-vault", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const session = sessions.get(sessionToken);
+
+    if (!session) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Create Vault</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
+    <h1>Create a new vault</h1>
+    <p class="subtitle">We'll create a folder in your Google Drive with a starter structure for your knowledge base.</p>
+
+    <form method="POST" action="/create-vault">
+      <input type="hidden" name="session" value="${sessionToken}">
+      <input type="text" name="vaultName" placeholder="Vault name (e.g. My Brain, Research, Work)" value="Synapse" autofocus>
+      <ul class="check-list">
+        <li>Creates a folder in your Drive root</li>
+        <li>Adds a welcome note and starter structure</li>
+        <li>Ready to use immediately with Claude</li>
+      </ul>
+      <button type="submit" class="btn">Create Vault</button>
+    </form>
+  </div>
+</body>
+</html>`);
+  });
+
+  app.post("/create-vault", async (req, res) => {
+    const { session: sessionToken, vaultName } = req.body || {};
+    const session = sessions.get(sessionToken);
+
+    if (!session) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
     const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({
-      access_token: session.accessToken,
-    });
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
+    oauth2Client.setCredentials({ access_token: session.accessToken });
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
+
+    try {
+      const name = vaultName || "Synapse";
+
+      // Create the vault folder
+      const folder = await drive.files.create({
+        requestBody: {
+          name,
+          mimeType: "application/vnd.google-apps.folder",
+        },
+        fields: "id",
+      });
+
+      const folderId = folder.data.id!;
+
+      // Create a welcome note
+      await drive.files.create({
+        requestBody: {
+          name: "Welcome to Synapse.md",
+          parents: [folderId],
+          mimeType: "text/markdown",
+        },
+        media: {
+          mimeType: "text/markdown",
+          body: `# Welcome to ${name}\n\nThis is your AI-powered knowledge base. Start by telling Claude:\n\n> "Save this article: [paste any URL]"\n\n> "What do my notes say about [topic]?"\n\n> "Help me organize my vault"\n\nEvery note you save and every answer Claude gives compounds into a smarter brain over time.\n`,
+        },
+      });
+
+      // Redirect to the success page
+      res.redirect(
+        `/select-folder?session=${sessionToken}&folderId=${folderId}&folderName=${encodeURIComponent(name)}`,
+      );
+    } catch (err: any) {
+      res.status(500).send(`Error creating vault: ${err.message}`);
+    }
+  });
+
+  // Option 2: Browse existing folders
+  app.get("/browse-folders", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const parentId = (req.query.parentId as string) || "root";
+    const parentName = decodeURIComponent(
+      (req.query.parentName as string) || "Google Drive",
+    );
+    const session = sessions.get(sessionToken);
+
+    if (!session) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: session.accessToken });
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
+
+    try {
+      const result = await drive.files.list({
+        q: `mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
+        fields: "files(id, name)",
+        pageSize: 100,
+        orderBy: "name",
+      });
+
+      const folders = result.data.files || [];
+
+      const folderList = folders
+        .map(
+          (f) => `<li>
+            <a href="/browse-folders?session=${sessionToken}&parentId=${f.id}&parentName=${encodeURIComponent(f.name || "")}">
+              ${f.name}
+              <span style="float:right;color:#8B9490;font-size:13px;">browse &rarr;</span>
+            </a>
+          </li>`,
+        )
+        .join("\n");
+
+      const selectCurrentBtn =
+        parentId !== "root"
+          ? `<a href="/select-folder?session=${sessionToken}&folderId=${parentId}&folderName=${encodeURIComponent(parentName)}" class="btn" style="margin-bottom:24px;">Use "${parentName}" as my vault</a>`
+          : "";
+
+      const backLink =
+        parentId === "root"
+          ? `<a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>`
+          : `<a href="javascript:history.back()" class="back-link">&larr; Back</a>`;
+
+      res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Synapse — Browse Folders</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}</style>
+</head>
+<body>
+  <div class="container">
+    ${pageHeader}
+    ${backLink}
+    <h1>${parentId === "root" ? "Choose a folder" : parentName}</h1>
+    <p class="subtitle">${parentId === "root" ? "Navigate to the folder you want to use as your vault." : "Select this folder or browse deeper."}</p>
+    ${selectCurrentBtn}
+    <ul class="folder-list">
+      ${folderList || "<li style='padding:12px;color:#8B9490;'>No subfolders found.</li>"}
+    </ul>
+  </div>
+</body>
+</html>`);
+    } catch (err: any) {
+      res.status(500).send(`Error listing folders: ${err.message}`);
+    }
+  });
+
+  // Option 3: Condense scattered folders into one vault
+  app.get("/condense-folders", async (req, res) => {
+    const sessionToken = req.query.session as string;
+    const session = sessions.get(sessionToken);
+
+    if (!session) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: session.accessToken });
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
       const result = await drive.files.list({
@@ -149,39 +442,196 @@ export async function startCloudServer(port: number): Promise<void> {
 
       const folders = result.data.files || [];
 
-      const folderList = folders
+      const checkboxes = folders
         .map(
-          (f) =>
-            `<li><a href="/select-folder?session=${sessionToken}&folderId=${f.id}&folderName=${encodeURIComponent(f.name || "")}">${f.name}</a></li>`,
+          (f) => `<label class="folder-check">
+            <input type="checkbox" name="folderIds" value="${f.id}" data-name="${f.name}">
+            <span>${f.name}</span>
+          </label>`,
         )
         .join("\n");
 
       res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Select Your Vault</title>
+  <title>Synapse — Consolidate Folders</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
-    h1 { font-size: 24px; }
-    p { color: #666; line-height: 1.6; }
-    ul { list-style: none; padding: 0; }
-    li { margin: 8px 0; }
-    a { display: block; padding: 12px 16px; background: #f5f5f5; border-radius: 8px; color: #1a1a1a; text-decoration: none; font-size: 16px; }
-    a:hover { background: #e8e8e8; }
-    .folder-icon { margin-right: 8px; }
+    ${pageStyles}
+    .folder-check {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: white;
+      border: 1px solid rgba(61,53,41,0.08);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-size: 15px;
+      transition: all 0.15s;
+    }
+    .folder-check:hover { border-color: rgba(26,92,50,0.3); }
+    .folder-check input { width: 18px; height: 18px; accent-color: #1A5C32; }
+    .folder-check span { flex: 1; }
   </style>
 </head>
 <body>
-  <h1>Select your Obsidian vault folder</h1>
-  <p>Choose the Google Drive folder that contains your Obsidian vault:</p>
-  <ul>
-    ${folderList || "<li>No folders found in Google Drive root.</li>"}
-  </ul>
-  <p style="margin-top: 24px; font-size: 14px; color: #999;">Only showing top-level folders. Make sure your vault is synced to Google Drive.</p>
+  <div class="container">
+    ${pageHeader}
+    <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
+    <h1>Consolidate into one vault</h1>
+    <p class="subtitle">Select the folders you want to combine. We'll copy their contents into a new vault folder — nothing gets deleted from the originals.</p>
+
+    <form method="POST" action="/condense-folders">
+      <input type="hidden" name="session" value="${sessionToken}">
+      <input type="text" name="vaultName" placeholder="New vault name" value="Synapse" style="margin-bottom:16px;">
+      <div style="margin-bottom:16px;">
+        ${checkboxes || "<p style='color:#8B9490;'>No folders found in Google Drive root.</p>"}
+      </div>
+      <ul class="check-list">
+        <li>Creates a new folder in your Drive</li>
+        <li>Copies files from selected folders (originals untouched)</li>
+        <li>Docs and Sheets converted to markdown</li>
+        <li>Preserves subfolder structure</li>
+      </ul>
+      <button type="submit" class="btn">Consolidate &amp; Connect</button>
+    </form>
+  </div>
 </body>
 </html>`);
     } catch (err: any) {
-      res.status(500).send(`Error listing folders: ${err.message}`);
+      res.status(500).send(`Error: ${err.message}`);
+    }
+  });
+
+  app.post("/condense-folders", async (req, res) => {
+    const { session: sessionToken, vaultName, folderIds } = req.body || {};
+    const session = sessions.get(sessionToken);
+
+    if (!session) {
+      res.status(400).send("Invalid session");
+      return;
+    }
+
+    // folderIds can be a string (single) or array (multiple)
+    const ids: string[] = Array.isArray(folderIds)
+      ? folderIds
+      : folderIds
+        ? [folderIds]
+        : [];
+
+    if (ids.length === 0) {
+      res
+        .status(400)
+        .send("No folders selected. Go back and pick at least one.");
+      return;
+    }
+
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials({ access_token: session.accessToken });
+    const drive = google.drive({ version: "v3", auth: oauth2Client });
+
+    try {
+      const name = vaultName || "Synapse";
+
+      // Create the vault folder
+      const vaultFolder = await drive.files.create({
+        requestBody: {
+          name,
+          mimeType: "application/vnd.google-apps.folder",
+        },
+        fields: "id",
+      });
+
+      const vaultId = vaultFolder.data.id!;
+
+      // Copy contents from each selected folder
+      for (const sourceFolderId of ids) {
+        // Get source folder name
+        const folderMeta = await drive.files.get({
+          fileId: sourceFolderId,
+          fields: "name",
+        });
+        const subfolderName = folderMeta.data.name || "folder";
+
+        // Create a subfolder in the vault for this source
+        const subfolder = await drive.files.create({
+          requestBody: {
+            name: subfolderName,
+            parents: [vaultId],
+            mimeType: "application/vnd.google-apps.folder",
+          },
+          fields: "id",
+        });
+
+        // List files in the source folder
+        const files = await drive.files.list({
+          q: `'${sourceFolderId}' in parents and trashed = false`,
+          fields: "files(id, name, mimeType)",
+          pageSize: 500,
+        });
+
+        // Copy each file
+        for (const file of files.data.files || []) {
+          if (file.mimeType === "application/vnd.google-apps.folder") continue; // skip nested folders for now
+
+          if (
+            file.mimeType === "application/vnd.google-apps.document" ||
+            file.mimeType === "application/vnd.google-apps.spreadsheet"
+          ) {
+            // Export Google Docs/Sheets as markdown/CSV then save as .md
+            const exportMime =
+              file.mimeType === "application/vnd.google-apps.document"
+                ? "text/plain"
+                : "text/csv";
+            const exported = await drive.files.export(
+              { fileId: file.id!, mimeType: exportMime },
+              { responseType: "text" },
+            );
+
+            await drive.files.create({
+              requestBody: {
+                name: `${file.name}.md`,
+                parents: [subfolder.data.id!],
+                mimeType: "text/markdown",
+              },
+              media: {
+                mimeType: "text/markdown",
+                body: `# ${file.name}\n\n${exported.data as string}`,
+              },
+            });
+          } else {
+            // Copy the file directly
+            await drive.files.copy({
+              fileId: file.id!,
+              requestBody: {
+                name: file.name!,
+                parents: [subfolder.data.id!],
+              },
+            });
+          }
+        }
+      }
+
+      // Create welcome note
+      await drive.files.create({
+        requestBody: {
+          name: "Welcome to Synapse.md",
+          parents: [vaultId],
+          mimeType: "text/markdown",
+        },
+        media: {
+          mimeType: "text/markdown",
+          body: `# Welcome to ${name}\n\nThis vault was created by consolidating your existing folders. Your original folders are untouched.\n\nStart by telling Claude:\n\n> "Run a health check on my vault"\n\n> "What's in my vault?"\n\n> "Help me organize these notes"\n`,
+        },
+      });
+
+      res.redirect(
+        `/select-folder?session=${sessionToken}&folderId=${vaultId}&folderName=${encodeURIComponent(name)}`,
+      );
+    } catch (err: any) {
+      res.status(500).send(`Error consolidating: ${err.message}`);
     }
   });
 
@@ -222,43 +672,78 @@ export async function startCloudServer(port: number): Promise<void> {
 <html>
 <head>
   <title>Synapse — Connected!</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
-    h1 { font-size: 24px; color: #16a34a; }
-    .url-box { background: #f5f5f5; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 14px; word-break: break-all; margin: 16px 0; cursor: pointer; }
-    .url-box:hover { background: #e8e8e8; }
-    .steps { line-height: 1.8; }
-    .steps li { margin: 8px 0; }
-    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>${pageStyles}
+    .url-box {
+      background: #0f1210;
+      border-radius: 8px;
+      padding: 16px 20px;
+      font-family: monospace;
+      font-size: 13px;
+      word-break: break-all;
+      margin: 16px 0;
+      cursor: pointer;
+      color: rgba(242,240,235,0.7);
+      transition: all 0.15s;
+    }
+    .url-box:hover { background: #161b18; }
+    .steps { list-style: none; counter-reset: step; padding: 0; }
+    .steps li {
+      counter-increment: step;
+      padding: 10px 0;
+      font-size: 15px;
+      color: #3D3529;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .steps li::before {
+      content: counter(step);
+      width: 24px;
+      height: 24px;
+      background: rgba(26,92,50,0.1);
+      color: #1A5C32;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
   </style>
   <script>
     function copyUrl() {
       navigator.clipboard.writeText('${mcpUrl}');
-      document.getElementById('copied').style.display = 'inline';
+      const el = document.getElementById('copied');
+      el.style.display = 'inline';
+      setTimeout(() => el.style.display = 'none', 2000);
     }
   </script>
 </head>
 <body>
-  <h1>Connected to "${folderName}"</h1>
-  <p>Your Synapse MCP server is ready. Copy this URL and add it to Claude.ai:</p>
+  <div class="container">
+    ${pageHeader}
+    <h1>Connected to "${folderName}"</h1>
+    <p class="subtitle">Your brain is live. Copy the URL below and add it to Claude.ai to start using it.</p>
 
-  <div class="url-box" onclick="copyUrl()">
-    ${mcpUrl}
-    <span id="copied" style="display:none; color: #16a34a; margin-left: 8px;">Copied!</span>
+    <div class="url-box" onclick="copyUrl()">
+      ${mcpUrl}
+      <span id="copied" style="display:none; color: #2ECC71; margin-left: 8px;">Copied!</span>
+    </div>
+
+    <ol class="steps">
+      <li>Go to <strong>Claude.ai</strong></li>
+      <li>Open <strong>Settings</strong> &rarr; <strong>Integrations</strong></li>
+      <li>Click <strong>"Add Custom Integration"</strong></li>
+      <li>Paste the URL above</li>
+      <li>Start chatting — Claude now has access to your vault</li>
+    </ol>
+
+    <p class="note">
+      Try saying: "What's in my vault?" or "Save this article: [paste any URL]"
+    </p>
   </div>
-
-  <h3>How to connect in Claude.ai:</h3>
-  <ol class="steps">
-    <li>Go to <strong>Claude.ai</strong></li>
-    <li>Open <strong>Settings</strong> > <strong>Integrations</strong></li>
-    <li>Click <strong>"Add Custom Integration"</strong></li>
-    <li>Paste the URL above</li>
-    <li>Done — Claude now has access to your vault</li>
-  </ol>
-
-  <p style="margin-top: 24px; font-size: 14px; color: #999;">
-    Available tools: vault_read, vault_write, vault_list, vault_search, vault_stats, vault_frontmatter, kb_init, kb_ingest, kb_compile, kb_query, kb_lint
-  </p>
 </body>
 </html>`);
   });
