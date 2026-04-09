@@ -361,9 +361,9 @@ export async function startCloudServer(port: number): Promise<void> {
         },
       });
 
-      // Redirect to the success page
+      // Redirect to the success page — skip preview for new vaults (nothing to show)
       res.redirect(
-        `/select-folder?session=${sessionToken}&folderId=${folderId}&folderName=${encodeURIComponent(name)}`,
+        `/select-folder?session=${sessionToken}&folderId=${folderId}&folderName=${encodeURIComponent(name)}&source=create`,
       );
     } catch (err: any) {
       console.error(`[Create Vault] Error: ${err.message}`);
@@ -723,7 +723,9 @@ export async function startCloudServer(port: number): Promise<void> {
     session.folderId = folderId;
     session.folderName = folderName;
 
-    res.redirect(`/vault-purpose?session=${sessionToken}`);
+    const source = (req.query.source as string) || "";
+    const sourceParam = source ? `&source=${source}` : "";
+    res.redirect(`/vault-purpose?session=${sessionToken}${sourceParam}`);
   });
 
   // Step 5: What's this brain for?
@@ -749,6 +751,9 @@ export async function startCloudServer(port: number): Promise<void> {
         ? `&source=condense&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${encodeURIComponent(sourceNames)}`
         : "";
 
+    // New vaults skip preview (nothing to show) — go straight to client picker
+    const nextStep = source === "create" ? "connect" : "vault-preview";
+
     res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -762,22 +767,22 @@ export async function startCloudServer(port: number): Promise<void> {
     <h1>What will you use this for?</h1>
     <p class="subtitle">This helps us tailor your experience. You can always change this later.</p>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=research${extra}" class="option-card">
+    <a href="/${nextStep}?session=${sessionToken}&purpose=research${extra}" class="option-card">
       <h3>Research</h3>
       <p>Collecting articles, papers, and notes on a topic. Building expertise over time.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=business${extra}" class="option-card">
+    <a href="/${nextStep}?session=${sessionToken}&purpose=business${extra}" class="option-card">
       <h3>Business</h3>
       <p>Company knowledge, processes, client notes, competitive intel. Your team's brain.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=personal${extra}" class="option-card">
+    <a href="/${nextStep}?session=${sessionToken}&purpose=personal${extra}" class="option-card">
       <h3>Personal</h3>
       <p>Life organization — ideas, journals, bookmarks, things you want to remember.</p>
     </a>
 
-    <a href="/vault-preview?session=${sessionToken}&purpose=academic${extra}" class="option-card">
+    <a href="/${nextStep}?session=${sessionToken}&purpose=academic${extra}" class="option-card">
       <h3>Academic</h3>
       <p>Coursework, lecture notes, research papers, thesis materials.</p>
     </a>
