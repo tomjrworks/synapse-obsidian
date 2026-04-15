@@ -21,6 +21,7 @@ interface UserSession {
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || "";
 const BASE_URL = process.env.BASE_URL || "http://localhost:3777";
 
 function getOAuth2Client() {
@@ -29,6 +30,20 @@ function getOAuth2Client() {
     GOOGLE_CLIENT_SECRET,
     `${BASE_URL}/auth/callback`,
   );
+}
+
+async function refreshSessionToken(session: UserSession): Promise<string> {
+  const oauth2 = getOAuth2Client();
+  oauth2.setCredentials({
+    access_token: session.accessToken,
+    refresh_token: session.refreshToken,
+  });
+  const { token } = await oauth2.getAccessToken();
+  if (!token) {
+    throw new Error("Failed to refresh access token — user must re-auth");
+  }
+  session.accessToken = token;
+  return token;
 }
 
 const VALID_PURPOSES = ["research", "business", "personal", "academic"];
@@ -52,6 +67,16 @@ function escapeHtml(str: string): string {
 }
 
 export async function startCloudServer(port: number): Promise<void> {
+  const missing: string[] = [];
+  if (!GOOGLE_CLIENT_ID) missing.push("GOOGLE_CLIENT_ID");
+  if (!GOOGLE_CLIENT_SECRET) missing.push("GOOGLE_CLIENT_SECRET");
+  if (!GOOGLE_API_KEY) missing.push("GOOGLE_API_KEY");
+  if (missing.length > 0) {
+    throw new Error(
+      `Cloud mode requires env vars: ${missing.join(", ")}. See .env.example for required values.`,
+    );
+  }
+
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const pkg = JSON.parse(
     readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
@@ -95,10 +120,7 @@ export async function startCloudServer(port: number): Promise<void> {
 
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: "offline",
-      scope: [
-        "https://www.googleapis.com/auth/drive.file",
-        "https://www.googleapis.com/auth/drive.readonly",
-      ],
+      scope: ["https://www.googleapis.com/auth/drive.file"],
       state,
       prompt: "consent",
     });
@@ -281,12 +303,26 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
+    try {
+      await refreshSessionToken(session);
+    } catch (err: any) {
+      res
+        .status(401)
+        .send(
+          `Session expired — please <a href="/auth/google">sign in again</a>.`,
+        );
+      return;
+    }
+
+    const safeJs = (s: string) => JSON.stringify(s).replace(/</g, "\\u003c");
+
     res.send(`<!DOCTYPE html>
 <html>
 <head>
   <title>Synapse — Set Up Your Brain</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
+  <script src="https://apis.google.com/js/api.js"></script>
 </head>
 <body>
   <div class="container">
@@ -300,18 +336,131 @@ export async function startCloudServer(port: number): Promise<void> {
       <p>Start fresh. We'll create a folder in your Drive with a welcome note — ready to use immediately.</p>
     </a>
 
-    <a href="/browse-folders?session=${sessionToken}" class="option-card">
+    <a href="#" onclick="launchFolderPicker(); return false;" class="option-card">
       <span class="tag tag-existing">Existing notes</span>
       <h3>Use an existing folder</h3>
       <p>Already have notes in Google Drive? Pick the folder and Synapse adapts to your structure.</p>
     </a>
 
-    <a href="/condense-folders?session=${sessionToken}" class="option-card">
+    <a href="#" onclick="launchConsolidatePicker(); return false;" class="option-card">
       <span class="tag tag-power">Consolidate</span>
       <h3>Combine scattered folders</h3>
       <p>Notes spread across multiple Drive folders? We'll gather them into one vault without deleting anything.</p>
     </a>
   </div>
+  <script>
+    const SESSION_TOKEN = ${safeJs(sessionToken)};
+    const ACCESS_TOKEN = ${safeJs(session.accessToken)};
+    const API_KEY = ${safeJs(GOOGLE_API_KEY)};
+
+    let pickerReady = false;
+    gapi.load("picker", { callback: function () { pickerReady = true; } });
+
+    function launchFolderPicker() {
+      if (!pickerReady) {
+        alert("Google Picker is still loading — try again in a moment.");
+        return;
+      }
+      var view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+        .setOwnedByMe(true)
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes("application/vnd.google-apps.folder");
+      var picker = new google.picker.PickerBuilder()
+        .setOAuthToken(ACCESS_TOKEN)
+        .setDeveloperKey(API_KEY)
+        .addView(view)
+        .setCallback(onFolderPicked)
+        .build();
+      picker.setVisible(true);
+    }
+
+    function onFolderPicked(data) {
+      if (data.action !== google.picker.Action.PICKED) return;
+      var doc = data.docs && data.docs[0];
+      if (!doc) return;
+      fetch("/picker-select-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionToken: SESSION_TOKEN,
+          folderId: doc.id,
+          folderName: doc.name,
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (json) {
+          if (json.redirect) {
+            window.location = json.redirect;
+          } else {
+            alert("Failed to save folder selection: " + (json.error || "unknown"));
+          }
+        })
+        .catch(function (err) {
+          alert("Network error saving folder selection: " + err.message);
+        });
+    }
+
+    function launchConsolidatePicker() {
+      if (!pickerReady) {
+        alert("Google Picker is still loading — try again in a moment.");
+        return;
+      }
+      var vaultName = window.prompt("Name your vault:", "My Brain");
+      if (vaultName === null) return;
+      vaultName = vaultName.trim() || "My Brain";
+
+      var view = new google.picker.DocsView()
+        .setOwnedByMe(true)
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true);
+      var picker = new google.picker.PickerBuilder()
+        .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+        .setOAuthToken(ACCESS_TOKEN)
+        .setDeveloperKey(API_KEY)
+        .addView(view)
+        .setCallback(function (data) { onConsolidatePicked(data, vaultName); })
+        .build();
+      picker.setVisible(true);
+    }
+
+    function onConsolidatePicked(data, vaultName) {
+      if (data.action !== google.picker.Action.PICKED) return;
+      var docs = data.docs || [];
+      if (docs.length === 0) {
+        alert("Nothing selected. Click Consolidate again to try.");
+        return;
+      }
+      var items = docs.map(function (d) {
+        return {
+          id: d.id,
+          name: d.name,
+          mimeType: d.mimeType,
+          resourceKey: d.resourceKey || undefined,
+        };
+      });
+      fetch("/condense-folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionToken: SESSION_TOKEN,
+          vaultName: vaultName,
+          items: items,
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (json) {
+          if (json.redirect) {
+            window.location = json.redirect;
+          } else {
+            alert("Consolidate failed: " + (json.error || "unknown"));
+          }
+        })
+        .catch(function (err) {
+          alert("Network error during consolidate: " + err.message);
+        });
+    }
+  </script>
 </body>
 </html>`);
   });
@@ -435,313 +584,92 @@ export async function startCloudServer(port: number): Promise<void> {
     }
   });
 
-  // Option 2: Browse existing folders
-  app.get("/browse-folders", async (req, res) => {
-    const sessionToken = req.query.session as string;
-    const parentId = (req.query.parentId as string) || "root";
-    const parentName = decodeURIComponent(
-      (req.query.parentName as string) || "Google Drive",
-    );
+  // Consolidate scattered folders — JSON POST from Google Picker multi-select
+  app.post("/condense-folders", async (req, res) => {
+    const { sessionToken, vaultName, items } = req.body || {};
     const session = sessions.get(sessionToken);
 
     if (!session) {
-      res.status(400).send("Invalid session");
+      res.status(400).json({ error: "Invalid session" });
       return;
     }
 
-    const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ access_token: session.accessToken });
-    const drive = google.drive({ version: "v3", auth: oauth2Client });
+    const itemList: Array<{
+      id: string;
+      name: string;
+      mimeType: string;
+      resourceKey?: string;
+    }> = Array.isArray(items) ? items : [];
+
+    if (itemList.length === 0) {
+      res.status(400).json({ error: "No items selected" });
+      return;
+    }
 
     try {
-      const result = await drive.files.list({
-        q: `mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
-        fields: "files(id, name)",
-        pageSize: 100,
-        orderBy: "name",
-      });
-
-      const folders = result.data.files || [];
-
-      // Fetch file counts per folder in parallel
-      const folderCounts = await Promise.all(
-        folders.map(async (f) => {
-          try {
-            const contents = await drive.files.list({
-              q: `'${f.id}' in parents and trashed = false`,
-              fields: "files(mimeType)",
-              pageSize: 200,
-            });
-            const items = contents.data.files || [];
-            const fileCount = items.filter(
-              (i) => i.mimeType !== "application/vnd.google-apps.folder",
-            ).length;
-            const subfolderCount = items.length - fileCount;
-            return { fileCount, subfolderCount };
-          } catch {
-            return { fileCount: 0, subfolderCount: 0 };
-          }
-        }),
-      );
-
-      const folderList = folders
-        .map((f, i) => {
-          const { fileCount, subfolderCount } = folderCounts[i];
-          const parts: string[] = [];
-          if (fileCount > 0)
-            parts.push(`${fileCount} file${fileCount !== 1 ? "s" : ""}`);
-          if (subfolderCount > 0)
-            parts.push(
-              `${subfolderCount} folder${subfolderCount !== 1 ? "s" : ""}`,
-            );
-          const countText = parts.length > 0 ? parts.join(", ") : "empty";
-          return `<li>
-            <a href="/browse-folders?session=${sessionToken}&parentId=${f.id}&parentName=${encodeURIComponent(f.name || "")}">
-              <span>${escapeHtml(f.name || "")}</span>
-              <span style="float:right;color:#8B9490;font-size:13px;">${countText} &rarr;</span>
-            </a>
-          </li>`;
-        })
-        .join("\n");
-
-      const selectCurrentBtn =
-        parentId !== "root"
-          ? `<a href="/select-folder?session=${sessionToken}&folderId=${parentId}&folderName=${encodeURIComponent(parentName)}" class="btn" style="margin-bottom:24px;">Use "${escapeHtml(parentName)}" as my vault</a>`
-          : "";
-
-      const backLink =
-        parentId === "root"
-          ? `<a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>`
-          : `<a href="javascript:history.back()" class="back-link">&larr; Back</a>`;
-
-      res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Synapse — Browse Folders</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>${pageStyles}</style>
-</head>
-<body>
-  <div class="container">
-    ${pageHeader}
-    ${backLink}
-    <h1>${parentId === "root" ? "Choose a folder" : escapeHtml(parentName)}</h1>
-    <p class="subtitle">${parentId === "root" ? "Navigate to the folder you want to use as your vault." : "Select this folder or browse deeper."}</p>
-    ${selectCurrentBtn}
-    <ul class="folder-list">
-      ${folderList || "<li style='padding:12px;color:#8B9490;'>No subfolders found.</li>"}
-    </ul>
-  </div>
-</body>
-</html>`);
+      await refreshSessionToken(session);
     } catch (err: any) {
       res
-        .status(500)
-        .type("text")
-        .send(`Error listing folders: ${err.message}`);
-    }
-  });
-
-  // Option 3: Condense scattered folders into one vault
-  app.get("/condense-folders", async (req, res) => {
-    const sessionToken = req.query.session as string;
-    const session = sessions.get(sessionToken);
-
-    if (!session) {
-      res.status(400).send("Invalid session");
+        .status(401)
+        .json({ error: "Session expired — please re-authenticate" });
       return;
     }
 
     const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ access_token: session.accessToken });
-    const drive = google.drive({ version: "v3", auth: oauth2Client });
-
-    try {
-      // List ALL items at root — folders and files
-      const result = await drive.files.list({
-        q: "'root' in parents and trashed = false",
-        fields: "files(id, name, mimeType)",
-        pageSize: 200,
-        orderBy: "folder,name",
-      });
-
-      const items = result.data.files || [];
-
-      const checkboxes = items
-        .map((f) => {
-          const isFolder = f.mimeType === "application/vnd.google-apps.folder";
-          const isDoc = f.mimeType === "application/vnd.google-apps.document";
-          const icon = isFolder
-            ? "&#128193;"
-            : isDoc
-              ? "&#128196;"
-              : "&#128196;";
-          return `<label class="folder-check">
-            <input type="checkbox" name="itemIds" value="${f.id}">
-            <span>${icon} ${escapeHtml(f.name || "")}</span>
-            <span style="font-size:12px;color:#8B9490;">${isFolder ? "folder" : isDoc ? "doc" : (f.name || "").includes(".") ? (f.name || "").split(".").pop() : "file"}</span>
-          </label>`;
-        })
-        .join("\n");
-
-      res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Synapse — Consolidate</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    ${pageStyles}
-    .folder-check {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      background: white;
-      border: 1px solid rgba(61,53,41,0.08);
-      border-radius: 8px;
-      margin-bottom: 6px;
-      cursor: pointer;
-      font-size: 15px;
-      transition: all 0.15s;
-    }
-    .folder-check:hover { border-color: rgba(26,92,50,0.3); }
-    .folder-check input { width: 18px; height: 18px; accent-color: #1A5C32; }
-    .folder-check span { flex: 1; }
-    .select-all-btn {
-      font-size: 13px;
-      color: #1A5C32;
-      background: none;
-      border: 1px solid rgba(26,92,50,0.3);
-      border-radius: 4px;
-      padding: 6px 14px;
-      cursor: pointer;
-      font-family: monospace;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      margin-bottom: 12px;
-    }
-    .select-all-btn:hover { background: rgba(26,92,50,0.05); }
-    .items-scroll { max-height: 400px; overflow-y: auto; margin-bottom: 16px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    ${pageHeader}
-    <a href="/pick-folder?session=${sessionToken}" class="back-link">&larr; Back</a>
-    <h1>Build your brain</h1>
-    <p class="subtitle">Select everything you want in your vault — folders, docs, files. We'll link them all. Originals stay exactly where they are.</p>
-
-    <form method="POST" action="/condense-folders">
-      <input type="hidden" name="session" value="${sessionToken}">
-      <input type="text" name="vaultName" placeholder="Name your vault" value="My Brain" style="margin-bottom:4px;">
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
-        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">My Brain</span>
-        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Research</span>
-        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Work Notes</span>
-        <span class="name-sug" onclick="document.querySelector('input[name=vaultName]').value=this.textContent">Knowledge Base</span>
-      </div>
-      <button type="button" class="select-all-btn" onclick="toggleAll()">Select All</button>
-      <div class="items-scroll">
-        ${checkboxes || "<p style='color:#8B9490;'>No files found in Google Drive.</p>"}
-      </div>
-      <ul class="check-list">
-        <li>Creates a new folder in your Drive</li>
-        <li>Links your sources (originals untouched)</li>
-        <li>Claude compiles everything into a wiki when you're ready</li>
-      </ul>
-      <button type="submit" class="btn" id="submit-btn">Consolidate &amp; Connect</button>
-    </form>
-    <script>
-      function toggleAll() {
-        const boxes = document.querySelectorAll('input[name="itemIds"]');
-        const allChecked = [...boxes].every(b => b.checked);
-        boxes.forEach(b => b.checked = !allChecked);
-        document.querySelector('.select-all-btn').textContent = allChecked ? 'Select All' : 'Deselect All';
-      }
-      document.querySelector('form').addEventListener('submit', function(e) {
-        const checked = document.querySelectorAll('input[name="itemIds"]:checked');
-        if (checked.length === 0) { e.preventDefault(); alert('Select at least one item.'); return; }
-        const btn = document.getElementById('submit-btn');
-        btn.textContent = 'Setting up...';
-        btn.style.opacity = '0.6';
-        btn.style.pointerEvents = 'none';
-      });
-    </script>
-  </div>
-</body>
-</html>`);
-    } catch (err: any) {
-      res.status(500).type("text").send(`Error: ${err.message}`);
-    }
-  });
-
-  app.post("/condense-folders", async (req, res) => {
-    const { session: sessionToken, vaultName, itemIds } = req.body || {};
-    const session = sessions.get(sessionToken);
-
-    if (!session) {
-      res.status(400).send("Invalid session");
-      return;
-    }
-
-    // itemIds can be a string (single) or array (multiple)
-    const ids: string[] = Array.isArray(itemIds)
-      ? itemIds
-      : itemIds
-        ? [itemIds]
-        : [];
-
-    if (ids.length === 0) {
-      res.status(400).send("No items selected. Go back and pick at least one.");
-      return;
-    }
-
-    const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ access_token: session.accessToken });
+    oauth2Client.setCredentials({
+      access_token: session.accessToken,
+      refresh_token: session.refreshToken,
+    });
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
       const name = vaultName || "My Brain";
 
-      // Scan selected items — could be folders or individual files
+      // Use Picker-provided metadata directly. Avoid drive.files.get — it can
+      // 404 under drive.file scope for shortcuts and shared-with-me items even
+      // when the Picker grant was successful. setOwnedByMe(true) in the client
+      // already restricts Picker to the user's own items.
       let totalFiles = 0;
       let totalFolders = 0;
       let totalMd = 0;
       let totalDocs = 0;
       const sourceNames: string[] = [];
+      const skippedItems: string[] = [];
 
-      for (const itemId of ids) {
-        const meta = await drive.files.get({
-          fileId: itemId,
-          fields: "name, mimeType",
-        });
-        sourceNames.push(meta.data.name || "item");
+      for (const item of itemList) {
+        sourceNames.push(item.name || "item");
+        const isFolder = item.mimeType === "application/vnd.google-apps.folder";
+        const isDoc = item.mimeType === "application/vnd.google-apps.document";
 
-        if (meta.data.mimeType === "application/vnd.google-apps.folder") {
+        if (isFolder) {
           totalFolders++;
-          // Count children for folders
-          const files = await drive.files.list({
-            q: `'${itemId}' in parents and trashed = false`,
-            fields: "files(name, mimeType)",
-            pageSize: 500,
-          });
-
-          for (const f of files.data.files || []) {
-            if (f.mimeType === "application/vnd.google-apps.folder") {
-              totalFolders++;
-            } else {
-              totalFiles++;
-              if (f.name?.endsWith(".md")) totalMd++;
-              if (f.mimeType === "application/vnd.google-apps.document")
-                totalDocs++;
+          try {
+            const files = await drive.files.list({
+              q: `'${item.id}' in parents and trashed = false`,
+              fields: "files(name, mimeType)",
+              pageSize: 500,
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+            });
+            for (const f of files.data.files || []) {
+              if (f.mimeType === "application/vnd.google-apps.folder") {
+                totalFolders++;
+              } else {
+                totalFiles++;
+                if (f.name?.endsWith(".md")) totalMd++;
+                if (f.mimeType === "application/vnd.google-apps.document")
+                  totalDocs++;
+              }
             }
+          } catch (listErr: any) {
+            console.error(
+              `[Condense] Children count failed for ${item.name} (${item.id}): ${listErr.message}`,
+            );
           }
         } else {
-          // Individual file
           totalFiles++;
-          if (meta.data.name?.endsWith(".md")) totalMd++;
-          if (meta.data.mimeType === "application/vnd.google-apps.document")
-            totalDocs++;
+          if (item.name?.endsWith(".md")) totalMd++;
+          if (isDoc) totalDocs++;
         }
       }
 
@@ -752,11 +680,11 @@ export async function startCloudServer(port: number): Promise<void> {
           mimeType: "application/vnd.google-apps.folder",
         },
         fields: "id",
+        supportsAllDrives: true,
       });
 
       const vaultId = vaultFolder.data.id!;
 
-      // Create a "sources" subfolder to hold shortcuts
       const sourcesFolder = await drive.files.create({
         requestBody: {
           name: "sources",
@@ -764,28 +692,42 @@ export async function startCloudServer(port: number): Promise<void> {
           mimeType: "application/vnd.google-apps.folder",
         },
         fields: "id",
+        supportsAllDrives: true,
       });
 
-      // Create shortcuts to each selected item (folders and files)
+      // Create shortcuts — soft-fail per item so one broken shortcut doesn't
+      // abort the whole vault creation.
       const sourceManifest: string[] = [];
 
-      for (let i = 0; i < ids.length; i++) {
-        await drive.files.create({
-          requestBody: {
-            name: sourceNames[i],
-            parents: [sourcesFolder.data.id!],
-            mimeType: "application/vnd.google-apps.shortcut",
-            shortcutDetails: {
-              targetId: ids[i],
+      for (let i = 0; i < itemList.length; i++) {
+        try {
+          await drive.files.create({
+            requestBody: {
+              name: sourceNames[i],
+              parents: [sourcesFolder.data.id!],
+              mimeType: "application/vnd.google-apps.shortcut",
+              shortcutDetails: {
+                targetId: itemList[i].id,
+              },
             },
-          },
-        });
-        sourceManifest.push(
-          `- [[sources/${sourceNames[i]}|${sourceNames[i]}]]`,
-        );
+            supportsAllDrives: true,
+          });
+          sourceManifest.push(
+            `- [[sources/${sourceNames[i]}|${sourceNames[i]}]]`,
+          );
+        } catch (shortcutErr: any) {
+          console.error(
+            `[Condense] Shortcut creation failed for ${sourceNames[i]} (${itemList[i].id}): ${shortcutErr.message}`,
+          );
+          skippedItems.push(sourceNames[i]);
+        }
       }
 
-      // Create welcome note
+      const skippedNote =
+        skippedItems.length > 0
+          ? `\n\n> ⚠️ These items couldn't be linked and were skipped: ${skippedItems.join(", ")}. They may be shortcuts with inaccessible targets or files with restricted permissions.`
+          : "";
+
       await drive.files.create({
         requestBody: {
           name: "Welcome to Synapse.md",
@@ -794,35 +736,21 @@ export async function startCloudServer(port: number): Promise<void> {
         },
         media: {
           mimeType: "text/markdown",
-          body: `# Welcome to ${name}\n\nThis vault was created from ${ids.length} item${ids.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
+          body: `# Welcome to ${name}\n\nThis vault was created from ${itemList.length} item${itemList.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.${skippedNote}\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
         },
+        supportsAllDrives: true,
       });
 
-      // Store folder and redirect — pass source stats via query params
       session.folderId = vaultId;
       session.folderName = name;
 
-      res.redirect(
-        `/vault-purpose?session=${sessionToken}&source=condense&files=${totalFiles}&folders=${totalFolders}&md=${totalMd}&docs=${totalDocs}&sourceNames=${encodeURIComponent(sourceNames.join(","))}`,
-      );
+      res.json({
+        redirect: `/vault-purpose?session=${sessionToken}&source=condense&files=${totalFiles}&folders=${totalFolders}&md=${totalMd}&docs=${totalDocs}&sourceNames=${encodeURIComponent(sourceNames.join(","))}`,
+        skipped: skippedItems.length,
+      });
     } catch (err: any) {
-      console.error(`[Condense] Error: ${err.message}`);
-      res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Synapse — Error</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>${pageStyles}</style>
-</head>
-<body>
-  <div class="container">
-    ${pageHeader}
-    <h1>Something went wrong</h1>
-    <p class="subtitle">${escapeHtml(err.message)}</p>
-    <a href="javascript:history.back()" class="btn">Try Again</a>
-  </div>
-</body>
-</html>`);
+      console.error(`[Condense] Fatal error: ${err.message}`);
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -847,6 +775,23 @@ export async function startCloudServer(port: number): Promise<void> {
     const source = (req.query.source as string) || "";
     const sourceParam = source ? `&source=${source}` : "";
     res.redirect(`/vault-purpose?session=${sessionToken}${sourceParam}`);
+  });
+
+  // POST variant for Google Picker callback from /pick-folder (AJAX-driven)
+  app.post("/picker-select-folder", async (req, res) => {
+    const { sessionToken, folderId, folderName } = req.body || {};
+    if (!sessionToken || !folderId) {
+      res.status(400).json({ error: "Missing sessionToken or folderId" });
+      return;
+    }
+    const session = sessions.get(sessionToken);
+    if (!session) {
+      res.status(400).json({ error: "Invalid session" });
+      return;
+    }
+    session.folderId = folderId;
+    session.folderName = folderName || "vault";
+    res.json({ redirect: `/vault-purpose?session=${sessionToken}` });
   });
 
   // Step 5: What's this brain for?
