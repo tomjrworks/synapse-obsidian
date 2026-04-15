@@ -528,8 +528,22 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
+    try {
+      await refreshSessionToken(session);
+    } catch (err: any) {
+      res
+        .status(401)
+        .send(
+          `Session expired — please <a href="/auth/google">sign in again</a>.`,
+        );
+      return;
+    }
+
     const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials({ access_token: session.accessToken });
+    oauth2Client.setCredentials({
+      access_token: session.accessToken,
+      refresh_token: session.refreshToken,
+    });
     const drive = google.drive({ version: "v3", auth: oauth2Client });
 
     try {
@@ -542,6 +556,7 @@ export async function startCloudServer(port: number): Promise<void> {
           mimeType: "application/vnd.google-apps.folder",
         },
         fields: "id",
+        supportsAllDrives: true,
       });
 
       const folderId = folder.data.id!;
@@ -557,6 +572,7 @@ export async function startCloudServer(port: number): Promise<void> {
           mimeType: "text/markdown",
           body: `# Welcome to ${name}\n\nThis is your AI-powered knowledge base. Start by telling Claude:\n\n> "Save this article: [paste any URL]"\n\n> "What do my notes say about [topic]?"\n\n> "Help me organize my vault"\n\nEvery note you save and every answer Claude gives compounds into a smarter brain over time.\n`,
         },
+        supportsAllDrives: true,
       });
 
       // Redirect to the success page — skip preview for new vaults (nothing to show)
@@ -890,8 +906,17 @@ export async function startCloudServer(port: number): Promise<void> {
         .filter(Boolean);
     } else {
       // Scan the selected folder directly
+      try {
+        await refreshSessionToken(session);
+      } catch (err: any) {
+        console.error(`[VaultPreview] Token refresh failed: ${err.message}`);
+      }
+
       const oauth2Client = getOAuth2Client();
-      oauth2Client.setCredentials({ access_token: session.accessToken });
+      oauth2Client.setCredentials({
+        access_token: session.accessToken,
+        refresh_token: session.refreshToken,
+      });
       const drive = google.drive({ version: "v3", auth: oauth2Client });
 
       try {
@@ -899,6 +924,8 @@ export async function startCloudServer(port: number): Promise<void> {
           q: `'${session.folderId}' in parents and trashed = false`,
           fields: "files(id, name, mimeType)",
           pageSize: 500,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
         });
 
         const files = result.data.files || [];
@@ -912,8 +939,10 @@ export async function startCloudServer(port: number): Promise<void> {
               docCount++;
           }
         }
-      } catch {
-        // If scan fails, still let them continue
+      } catch (err: any) {
+        console.error(
+          `[VaultPreview] Drive list failed for folderId=${session.folderId}: ${err.message}`,
+        );
       }
     }
 
