@@ -22,6 +22,11 @@ interface UserSession {
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || "";
+// GCP OAuth client IDs have the format `{project_number}-{hash}.apps.googleusercontent.com`.
+// Extract the project number for Picker's setAppId, which Google requires to link
+// the Picker grant to the backend OAuth client. Without this, drive.files.* on
+// Picker-granted file IDs returns 404 "File not found" from the backend.
+const GOOGLE_PROJECT_NUMBER = GOOGLE_CLIENT_ID.split("-")[0] || "";
 const BASE_URL = process.env.BASE_URL || "http://localhost:3777";
 
 function getOAuth2Client() {
@@ -346,6 +351,7 @@ export async function startCloudServer(port: number): Promise<void> {
     const SESSION_TOKEN = ${safeJs(sessionToken)};
     const ACCESS_TOKEN = ${safeJs(session.accessToken)};
     const API_KEY = ${safeJs(GOOGLE_API_KEY)};
+    const APP_ID = ${safeJs(GOOGLE_PROJECT_NUMBER)};
 
     let pickerReady = false;
     gapi.load("picker", { callback: function () { pickerReady = true; } });
@@ -370,6 +376,7 @@ export async function startCloudServer(port: number): Promise<void> {
         .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
         .setOAuthToken(ACCESS_TOKEN)
         .setDeveloperKey(API_KEY)
+        .setAppId(APP_ID)
         .addView(view)
         .setCallback(function (data) { onImportPicked(data, vaultName); })
         .build();
@@ -647,7 +654,7 @@ export async function startCloudServer(port: number): Promise<void> {
             totalDocs++;
         } catch (copyErr: any) {
           console.error(
-            `[Import] Copy failed for ${item.name} (${item.id}): ${copyErr.message}`,
+            `[Import] Copy failed for ${item.name} (${item.id}): code=${copyErr.code || "?"} status=${copyErr.response?.status || "?"} message=${copyErr.message}`,
           );
           skippedItems.push(item.name);
         }
