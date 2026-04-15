@@ -336,16 +336,10 @@ export async function startCloudServer(port: number): Promise<void> {
       <p>Start fresh. We'll create a folder in your Drive with a welcome note — ready to use immediately.</p>
     </a>
 
-    <a href="#" onclick="launchFolderPicker(); return false;" class="option-card">
-      <span class="tag tag-existing">Existing notes</span>
-      <h3>Use an existing folder</h3>
-      <p>Already have notes in Google Drive? Pick the folder and Synapse adapts to your structure.</p>
-    </a>
-
-    <a href="#" onclick="launchConsolidatePicker(); return false;" class="option-card">
-      <span class="tag tag-power">Consolidate</span>
-      <h3>Combine scattered folders</h3>
-      <p>Notes spread across multiple Drive folders? We'll gather them into one vault without deleting anything.</p>
+    <a href="#" onclick="launchImportPicker(); return false;" class="option-card">
+      <span class="tag tag-power">Import files</span>
+      <h3>Import existing files</h3>
+      <p>Pick individual files from your Drive and we'll copy them into a new Synapse vault. Your originals stay in place.</p>
     </a>
   </div>
   <script>
@@ -356,79 +350,37 @@ export async function startCloudServer(port: number): Promise<void> {
     let pickerReady = false;
     gapi.load("picker", { callback: function () { pickerReady = true; } });
 
-    function launchFolderPicker() {
+    function launchImportPicker() {
       if (!pickerReady) {
         alert("Google Picker is still loading — try again in a moment.");
         return;
       }
-      var view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
-        .setOwnedByMe(true)
-        .setSelectFolderEnabled(true)
-        .setIncludeFolders(true)
-        .setMimeTypes("application/vnd.google-apps.folder");
-      var picker = new google.picker.PickerBuilder()
-        .setOAuthToken(ACCESS_TOKEN)
-        .setDeveloperKey(API_KEY)
-        .addView(view)
-        .setCallback(onFolderPicked)
-        .build();
-      picker.setVisible(true);
-    }
-
-    function onFolderPicked(data) {
-      if (data.action !== google.picker.Action.PICKED) return;
-      var doc = data.docs && data.docs[0];
-      if (!doc) return;
-      fetch("/picker-select-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionToken: SESSION_TOKEN,
-          folderId: doc.id,
-          folderName: doc.name,
-        }),
-      })
-        .then(function (r) { return r.json(); })
-        .then(function (json) {
-          if (json.redirect) {
-            window.location = json.redirect;
-          } else {
-            alert("Failed to save folder selection: " + (json.error || "unknown"));
-          }
-        })
-        .catch(function (err) {
-          alert("Network error saving folder selection: " + err.message);
-        });
-    }
-
-    function launchConsolidatePicker() {
-      if (!pickerReady) {
-        alert("Google Picker is still loading — try again in a moment.");
-        return;
-      }
-      var vaultName = window.prompt("Name your vault:", "My Brain");
+      var vaultName = window.prompt("Name your new vault:", "My Brain");
       if (vaultName === null) return;
       vaultName = vaultName.trim() || "My Brain";
 
+      // Files-only view: user can navigate INTO folders to find files,
+      // but can only SELECT individual files. Folder picking under drive.file
+      // doesn't grant child listing access, so we pick files directly.
       var view = new google.picker.DocsView()
         .setOwnedByMe(true)
-        .setSelectFolderEnabled(true)
-        .setIncludeFolders(true);
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(false);
       var picker = new google.picker.PickerBuilder()
         .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
         .setOAuthToken(ACCESS_TOKEN)
         .setDeveloperKey(API_KEY)
         .addView(view)
-        .setCallback(function (data) { onConsolidatePicked(data, vaultName); })
+        .setCallback(function (data) { onImportPicked(data, vaultName); })
         .build();
       picker.setVisible(true);
     }
 
-    function onConsolidatePicked(data, vaultName) {
+    function onImportPicked(data, vaultName) {
       if (data.action !== google.picker.Action.PICKED) return;
       var docs = data.docs || [];
       if (docs.length === 0) {
-        alert("Nothing selected. Click Consolidate again to try.");
+        alert("No files selected. Click Import again to try.");
         return;
       }
       var items = docs.map(function (d) {
@@ -439,7 +391,7 @@ export async function startCloudServer(port: number): Promise<void> {
           resourceKey: d.resourceKey || undefined,
         };
       });
-      fetch("/condense-folders", {
+      fetch("/import-vault", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -453,11 +405,11 @@ export async function startCloudServer(port: number): Promise<void> {
           if (json.redirect) {
             window.location = json.redirect;
           } else {
-            alert("Consolidate failed: " + (json.error || "unknown"));
+            alert("Import failed: " + (json.error || "unknown"));
           }
         })
         .catch(function (err) {
-          alert("Network error during consolidate: " + err.message);
+          alert("Network error during import: " + err.message);
         });
     }
   </script>
@@ -600,8 +552,12 @@ export async function startCloudServer(port: number): Promise<void> {
     }
   });
 
-  // Consolidate scattered folders — JSON POST from Google Picker multi-select
-  app.post("/condense-folders", async (req, res) => {
+  // Import existing files — JSON POST from Google Picker file-multi-select.
+  // Creates a new app-owned vault folder and copies each picked file into it.
+  // drive.files.copy under drive.file works for: source=Picker-granted file,
+  // destination=app-owned folder. The copies are app-owned so drive.file has
+  // full access to them forever (including listing via GoogleDriveBackend).
+  app.post("/import-vault", async (req, res) => {
     const { sessionToken, vaultName, items } = req.body || {};
     const session = sessions.get(sessionToken);
 
@@ -641,55 +597,7 @@ export async function startCloudServer(port: number): Promise<void> {
     try {
       const name = vaultName || "My Brain";
 
-      // Use Picker-provided metadata directly. Avoid drive.files.get — it can
-      // 404 under drive.file scope for shortcuts and shared-with-me items even
-      // when the Picker grant was successful. setOwnedByMe(true) in the client
-      // already restricts Picker to the user's own items.
-      let totalFiles = 0;
-      let totalFolders = 0;
-      let totalMd = 0;
-      let totalDocs = 0;
-      const sourceNames: string[] = [];
-      const skippedItems: string[] = [];
-
-      for (const item of itemList) {
-        sourceNames.push(item.name || "item");
-        const isFolder = item.mimeType === "application/vnd.google-apps.folder";
-        const isDoc = item.mimeType === "application/vnd.google-apps.document";
-
-        if (isFolder) {
-          totalFolders++;
-          try {
-            const files = await drive.files.list({
-              q: `'${item.id}' in parents and trashed = false`,
-              fields: "files(name, mimeType)",
-              pageSize: 500,
-              supportsAllDrives: true,
-              includeItemsFromAllDrives: true,
-            });
-            for (const f of files.data.files || []) {
-              if (f.mimeType === "application/vnd.google-apps.folder") {
-                totalFolders++;
-              } else {
-                totalFiles++;
-                if (f.name?.endsWith(".md")) totalMd++;
-                if (f.mimeType === "application/vnd.google-apps.document")
-                  totalDocs++;
-              }
-            }
-          } catch (listErr: any) {
-            console.error(
-              `[Condense] Children count failed for ${item.name} (${item.id}): ${listErr.message}`,
-            );
-          }
-        } else {
-          totalFiles++;
-          if (item.name?.endsWith(".md")) totalMd++;
-          if (isDoc) totalDocs++;
-        }
-      }
-
-      // Create the vault folder
+      // 1. Create the vault folder (app-owned)
       const vaultFolder = await drive.files.create({
         requestBody: {
           name,
@@ -698,9 +606,9 @@ export async function startCloudServer(port: number): Promise<void> {
         fields: "id",
         supportsAllDrives: true,
       });
-
       const vaultId = vaultFolder.data.id!;
 
+      // 2. Create sources subfolder (app-owned)
       const sourcesFolder = await drive.files.create({
         requestBody: {
           name: "sources",
@@ -711,37 +619,44 @@ export async function startCloudServer(port: number): Promise<void> {
         supportsAllDrives: true,
       });
 
-      // Create shortcuts — soft-fail per item so one broken shortcut doesn't
-      // abort the whole vault creation.
+      // 3. Copy each picked file into sources/. drive.files.copy works under
+      // drive.file when source is Picker-granted and destination is app-owned.
+      // Soft-fail per item so one broken copy doesn't abort the whole import.
+      let totalFiles = 0;
+      let totalMd = 0;
+      let totalDocs = 0;
+      const sourceNames: string[] = [];
       const sourceManifest: string[] = [];
+      const skippedItems: string[] = [];
 
-      for (let i = 0; i < itemList.length; i++) {
+      for (const item of itemList) {
         try {
-          await drive.files.create({
+          await drive.files.copy({
+            fileId: item.id,
             requestBody: {
-              name: sourceNames[i],
+              name: item.name,
               parents: [sourcesFolder.data.id!],
-              mimeType: "application/vnd.google-apps.shortcut",
-              shortcutDetails: {
-                targetId: itemList[i].id,
-              },
             },
             supportsAllDrives: true,
           });
-          sourceManifest.push(
-            `- [[sources/${sourceNames[i]}|${sourceNames[i]}]]`,
-          );
-        } catch (shortcutErr: any) {
+          sourceNames.push(item.name);
+          sourceManifest.push(`- [[sources/${item.name}|${item.name}]]`);
+          totalFiles++;
+          if (item.name?.endsWith(".md")) totalMd++;
+          if (item.mimeType === "application/vnd.google-apps.document")
+            totalDocs++;
+        } catch (copyErr: any) {
           console.error(
-            `[Condense] Shortcut creation failed for ${sourceNames[i]} (${itemList[i].id}): ${shortcutErr.message}`,
+            `[Import] Copy failed for ${item.name} (${item.id}): ${copyErr.message}`,
           );
-          skippedItems.push(sourceNames[i]);
+          skippedItems.push(item.name);
         }
       }
 
+      // 4. Create welcome note
       const skippedNote =
         skippedItems.length > 0
-          ? `\n\n> ⚠️ These items couldn't be linked and were skipped: ${skippedItems.join(", ")}. They may be shortcuts with inaccessible targets or files with restricted permissions.`
+          ? `\n\n> ⚠️ ${skippedItems.length} file${skippedItems.length > 1 ? "s" : ""} couldn't be copied and ${skippedItems.length > 1 ? "were" : "was"} skipped: ${skippedItems.join(", ")}. ${skippedItems.length > 1 ? "They" : "It"} may have restricted sharing permissions.`
           : "";
 
       await drive.files.create({
@@ -752,7 +667,7 @@ export async function startCloudServer(port: number): Promise<void> {
         },
         media: {
           mimeType: "text/markdown",
-          body: `# Welcome to ${name}\n\nThis vault was created from ${itemList.length} item${itemList.length > 1 ? "s" : ""} in your Google Drive. Your originals are untouched — they're linked in the \`sources/\` folder.${skippedNote}\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
+          body: `# Welcome to ${name}\n\nImported ${totalFiles} file${totalFiles !== 1 ? "s" : ""} from your Google Drive. The copies live in the \`sources/\` folder — your originals in Drive are untouched.${skippedNote}\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
         },
         supportsAllDrives: true,
       });
@@ -761,11 +676,12 @@ export async function startCloudServer(port: number): Promise<void> {
       session.folderName = name;
 
       res.json({
-        redirect: `/vault-purpose?session=${sessionToken}&source=condense&files=${totalFiles}&folders=${totalFolders}&md=${totalMd}&docs=${totalDocs}&sourceNames=${encodeURIComponent(sourceNames.join(","))}`,
+        redirect: `/vault-purpose?session=${sessionToken}&source=import&files=${totalFiles}&folders=0&md=${totalMd}&docs=${totalDocs}&sourceNames=${encodeURIComponent(sourceNames.join(","))}`,
+        imported: totalFiles,
         skipped: skippedItems.length,
       });
     } catch (err: any) {
-      console.error(`[Condense] Fatal error: ${err.message}`);
+      console.error(`[Import] Fatal error: ${err.message}`);
       res.status(500).json({ error: err.message });
     }
   });
@@ -793,23 +709,6 @@ export async function startCloudServer(port: number): Promise<void> {
     res.redirect(`/vault-purpose?session=${sessionToken}${sourceParam}`);
   });
 
-  // POST variant for Google Picker callback from /pick-folder (AJAX-driven)
-  app.post("/picker-select-folder", async (req, res) => {
-    const { sessionToken, folderId, folderName } = req.body || {};
-    if (!sessionToken || !folderId) {
-      res.status(400).json({ error: "Missing sessionToken or folderId" });
-      return;
-    }
-    const session = sessions.get(sessionToken);
-    if (!session) {
-      res.status(400).json({ error: "Invalid session" });
-      return;
-    }
-    session.folderId = folderId;
-    session.folderName = folderName || "vault";
-    res.json({ redirect: `/vault-purpose?session=${sessionToken}` });
-  });
-
   // Step 5: What's this brain for?
   app.get("/vault-purpose", async (req, res) => {
     const sessionToken = req.query.session as string;
@@ -820,7 +719,7 @@ export async function startCloudServer(port: number): Promise<void> {
       return;
     }
 
-    // Forward condense stats if they exist — parseInt to prevent injection via query params
+    // Forward import stats if they exist — parseInt to prevent injection via query params
     const source = (req.query.source as string) || "";
     const files = parseInt((req.query.files as string) || "0") || 0;
     const folders = parseInt((req.query.folders as string) || "0") || 0;
@@ -831,8 +730,8 @@ export async function startCloudServer(port: number): Promise<void> {
     );
 
     const extra =
-      source === "condense"
-        ? `&source=condense&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${sourceNames}`
+      source === "import"
+        ? `&source=import&files=${files}&folders=${folders}&md=${md}&docs=${docs}&sourceNames=${sourceNames}`
         : "";
 
     // New vaults skip preview (nothing to show) — go straight to client picker
@@ -880,7 +779,7 @@ export async function startCloudServer(port: number): Promise<void> {
   app.get("/vault-preview", async (req, res) => {
     const sessionToken = req.query.session as string;
     const purpose = sanitizePurpose((req.query.purpose as string) || "");
-    const source = req.query.source as string; // "condense" if from consolidation
+    const source = req.query.source as string; // "import" if files were imported
     const session = sessions.get(sessionToken);
 
     if (!session || !session.folderId) {
@@ -893,10 +792,10 @@ export async function startCloudServer(port: number): Promise<void> {
     let mdCount = 0;
     let docCount = 0;
     let sourceNames: string[] = [];
-    let isCondense = source === "condense";
+    let isImport = source === "import";
 
-    if (isCondense) {
-      // Stats were passed from the consolidation step
+    if (isImport) {
+      // Stats were passed from the import step
       fileCount = parseInt(req.query.files as string) || 0;
       folderCount = parseInt(req.query.folders as string) || 0;
       mdCount = parseInt(req.query.md as string) || 0;
@@ -966,7 +865,7 @@ export async function startCloudServer(port: number): Promise<void> {
         </div>`;
 
     const sourceList =
-      isCondense && sourceNames.length > 0
+      isImport && sourceNames.length > 0
         ? `<div style="margin-bottom:20px;">
           <p style="font-size:13px;color:#8B9490;margin-bottom:8px;">Pulling from:</p>
           ${sourceNames.map((n) => `<span style="display:inline-block;font-size:13px;padding:4px 10px;background:rgba(26,92,50,0.06);border-radius:20px;color:#1A5C32;margin:0 4px 4px 0;">${escapeHtml(n)}</span>`).join("")}
@@ -974,7 +873,7 @@ export async function startCloudServer(port: number): Promise<void> {
         : "";
 
     const title = escapeHtml(session.folderName);
-    const subtitle = isCondense
+    const subtitle = isImport
       ? `We found ${fileCount} files across ${sourceNames.length} folder${sourceNames.length > 1 ? "s" : ""}. Claude will compile these into your brain.`
       : hasContent
         ? "Here's what we found in your folder."
