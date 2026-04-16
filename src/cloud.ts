@@ -1230,14 +1230,30 @@ export async function startCloudServer(port: number): Promise<void> {
     });
   });
 
-  // Serve polished landing page from landing/index.html
+  // Serve static pages from landing/
   const landingHtml = readFileSync(
     resolve(__dirname, "../landing/index.html"),
+    "utf-8",
+  );
+  const privacyHtml = readFileSync(
+    resolve(__dirname, "../landing/privacy.html"),
+    "utf-8",
+  );
+  const termsHtml = readFileSync(
+    resolve(__dirname, "../landing/terms.html"),
     "utf-8",
   );
 
   app.get("/", (_req, res) => {
     res.type("html").send(landingHtml);
+  });
+
+  app.get("/privacy", (_req, res) => {
+    res.type("html").send(privacyHtml);
+  });
+
+  app.get("/terms", (_req, res) => {
+    res.type("html").send(termsHtml);
   });
 
   app.listen(port, () => {

@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synapse — Privacy Policy</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #f2f0eb;
+        color: #3d3529;
+        line-height: 1.7;
+        padding: 60px 20px;
+      }
+      .container {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      .logo {
+        font-size: 18px;
+        font-weight: 700;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .logo-dot {
+        width: 8px;
+        height: 8px;
+        background: #2ecc71;
+        border-radius: 50%;
+      }
+      .by {
+        font-size: 12px;
+        color: #8b9490;
+        margin-bottom: 32px;
+        font-family: monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+      }
+      h1 {
+        font-family: Georgia, serif;
+        font-size: 28px;
+        font-weight: 400;
+        margin-bottom: 8px;
+      }
+      h2 {
+        font-size: 18px;
+        font-weight: 600;
+        margin-top: 32px;
+        margin-bottom: 12px;
+      }
+      p,
+      li {
+        font-size: 15px;
+        margin-bottom: 12px;
+        color: rgba(61, 53, 41, 0.85);
+      }
+      ul {
+        padding-left: 24px;
+      }
+      .updated {
+        font-size: 13px;
+        color: #8b9490;
+        margin-bottom: 32px;
+      }
+      a {
+        color: #1a5c32;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="logo"><span class="logo-dot"></span> Synapse</div>
+      <div class="by">by Main Loop Systems</div>
+
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: April 15, 2026</p>
+
+      <p>
+        Synapse ("we", "our", "the app") is operated by Main Loop Systems LLC.
+        This policy describes how Synapse accesses, uses, stores, and protects
+        your data when you use the hosted cloud version of Synapse connected to
+        your Google Drive.
+      </p>
+
+      <h2>1. What data we access</h2>
+      <p>
+        Synapse requests the <strong>drive.file</strong> OAuth scope from
+        Google. This is a limited, non-sensitive scope that allows Synapse to:
+      </p>
+      <ul>
+        <li>
+          Create new files and folders in your Google Drive (your Synapse vault)
+        </li>
+        <li>
+          Read and modify files that
+          <strong>you explicitly select</strong> using the Google Picker
+        </li>
+      </ul>
+      <p>
+        Synapse <strong>cannot</strong> browse, search, or access any files in
+        your Google Drive that you have not explicitly selected or that the app
+        has not created. We do not request broad read access to your Drive.
+      </p>
+
+      <h2>2. How we use your data</h2>
+      <p>
+        Files you select or create through Synapse are used solely to provide
+        the Synapse knowledge base service:
+      </p>
+      <ul>
+        <li>
+          Reading files to respond to queries through your AI client (Claude,
+          ChatGPT, Cursor, etc.)
+        </li>
+        <li>
+          Creating compiled summaries, wiki pages, and organized notes within
+          your vault
+        </li>
+        <li>
+          Copying files you select into your Synapse vault folder during the
+          import process
+        </li>
+      </ul>
+      <p>
+        We do not use your files for training AI models, advertising, analytics,
+        or any purpose beyond providing the Synapse service to you.
+      </p>
+
+      <h2>3. Data storage and transmission</h2>
+      <ul>
+        <li>
+          <strong>Your files stay in Google Drive.</strong> Synapse does not
+          download or store copies of your files on our servers. All file
+          operations happen through the Google Drive API.
+        </li>
+        <li>
+          <strong>OAuth tokens</strong> (access tokens and refresh tokens) are
+          stored in server memory for the duration of your session. They are not
+          persisted to disk or a database. When our server restarts, all tokens
+          are cleared and you must re-authenticate.
+        </li>
+        <li>
+          <strong>No personal information</strong> (name, email, profile data)
+          is collected or stored by Synapse beyond what Google provides in the
+          OAuth token.
+        </li>
+        <li>
+          <strong>Server infrastructure</strong> is hosted on Railway
+          (railway.app) in the United States.
+        </li>
+      </ul>
+
+      <h2>4. Data sharing</h2>
+      <p>
+        We do not sell, share, or transfer your data to any third parties. Your
+        files are accessed only through the Google Drive API in response to your
+        requests via your chosen AI client.
+      </p>
+
+      <h2>5. Data retention and deletion</h2>
+      <ul>
+        <li>
+          <strong>Session data:</strong> OAuth tokens exist only in server
+          memory and are automatically cleared on server restart (typically
+          within 24 hours).
+        </li>
+        <li>
+          <strong>Vault files:</strong> Files created by Synapse in your Google
+          Drive are owned by you and persist in your Drive until you delete
+          them.
+        </li>
+        <li>
+          <strong>Account deletion:</strong> You can revoke Synapse's access at
+          any time by visiting
+          <a href="https://myaccount.google.com/permissions"
+            >myaccount.google.com/permissions</a
+          >
+          and removing "Synapse Cloud." This immediately revokes all access. No
+          data remains on our servers to delete.
+        </li>
+      </ul>
+
+      <h2>6. Security</h2>
+      <ul>
+        <li>
+          All communication between your browser, our server, and Google's APIs
+          uses HTTPS/TLS encryption.
+        </li>
+        <li>
+          OAuth tokens are never logged, written to disk, or exposed in URLs.
+        </li>
+        <li>
+          The Google Picker API key used client-side is restricted to the Google
+          Picker API only and cannot be used to access Drive data directly.
+        </li>
+        <li>
+          Synapse is open source. You can inspect the code at
+          <a href="https://github.com/tomjrworks/synapse-obsidian"
+            >github.com/tomjrworks/synapse-obsidian</a
+          >.
+        </li>
+      </ul>
+
+      <h2>7. Children's privacy</h2>
+      <p>
+        Synapse is not directed at children under 13. We do not knowingly
+        collect data from children.
+      </p>
+
+      <h2>8. Changes to this policy</h2>
+      <p>
+        We may update this policy from time to time. Changes will be posted on
+        this page with an updated date. Continued use of Synapse after changes
+        constitutes acceptance.
+      </p>
+
+      <h2>9. Contact</h2>
+      <p>
+        For questions about this privacy policy or to request data deletion,
+        contact us at
+        <a href="mailto:tomgirgashjr@gmail.com">tomgirgashjr@gmail.com</a>.
+      </p>
+
+      <p style="margin-top: 40px; font-size: 13px; color: #8b9490">
+        &copy; 2026 Main Loop Systems LLC. All rights reserved.
+      </p>
+    </div>
+  </body>
+</html>
