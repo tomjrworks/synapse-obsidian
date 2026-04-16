@@ -9,7 +9,11 @@ import express from "express";
 import { GoogleDriveBackend } from "./utils/google-drive.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
-import { registerInitTools } from "./tools/init.js";
+import {
+  registerInitTools,
+  generateClaudeMd,
+  INDEX_TEMPLATE,
+} from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
 
 interface UserSession {
@@ -53,6 +57,24 @@ async function refreshSessionToken(session: UserSession): Promise<string> {
 
 const VALID_PURPOSES = ["research", "business", "personal", "academic"];
 const VALID_CLIENTS = ["claude", "chatgpt", "cursor", "other"];
+
+/** Map cloud UI purpose values to synapse config purpose values */
+function mapPurposeToConfig(
+  cloudPurpose: string,
+): "knowledge-base" | "business" | "academic" | "life-os" {
+  switch (cloudPurpose) {
+    case "research":
+      return "knowledge-base";
+    case "business":
+      return "business";
+    case "academic":
+      return "academic";
+    case "personal":
+      return "life-os";
+    default:
+      return "life-os";
+  }
+}
 
 function sanitizePurpose(val: string): string {
   return VALID_PURPOSES.includes(val) ? val : "personal";
@@ -920,6 +942,154 @@ export async function startCloudServer(port: number): Promise<void> {
     if (!session || !session.folderId) {
       res.status(400).send("Invalid session");
       return;
+    }
+
+    // ── Scaffold the vault with CLAUDE.md, index.md, sources/, config ──
+    // This runs once when the user reaches the /connect step.
+    // Both Path A (create) and Path B (import) converge here.
+    try {
+      await refreshSessionToken(session);
+      const oauth2 = getOAuth2Client();
+      oauth2.setCredentials({
+        access_token: session.accessToken,
+        refresh_token: session.refreshToken,
+      });
+      const drive = google.drive({ version: "v3", auth: oauth2 });
+      const vaultId = session.folderId;
+      const configPurpose = mapPurposeToConfig(purpose);
+      const today = new Date().toISOString().split("T")[0];
+
+      // Check what already exists (import path creates sources/ already)
+      const existing = await drive.files.list({
+        q: `'${vaultId}' in parents and trashed = false`,
+        fields: "files(name, mimeType)",
+        supportsAllDrives: true,
+      });
+      const existingNames = new Set(
+        (existing.data.files || []).map((f) => f.name),
+      );
+
+      // Create sources/ if not present (Path A doesn't create it)
+      if (!existingNames.has("sources")) {
+        await drive.files.create({
+          requestBody: {
+            name: "sources",
+            parents: [vaultId],
+            mimeType: "application/vnd.google-apps.folder",
+          },
+          fields: "id",
+          supportsAllDrives: true,
+        });
+      }
+
+      // Create notes/ folder
+      if (!existingNames.has("notes")) {
+        await drive.files.create({
+          requestBody: {
+            name: "notes",
+            parents: [vaultId],
+            mimeType: "application/vnd.google-apps.folder",
+          },
+          fields: "id",
+          supportsAllDrives: true,
+        });
+      }
+
+      // Create outputs/ folder
+      if (!existingNames.has("outputs")) {
+        await drive.files.create({
+          requestBody: {
+            name: "outputs",
+            parents: [vaultId],
+            mimeType: "application/vnd.google-apps.folder",
+          },
+          fields: "id",
+          supportsAllDrives: true,
+        });
+      }
+
+      // Write CLAUDE.md (personalized from purpose)
+      if (!existingNames.has("CLAUDE.md")) {
+        const claudeContent = generateClaudeMd({
+          topic: session.folderName || "general knowledge",
+          purpose: configPurpose,
+          sourcesFolder: "sources",
+          notesFolder: "notes",
+          outputsFolder: "outputs",
+          fileNaming: "kebab-case",
+          useWikilinks: true,
+          useFrontmatter: true,
+        });
+        await drive.files.create({
+          requestBody: {
+            name: "CLAUDE.md",
+            parents: [vaultId],
+            mimeType: "text/markdown",
+          },
+          media: { mimeType: "text/markdown", body: claudeContent },
+          supportsAllDrives: true,
+        });
+      }
+
+      // Write index.md
+      if (!existingNames.has("index.md")) {
+        const indexContent = INDEX_TEMPLATE.replace(/\{DATE\}/g, today).replace(
+          /\{TOPIC\}/g,
+          session.folderName || "My Brain",
+        );
+        await drive.files.create({
+          requestBody: {
+            name: "index.md",
+            parents: [vaultId],
+            mimeType: "text/markdown",
+          },
+          media: { mimeType: "text/markdown", body: indexContent },
+          supportsAllDrives: true,
+        });
+      }
+
+      // Write .synapse/config.json
+      if (!existingNames.has(".synapse")) {
+        const synapseDir = await drive.files.create({
+          requestBody: {
+            name: ".synapse",
+            parents: [vaultId],
+            mimeType: "application/vnd.google-apps.folder",
+          },
+          fields: "id",
+          supportsAllDrives: true,
+        });
+        const config = {
+          mode: "structured",
+          sourcesFolder: "sources",
+          wikiFolder: "notes",
+          outputsFolder: "outputs",
+          fileNaming: "kebab-case",
+          useFrontmatter: true,
+          useWikilinks: true,
+          schemaPath: "CLAUDE.md",
+          topic: session.folderName || null,
+          purpose: configPurpose,
+          purposeDescription: null,
+          configuredAt: new Date().toISOString(),
+        };
+        await drive.files.create({
+          requestBody: {
+            name: "config.json",
+            parents: [synapseDir.data.id!],
+            mimeType: "application/json",
+          },
+          media: {
+            mimeType: "application/json",
+            body: JSON.stringify(config, null, 2),
+          },
+          supportsAllDrives: true,
+        });
+      }
+    } catch (err: any) {
+      // Non-fatal — vault still works, just without CLAUDE.md scaffolding.
+      // The user can still run synapse_setup from their AI client.
+      console.error(`[Connect] Scaffold error: ${err.message}`);
     }
 
     res.send(`<!DOCTYPE html>

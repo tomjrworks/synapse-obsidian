@@ -13,6 +13,8 @@ import { readVaultFile, listVaultFiles } from "../utils/vault.js";
  * Generate a personalized CLAUDE.md from onboarding answers.
  * This is the single most important file in the vault — it makes Claude proactive.
  *
+ * Exported for use by cloud.ts (Drive-based onboarding).
+ *
  * Two layers:
  * 1. TABLE STAKES — always included, non-negotiable behaviors that make the brain work
  * 2. PERSONALIZED — shaped by onboarding answers (topic, purpose, folders, conventions)
@@ -20,7 +22,7 @@ import { readVaultFile, listVaultFiles } from "../utils/vault.js";
  * The file also self-updates: it tells Claude to modify these instructions when the
  * user expresses preferences about how they like things done.
  */
-function generateClaudeMd(opts: {
+export function generateClaudeMd(opts: {
   topic: string;
   purpose: string;
   sourcesFolder: string;
@@ -262,7 +264,7 @@ If the user expresses a preference about how they like work done — file naming
 `;
 }
 
-const INDEX_TEMPLATE = `---
+export const INDEX_TEMPLATE = `---
 title: "Index"
 date_modified: {DATE}
 ---
