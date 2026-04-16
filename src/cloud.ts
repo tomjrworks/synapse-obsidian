@@ -674,7 +674,7 @@ export async function startCloudServer(port: number): Promise<void> {
         },
         media: {
           mimeType: "text/markdown",
-          body: `# Welcome to ${name}\n\nImported ${totalFiles} file${totalFiles !== 1 ? "s" : ""} from your Google Drive. The copies live in the \`sources/\` folder — your originals in Drive are untouched.${skippedNote}\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Compile my knowledge base"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
+          body: `# Welcome to ${name}\n\nImported ${totalFiles} file${totalFiles !== 1 ? "s" : ""} from your Google Drive. The copies live in the \`sources/\` folder — your originals in Drive are untouched.${skippedNote}\n\n## Sources\n${sourceManifest.join("\n")}\n\n## Get started\n\nTell Claude:\n\n> "Organize my brain"\n\nThis will read your sources, convert everything to markdown, and build a wiki with summaries, concept pages, and cross-linked notes. The more you compile, the smarter your brain gets.\n`,
         },
         supportsAllDrives: true,
       });
@@ -1010,19 +1010,19 @@ export async function startCloudServer(port: number): Promise<void> {
 
     const purposePrompts: Record<string, string> = {
       research: `
-        <div class="prompt-card"><p class="prompt-label">Build your research wiki:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Build your research wiki:</p><p class="prompt-text">"Organize my brain"</p></div>
         <div class="prompt-card"><p class="prompt-label">Save a paper or article:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
         <div class="prompt-card"><p class="prompt-label">Query across everything:</p><p class="prompt-text">"What does my research say about [topic]?"</p></div>`,
       business: `
-        <div class="prompt-card"><p class="prompt-label">Organize your company knowledge:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Organize your company knowledge:</p><p class="prompt-text">"Organize my brain"</p></div>
         <div class="prompt-card"><p class="prompt-label">Save competitive intel:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
         <div class="prompt-card"><p class="prompt-label">Get instant answers:</p><p class="prompt-text">"What do we know about [client/competitor/process]?"</p></div>`,
       personal: `
-        <div class="prompt-card"><p class="prompt-label">Build your personal wiki:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Build your personal wiki:</p><p class="prompt-text">"Organize my brain"</p></div>
         <div class="prompt-card"><p class="prompt-label">Save something interesting:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
         <div class="prompt-card"><p class="prompt-label">Search your brain:</p><p class="prompt-text">"What do my notes say about [topic]?"</p></div>`,
       academic: `
-        <div class="prompt-card"><p class="prompt-label">Organize your course materials:</p><p class="prompt-text">"Compile my knowledge base"</p></div>
+        <div class="prompt-card"><p class="prompt-label">Organize your course materials:</p><p class="prompt-text">"Organize my brain"</p></div>
         <div class="prompt-card"><p class="prompt-label">Save lecture notes or papers:</p><p class="prompt-text">"Save this article: [paste URL]"</p></div>
         <div class="prompt-card"><p class="prompt-label">Study across your notes:</p><p class="prompt-text">"Summarize what I know about [topic]"</p></div>`,
     };
@@ -1104,7 +1104,7 @@ export async function startCloudServer(port: number): Promise<void> {
     ${purposePrompts[purpose] || purposePrompts.personal}
 
     <p class="note">
-      "Compile my knowledge base" is the magic one — it turns your raw files into a wiki with summaries, concept pages, and cross-linked notes. Every compile makes the brain smarter.
+      "Organize my brain" is the magic one — it turns your raw files into a wiki with summaries, concept pages, and cross-linked notes. Every compile makes the brain smarter.
     </p>
   </div>
 </body>

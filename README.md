@@ -97,15 +97,15 @@ Finds broken links, orphan pages, missing frontmatter, stale content. Fixes what
 
 | Tool                | What it does                                                   |
 | ------------------- | -------------------------------------------------------------- |
-| `kb_setup`          | Onboarding — scans vault, presents options, configures Synapse |
-| `kb_configure`      | Saves your vault preferences                                   |
-| `kb_save`           | Save content from a URL or pasted text                         |
-| `kb_status`         | Full vault overview with suggested actions                     |
-| `kb_ingest`         | Process a source into wiki pages                               |
-| `kb_compile`        | Find and process all unprocessed sources                       |
-| `kb_query`          | Research a question across your wiki                           |
-| `kb_lint`           | Health-check for broken links, orphans, gaps                   |
-| `kb_init`           | Scaffold a new knowledge base from scratch                     |
+| `synapse_setup`     | Onboarding — scans vault, presents options, configures Synapse |
+| `synapse_configure` | Saves your vault preferences                                   |
+| `synapse_save`      | Save content from a URL or pasted text                         |
+| `synapse_status`    | Full vault overview with suggested actions                     |
+| `synapse_ingest`    | Process a source into organized pages                          |
+| `synapse_compile`   | Find and process all unprocessed sources                       |
+| `synapse_query`     | Research a question across your knowledge base                 |
+| `synapse_lint`      | Health-check for broken links, orphans, gaps                   |
+| `synapse_init`      | Scaffold a new knowledge base from scratch                     |
 | `vault_read`        | Read any file                                                  |
 | `vault_write`       | Create or update any file                                      |
 | `vault_list`        | List files in vault or subdirectory                            |

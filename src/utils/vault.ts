@@ -103,19 +103,19 @@ export async function getVaultStats(
     if (dir !== ".") folders.add(dir);
   }
 
-  const hasRaw = await backend.exists("raw");
-  const hasWiki = await backend.exists("wiki");
+  const hasSources = await backend.exists("sources");
+  const hasNotes = await backend.exists("notes");
   const hasClaudeMd = await backend.exists("CLAUDE.md");
-  const hasIndex = await backend.exists("wiki/index.md");
+  const hasIndex = await backend.exists("index.md");
 
   return {
     totalFiles: allFiles.length,
     totalFolders: folders.size,
     topFolders: [...folders].slice(0, 10),
     knowledgeBase: {
-      initialized: hasRaw && hasWiki && hasClaudeMd,
-      hasRaw,
-      hasWiki,
+      initialized: hasSources && hasClaudeMd,
+      hasSources,
+      hasNotes,
       hasClaudeMd,
       hasIndex,
     },
@@ -139,8 +139,8 @@ export interface VaultStats {
   topFolders: string[];
   knowledgeBase: {
     initialized: boolean;
-    hasRaw: boolean;
-    hasWiki: boolean;
+    hasSources: boolean;
+    hasNotes: boolean;
     hasClaudeMd: boolean;
     hasIndex: boolean;
   };

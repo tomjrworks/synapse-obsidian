@@ -3,7 +3,7 @@ import type { StorageBackend } from "./storage.js";
 const CONFIG_PATH = ".synapse/config.json";
 
 export interface SynapseConfig {
-  mode: "existing" | "kb" | "custom";
+  mode: "existing" | "structured" | "kb" | "custom";
   /** Where raw/source articles are saved */
   sourcesFolder: string;
   /** Where compiled/processed content goes (null if using existing structure) */
@@ -37,7 +37,7 @@ export interface SynapseConfig {
 export function getDefaultConfig(): SynapseConfig {
   return {
     mode: "existing",
-    sourcesFolder: "raw/articles",
+    sourcesFolder: "sources",
     wikiFolder: null,
     outputsFolder: "outputs",
     fileNaming: "kebab-case",

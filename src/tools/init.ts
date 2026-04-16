@@ -9,115 +9,182 @@ import {
 } from "../utils/config.js";
 import { readVaultFile, listVaultFiles } from "../utils/vault.js";
 
-const CLAUDE_MD_TEMPLATE = `# LLM Knowledge Base — Schema
+/**
+ * Generate a personalized CLAUDE.md from onboarding answers.
+ * This is the single most important file in the vault — it makes Claude proactive.
+ */
+function generateClaudeMd(opts: {
+  topic: string;
+  purpose: string;
+  sourcesFolder: string;
+  notesFolder: string;
+  outputsFolder: string;
+  fileNaming: string;
+  useWikilinks: boolean;
+  useFrontmatter: boolean;
+  existingFolders?: string[];
+}): string {
+  const today = new Date().toISOString().split("T")[0];
+  const lines: string[] = [];
 
-## Overview
-Personal knowledge base on {TOPIC}. Raw sources live in raw/. The compiled wiki lives in wiki/. You (the AI) maintain all wiki content. I direct strategy; you execute compilation, maintenance, and queries.
+  lines.push(`# Synapse — Your AI Brain`);
+  lines.push(``);
+  lines.push(
+    `> Created ${today} | Topic: ${opts.topic} | Purpose: ${opts.purpose}`,
+  );
+  lines.push(``);
+  lines.push(`## How This Works`);
+  lines.push(``);
+  lines.push(
+    `This vault is your second brain. I (your AI) read from it before answering questions, save insights back to it automatically, and keep it organized over time. Every conversation makes the brain smarter.`,
+  );
+  lines.push(``);
+  lines.push(`## Read FIRST (before every answer)`);
+  lines.push(``);
+  lines.push(`Before answering any question about ${opts.topic}:`);
+  lines.push(`1. Read \`index.md\` to see what's in the vault`);
+  lines.push(`2. Search for relevant notes with \`vault_search\``);
+  lines.push(`3. Read the most relevant pages before responding`);
+  lines.push(
+    `4. Cite sources using [[wikilinks]] when drawing from vault content`,
+  );
+  lines.push(``);
+  lines.push(`## Write AUTOMATICALLY (don't wait to be asked)`);
+  lines.push(``);
+  lines.push(`After every meaningful interaction:`);
+  lines.push(
+    `- **Research answers:** When you synthesize an answer, save it to \`${opts.outputsFolder}/\``,
+  );
+  lines.push(
+    `- **New insights:** When the user shares something worth remembering, save it to \`${opts.notesFolder}/\``,
+  );
+  lines.push(
+    `- **Source material:** When saving articles or external content, save to \`${opts.sourcesFolder}/\``,
+  );
+  lines.push(
+    `- **Update the index:** After creating any new page, update \`index.md\``,
+  );
+  lines.push(
+    `- **Connect ideas:** Add [[wikilinks]] to link related pages whenever you create or update content`,
+  );
+  lines.push(``);
+  lines.push(`## Folder Structure`);
+  lines.push(``);
+  lines.push(`| Folder | What goes here |`);
+  lines.push(`|--------|---------------|`);
+  lines.push(
+    `| \`${opts.sourcesFolder}/\` | Raw source material — articles, links, pasted content |`,
+  );
+  lines.push(
+    `| \`${opts.notesFolder}/\` | Organized knowledge — concept pages, summaries, entity profiles |`,
+  );
+  lines.push(
+    `| \`${opts.outputsFolder}/\` | Saved query answers and research results |`,
+  );
 
-## Directory Structure
-- raw/ — Source material (read-only for you, I add files here)
-- wiki/index.md — Master index linking every page with a one-line summary
-- wiki/log.md — Append-only changelog of all operations
-- wiki/concepts/ — One article per concept
-- wiki/entities/ — People, organisations, tools (one per file)
-- wiki/sources/ — One summary per raw source document
-- wiki/syntheses/ — Cross-cutting analysis articles
-- wiki/outputs/ — Filed answers to my queries
+  if (opts.existingFolders && opts.existingFolders.length > 0) {
+    const knownFolders = [
+      opts.sourcesFolder,
+      opts.notesFolder,
+      opts.outputsFolder,
+      ".synapse",
+    ];
+    const otherFolders = opts.existingFolders.filter(
+      (f) => !knownFolders.includes(f),
+    );
+    for (const f of otherFolders) {
+      lines.push(
+        `| \`${f}/\` | (existing folder — preserved from your vault) |`,
+      );
+    }
+  }
 
-## File Conventions
-- All filenames: kebab-case, lowercase (e.g., active-inference.md)
-- Source summaries: {author}-{year}-{short-title}.md
-- Every page MUST have YAML frontmatter at the top:
-  ---
-  title: "Page Title"
-  date_created: YYYY-MM-DD
-  date_modified: YYYY-MM-DD
-  summary: "One to two sentences describing this page"
-  tags: [topic-tag, domain-tag]
-  type: concept | entity | source | synthesis | output
-  status: draft | review | final
-  ---
-- Use [[wikilinks]] for all internal cross-references
-- Link only the first occurrence of a concept per section
-- Bold key terms on first use in each article
+  lines.push(``);
+  lines.push(
+    `**Create new sub-folders as needed.** When a topic grows large enough to warrant its own section (5+ notes), create a sub-folder inside \`${opts.notesFolder}/\`. Let the structure grow organically to match how the user actually thinks.`,
+  );
+  lines.push(``);
+  lines.push(`## File Conventions`);
+  lines.push(``);
+  lines.push(
+    `- Filenames: ${opts.fileNaming === "kebab-case" ? "kebab-case, lowercase (e.g., active-inference.md)" : opts.fileNaming === "title-case" ? "Title Case with spaces (e.g., Active Inference.md)" : "match whatever the user uses"}`,
+  );
 
-## Operations
+  if (opts.useFrontmatter) {
+    lines.push(`- Every page MUST have YAML frontmatter:`);
+    lines.push(`  \`\`\``);
+    lines.push(`  ---`);
+    lines.push(`  title: "Page Title"`);
+    lines.push(`  date_created: YYYY-MM-DD`);
+    lines.push(`  date_modified: YYYY-MM-DD`);
+    lines.push(`  summary: "One-line description"`);
+    lines.push(`  tags: [relevant-tags]`);
+    lines.push(`  ---`);
+    lines.push(`  \`\`\``);
+  }
 
-### INGEST (when new raw sources are added)
-1. Read the new source document
-2. Create a source summary in wiki/sources/
-3. Identify concepts and entities mentioned
-4. Create new concept/entity pages if they don't exist yet
-5. Update existing pages with new information (append, don't rewrite)
-6. Add [[wikilinks]] to connect new content to existing pages
-7. Update wiki/index.md with new entries
-8. Append to wiki/log.md
+  if (opts.useWikilinks) {
+    lines.push(`- Use [[wikilinks]] for all internal cross-references`);
+    lines.push(
+      `- Link the first mention of a concept per section, not every mention`,
+    );
+  }
 
-### QUERY (when a question is asked)
-1. Read wiki/index.md to understand available content
-2. Read the relevant wiki pages
-3. Synthesise an answer with citations to wiki pages
-4. Save the answer as wiki/outputs/{question-slug}.md
-5. Update wiki/index.md and wiki/log.md
+  lines.push(``);
+  lines.push(`## When New Sources Are Added`);
+  lines.push(``);
+  lines.push(`1. Read the source`);
+  lines.push(`2. Create a summary page in \`${opts.notesFolder}/\``);
+  lines.push(
+    `3. Identify key concepts and entities — create pages for each if they don't exist`,
+  );
+  lines.push(
+    `4. Update existing pages with new information (append, don't overwrite)`,
+  );
+  lines.push(`5. Add [[wikilinks]] connecting new content to existing pages`);
+  lines.push(`6. Update \`index.md\``);
+  lines.push(``);
+  lines.push(`## When Questions Are Asked`);
+  lines.push(``);
+  lines.push(`1. Check \`index.md\` and search the vault for relevant pages`);
+  lines.push(`2. Read the relevant pages`);
+  lines.push(`3. Synthesize an answer with [[wikilink]] citations`);
+  lines.push(`4. Save the answer to \`${opts.outputsFolder}/\``);
+  lines.push(`5. Update \`index.md\``);
+  lines.push(``);
+  lines.push(`## Quality Rules`);
+  lines.push(``);
+  lines.push(`- Summaries: 200-500 words, synthesize — don't copy`);
+  lines.push(`- Create a full page when a subject appears in 2+ sources`);
+  lines.push(
+    `- For single-mention subjects, create a stub (one-line + link back)`,
+  );
+  lines.push(
+    `- Never leave a [[wikilink]] pointing to nothing — create at least a stub`,
+  );
+  lines.push(`- Flag contradictions with ⚠️, noting both positions`);
+  lines.push(`- Prefer recency when sources conflict`);
 
-### LINT (periodic health check)
-1. Find contradictions between pages
-2. Find orphan pages (no inbound links)
-3. Find broken [[wikilinks]]
-4. Identify missing frontmatter fields
-5. Flag stale content (source date >6 months, no updates)
-6. Suggest new articles for frequently mentioned but unlinked concepts
-7. Output a report and fix what you can automatically
-
-## Page Creation Threshold
-- Create a full concept/entity page when a subject appears in 2+ sources
-- For single-mention subjects, create a stub (frontmatter + one-line definition + link back)
-- Never leave a [[wikilink]] pointing to nothing — always create at least a stub
-
-## Quality Standards
-- Summaries: 200-500 words, synthesise — don't copy
-- Concept articles: 500-1500 words with a clear lead section
-- Always trace claims to specific source pages
-- Flag contradictions with \u26a0\ufe0f, noting both positions
-- Prefer recency when sources conflict
-`;
+  return lines.join("\n");
+}
 
 const INDEX_TEMPLATE = `---
-title: "Wiki Index"
+title: "Index"
 date_modified: {DATE}
-total_articles: 0
 ---
 
-# Wiki Index
+# {TOPIC} — Index
 
-## Overview
-Knowledge base on {TOPIC}. 0 articles compiled from 0 raw sources.
+Everything in this vault, organized by topic.
 
-## Concepts
-(No concepts yet — run kb_ingest or kb_compile to process raw sources)
+## Notes
+(Nothing yet — save an article or ask a question to get started)
 
-## Entities
-(No entities yet)
+## Sources
+(No sources saved yet)
 
-## Source Summaries
-(No sources processed yet)
-
-## Recently Added
-(Nothing yet)
-`;
-
-const LOG_TEMPLATE = `---
-title: "Wiki Log"
-date_created: {DATE}
-type: log
----
-
-# Wiki Log
-
-## [{DATE}] init | Knowledge base created
-- Topic: {TOPIC}
-- Structure: raw/, wiki/ (concepts, entities, sources, syntheses, outputs)
-- Schema: CLAUDE.md generated
+## Outputs
+(No queries answered yet)
 `;
 
 /**
@@ -211,7 +278,7 @@ async function detectConventions(backend: StorageBackend): Promise<{
     "sources",
     "clippings",
   ];
-  let suggestedSourcesFolder = "raw/articles";
+  let suggestedSourcesFolder = "sources";
   for (const candidate of sourceFolderCandidates) {
     if (topFolders.includes(candidate.split("/")[0])) {
       suggestedSourcesFolder = candidate;
@@ -243,31 +310,28 @@ async function detectConventions(backend: StorageBackend): Promise<{
 }
 
 /**
- * Run the full Karpathy KB scaffold (same as original kb_init).
+ * Scaffold a new vault with personalized CLAUDE.md + lean folder structure.
+ * Only creates sources/ + index.md + CLAUDE.md. The AI creates more folders organically.
  */
-async function scaffoldKarpathyKB(
+async function scaffoldStructuredVault(
   backend: StorageBackend,
-  topic: string,
+  opts: {
+    topic: string;
+    purpose: string;
+    sourcesFolder: string;
+    notesFolder: string;
+    outputsFolder: string;
+    fileNaming: string;
+    useWikilinks: boolean;
+    useFrontmatter: boolean;
+  },
 ): Promise<{ created: string[]; skipped: string[] }> {
   const today = new Date().toISOString().split("T")[0];
   const created: string[] = [];
   const skipped: string[] = [];
 
-  // Create directories
-  const dirs = [
-    "raw/articles",
-    "raw/papers",
-    "raw/repos",
-    "raw/datasets",
-    "raw/assets",
-    "wiki/concepts",
-    "wiki/entities",
-    "wiki/sources",
-    "wiki/syntheses",
-    "wiki/outputs",
-    "wiki/attachments/images",
-    "templates",
-  ];
+  // Create only the essential directories — AI creates more as content grows
+  const dirs = [opts.sourcesFolder, opts.notesFolder, opts.outputsFolder];
 
   for (const dir of dirs) {
     if (!(await backend.exists(dir))) {
@@ -276,97 +340,25 @@ async function scaffoldKarpathyKB(
     }
   }
 
-  // Create CLAUDE.md
+  // Create personalized CLAUDE.md
   if (!(await backend.exists("CLAUDE.md"))) {
-    const claudeContent = CLAUDE_MD_TEMPLATE.replace(/\{TOPIC\}/g, topic);
+    const claudeContent = generateClaudeMd(opts);
     await backend.writeFile("CLAUDE.md", claudeContent);
     created.push("CLAUDE.md");
   } else {
     skipped.push("CLAUDE.md (already exists)");
   }
 
-  // Create wiki/index.md
-  if (!(await backend.exists("wiki/index.md"))) {
+  // Create index.md at vault root
+  if (!(await backend.exists("index.md"))) {
     const indexContent = INDEX_TEMPLATE.replace(/\{DATE\}/g, today).replace(
       /\{TOPIC\}/g,
-      topic,
+      opts.topic,
     );
-    await backend.writeFile("wiki/index.md", indexContent);
-    created.push("wiki/index.md");
+    await backend.writeFile("index.md", indexContent);
+    created.push("index.md");
   } else {
-    skipped.push("wiki/index.md (already exists)");
-  }
-
-  // Create wiki/log.md
-  if (!(await backend.exists("wiki/log.md"))) {
-    const logContent = LOG_TEMPLATE.replace(/\{DATE\}/g, today).replace(
-      /\{TOPIC\}/g,
-      topic,
-    );
-    await backend.writeFile("wiki/log.md", logContent);
-    created.push("wiki/log.md");
-  } else {
-    skipped.push("wiki/log.md (already exists)");
-  }
-
-  // Create _index.md stubs
-  const subfolders = [
-    "concepts",
-    "entities",
-    "sources",
-    "syntheses",
-    "outputs",
-  ];
-  for (const sub of subfolders) {
-    const indexFile = `wiki/${sub}/_index.md`;
-    if (!(await backend.exists(indexFile))) {
-      await backend.writeFile(
-        indexFile,
-        [
-          "---",
-          `title: "${sub.charAt(0).toUpperCase() + sub.slice(1)}"`,
-          `date_created: ${today}`,
-          `type: index`,
-          "---",
-          "",
-          `# ${sub.charAt(0).toUpperCase() + sub.slice(1)}`,
-          "",
-          `Category index for ${sub}. Updated automatically.`,
-        ].join("\n"),
-      );
-      created.push(indexFile);
-    }
-  }
-
-  // Create source template
-  if (!(await backend.exists("templates/source-summary.md"))) {
-    await backend.writeFile(
-      "templates/source-summary.md",
-      [
-        "---",
-        'title: "{{title}}"',
-        "date_created: {{date}}",
-        "date_modified: {{date}}",
-        'summary: ""',
-        "tags: []",
-        "type: source",
-        "status: draft",
-        'source_url: ""',
-        "authors: []",
-        "---",
-        "",
-        "# {{title}}",
-        "",
-        "## Summary",
-        "",
-        "## Key Concepts",
-        "",
-        "## Notable Quotes",
-        "",
-        "## Connections",
-      ].join("\n"),
-    );
-    created.push("templates/source-summary.md");
+    skipped.push("index.md (already exists)");
   }
 
   return { created, skipped };
@@ -376,15 +368,15 @@ export function registerInitTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
-  // ── kb_setup ─────────────────────────────────────────────────────────
+  // ── synapse_setup ────────────────────────────────────────────────────
   server.tool(
-    "kb_setup",
-    `Onboarding entry point for Synapse. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns three configuration options for the user to choose from:
+    "synapse_setup",
+    `Onboarding entry point for Synapse. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
 - Option A: Use existing vault conventions (adapts to what's already there)
-- Option B: Set up Karpathy Knowledge Base (full raw/wiki structure for a specific topic)
+- Option B: Set up a structured knowledge base (organized folders for a specific topic)
 - Option C: Start fresh with custom settings
 
-After the user chooses, call kb_configure with their selection.`,
+After the user chooses, call synapse_configure with their selection.`,
     {},
     {
       readOnlyHint: true,
@@ -446,20 +438,20 @@ After the user chooses, call kb_configure with their selection.`,
           "",
           "To choose this, call:",
           "```",
-          `kb_configure({ mode: "existing" })`,
+          `synapse_configure({ mode: "existing" })`,
           "```",
           "",
         );
 
         // Option B
         output.push(
-          "### Option B: Set Up Karpathy Knowledge Base",
+          "### Option B: Set Up Structured Knowledge Base",
           "",
-          "Creates a full structured wiki: `raw/` for source material, `wiki/` for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
+          "Creates an organized vault: `sources/` for raw material, organized folders for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
           "",
           "To choose this, call:",
           "```",
-          `kb_configure({ mode: "kb", topic: "your topic here" })`,
+          `synapse_configure({ mode: "structured", topic: "your topic here" })`,
           "```",
           "",
         );
@@ -472,7 +464,7 @@ After the user chooses, call kb_configure with their selection.`,
           "",
           "To choose this, call:",
           "```",
-          `kb_configure({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
+          `synapse_configure({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
           "```",
           "",
         );
@@ -490,11 +482,11 @@ After the user chooses, call kb_configure with their selection.`,
           '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
           '- **"custom"** — Something else (ask them to describe it)',
           "",
-          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `kb_configure`.",
+          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `synapse_configure`.",
           "",
           "---",
           "",
-          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `kb_configure` with both.",
+          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `synapse_configure` with both.",
         );
 
         return {
@@ -514,28 +506,30 @@ After the user chooses, call kb_configure with their selection.`,
     },
   );
 
-  // ── kb_configure ────────────────────────────────────────────────────
+  // ── synapse_configure ────────────────────────────────────────────────
   server.tool(
-    "kb_configure",
-    `Save Synapse configuration based on the user's choice from kb_setup. Three modes:
+    "synapse_configure",
+    `Save Synapse configuration based on the user's choice from synapse_setup. Three modes:
 - "existing": Auto-detect conventions from the vault and save config. No folders created.
-- "kb": Run the full Karpathy KB scaffold (creates raw/, wiki/, CLAUDE.md, templates/). Requires a topic.
+- "structured": Set up an organized knowledge base (creates sources/, notes/, CLAUDE.md). Requires a topic.
 - "custom": Save whatever folder paths and conventions the user specified.`,
     {
       mode: z
-        .enum(["existing", "kb", "custom"])
-        .describe("Configuration mode chosen by the user"),
+        .enum(["existing", "structured", "kb", "custom"])
+        .describe(
+          "Configuration mode chosen by the user ('kb' accepted as alias for 'structured')",
+        ),
       sourcesFolder: z
         .string()
         .optional()
         .describe(
-          "Where to save raw articles (default: auto-detect or 'raw/articles')",
+          "Where to save raw articles (default: auto-detect or 'sources')",
         ),
       wikiFolder: z
         .string()
         .optional()
         .describe(
-          "Where compiled wiki content goes (default: 'wiki' for kb mode, null for existing)",
+          "Where organized notes go (default: 'notes' for structured mode, null for existing)",
         ),
       outputsFolder: z
         .string()
@@ -622,35 +616,49 @@ After the user chooses, call kb_configure with their selection.`,
                   "Config saved to `.synapse/config.json`. All tools will now use these settings.",
                   "",
                   "### Next Steps",
-                  `1. Save articles with \`kb_save\` — they'll go to \`${config.sourcesFolder}\``,
-                  "2. Use `kb_status` to see your vault overview",
-                  "3. Use `kb_query` to research your existing notes",
+                  `1. Save articles with \`synapse_save\` — they'll go to \`${config.sourcesFolder}\``,
+                  "2. Use `synapse_status` to see your vault overview",
+                  "3. Use `synapse_query` to research your existing notes",
                 ].join("\n"),
               },
             ],
           };
         }
 
-        if (mode === "kb") {
+        if (mode === "structured" || mode === "kb") {
           if (!topic) {
             return {
               content: [
                 {
                   type: "text",
-                  text: 'Error: KB mode requires a `topic` parameter (e.g. "machine learning", "DeFi protocols").',
+                  text: 'Error: Structured mode requires a `topic` parameter (e.g. "machine learning", "DeFi protocols").',
                 },
               ],
               isError: true,
             };
           }
 
-          // Run the full scaffold
-          const { created, skipped } = await scaffoldKarpathyKB(backend, topic);
+          const resolvedSources = sourcesFolder || "sources";
+          const resolvedNotes = wikiFolder || "notes";
+          const resolvedOutputs = outputsFolder || "outputs";
+          const resolvedNaming = fileNaming || "kebab-case";
 
-          config.sourcesFolder = sourcesFolder || "raw/articles";
-          config.wikiFolder = wikiFolder || "wiki";
-          config.outputsFolder = outputsFolder || "wiki/outputs";
-          config.fileNaming = fileNaming || "kebab-case";
+          // Run the scaffold with personalized CLAUDE.md
+          const { created, skipped } = await scaffoldStructuredVault(backend, {
+            topic,
+            purpose: purpose || "knowledge-base",
+            sourcesFolder: resolvedSources,
+            notesFolder: resolvedNotes,
+            outputsFolder: resolvedOutputs,
+            fileNaming: resolvedNaming,
+            useWikilinks: true,
+            useFrontmatter: true,
+          });
+
+          config.sourcesFolder = resolvedSources;
+          config.wikiFolder = resolvedNotes;
+          config.outputsFolder = resolvedOutputs;
+          config.fileNaming = resolvedNaming;
           config.useFrontmatter = true;
           config.useWikilinks = true;
           config.schemaPath = "CLAUDE.md";
@@ -662,7 +670,7 @@ After the user chooses, call kb_configure with their selection.`,
             "## Knowledge Base Initialized & Configured",
             "",
             `**Topic:** ${topic}`,
-            `**Mode:** Karpathy Knowledge Base`,
+            `**Mode:** Structured Knowledge Base`,
             "",
             `### Created (${created.length})`,
             ...created.map((f) => `- ${f}`),
@@ -679,11 +687,11 @@ After the user chooses, call kb_configure with their selection.`,
             "Config saved to `.synapse/config.json`.",
             "",
             "### Next Steps",
-            "1. Add source articles to `raw/articles/` (copy-paste or use `kb_save` with a URL)",
-            "2. Run `kb_compile` to see what needs processing",
-            "3. Run `kb_ingest` for each source to build the wiki",
-            "4. Ask questions with `kb_query`",
-            "5. Run `kb_lint` periodically to maintain quality",
+            "1. Add source articles to `sources/` (copy-paste or use `synapse_save` with a URL)",
+            "2. Run `synapse_compile` to see what needs processing",
+            "3. Run `synapse_ingest` for each source to build organized pages",
+            "4. Ask questions with `synapse_query`",
+            "5. Run `synapse_lint` periodically to maintain quality",
           );
 
           return {
@@ -692,7 +700,7 @@ After the user chooses, call kb_configure with their selection.`,
         }
 
         // Custom mode
-        config.sourcesFolder = sourcesFolder || "raw/articles";
+        config.sourcesFolder = sourcesFolder || "sources";
         config.wikiFolder = wikiFolder || null;
         config.outputsFolder = outputsFolder || "outputs";
         config.fileNaming = fileNaming || "kebab-case";
@@ -733,9 +741,9 @@ After the user chooses, call kb_configure with their selection.`,
                 "Config saved to `.synapse/config.json`. All tools will now use these settings.",
                 "",
                 "### Next Steps",
-                `1. Save articles with \`kb_save\` — they'll go to \`${config.sourcesFolder}\``,
-                "2. Use `kb_status` to see your vault overview",
-                "3. Use `kb_query` to research your notes",
+                `1. Save articles with \`synapse_save\` — they'll go to \`${config.sourcesFolder}\``,
+                "2. Use `synapse_status` to see your vault overview",
+                "3. Use `synapse_query` to research your notes",
               ].join("\n"),
             },
           ],
@@ -754,12 +762,12 @@ After the user chooses, call kb_configure with their selection.`,
     },
   );
 
-  // ── kb_init (kept as alias, points users to kb_setup) ────────────────
+  // ── synapse_init (kept as alias, points users to synapse_setup) ──────
   server.tool(
-    "kb_init",
-    `Initialize the Karpathy knowledge base structure in the vault. Creates the full folder structure (raw/, wiki/, templates/), generates CLAUDE.md with the wiki schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
+    "synapse_init",
+    `Initialize a structured knowledge base in the vault. Creates the folder structure, generates CLAUDE.md with the schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
 
-**For new vaults only.** If you have an existing vault, use \`kb_setup\` instead — it detects your conventions and adapts.`,
+**For new vaults only.** If you have an existing vault, use \`synapse_setup\` instead — it detects your conventions and adapts.`,
     {
       topic: z
         .string()
@@ -775,14 +783,23 @@ After the user chooses, call kb_configure with their selection.`,
     },
     async ({ topic }) => {
       try {
-        const { created, skipped } = await scaffoldKarpathyKB(backend, topic);
+        const { created, skipped } = await scaffoldStructuredVault(backend, {
+          topic,
+          purpose: "knowledge-base",
+          sourcesFolder: "sources",
+          notesFolder: "notes",
+          outputsFolder: "outputs",
+          fileNaming: "kebab-case",
+          useWikilinks: true,
+          useFrontmatter: true,
+        });
 
         // Also save config automatically
         const config: SynapseConfig = getDefaultConfig();
-        config.mode = "kb";
-        config.sourcesFolder = "raw/articles";
-        config.wikiFolder = "wiki";
-        config.outputsFolder = "wiki/outputs";
+        config.mode = "structured";
+        config.sourcesFolder = "sources";
+        config.wikiFolder = "notes";
+        config.outputsFolder = "outputs";
         config.fileNaming = "kebab-case";
         config.useFrontmatter = true;
         config.useWikilinks = true;
@@ -811,11 +828,11 @@ After the user chooses, call kb_configure with their selection.`,
           "Config saved to `.synapse/config.json`.",
           "",
           "### Next Steps",
-          "1. Add source articles to `raw/articles/` (copy-paste or use Obsidian Web Clipper)",
-          "2. Run `kb_compile` to see what needs processing",
-          "3. Run `kb_ingest` for each source to build the wiki",
-          "4. Ask questions with `kb_query`",
-          "5. Run `kb_lint` periodically to maintain quality",
+          "1. Add source articles to `sources/` (copy-paste or use `synapse_save` with a URL)",
+          "2. Run `synapse_compile` to see what needs processing",
+          "3. Run `synapse_ingest` for each source to build organized pages",
+          "4. Ask questions with `synapse_query`",
+          "5. Run `synapse_lint` periodically to maintain quality",
         );
 
         return {

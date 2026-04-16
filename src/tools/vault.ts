@@ -20,7 +20,7 @@ export function registerVaultTools(
     {
       path: z
         .string()
-        .describe("Relative path to the file (e.g. 'wiki/index.md')"),
+        .describe("Relative path to the file (e.g. 'notes/my-note.md')"),
     },
     {
       readOnlyHint: true,
@@ -49,9 +49,7 @@ export function registerVaultTools(
     {
       path: z
         .string()
-        .describe(
-          "Relative path for the file (e.g. 'wiki/concepts/my-concept.md')",
-        ),
+        .describe("Relative path for the file (e.g. 'notes/my-concept.md')"),
       content: z
         .string()
         .describe(
@@ -89,7 +87,7 @@ export function registerVaultTools(
         .string()
         .optional()
         .describe(
-          "Subdirectory to list (e.g. 'raw/articles'). Omit for entire vault.",
+          "Subdirectory to list (e.g. 'sources'). Omit for entire vault.",
         ),
       recursive: z
         .boolean()
@@ -145,7 +143,7 @@ export function registerVaultTools(
       path: z
         .string()
         .optional()
-        .describe("Subdirectory to limit search to (e.g. 'wiki/concepts')"),
+        .describe("Subdirectory to limit search to (e.g. 'notes')"),
       maxResults: z
         .number()
         .optional()
