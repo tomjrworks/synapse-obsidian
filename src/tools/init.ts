@@ -12,6 +12,13 @@ import { readVaultFile, listVaultFiles } from "../utils/vault.js";
 /**
  * Generate a personalized CLAUDE.md from onboarding answers.
  * This is the single most important file in the vault — it makes Claude proactive.
+ *
+ * Two layers:
+ * 1. TABLE STAKES — always included, non-negotiable behaviors that make the brain work
+ * 2. PERSONALIZED — shaped by onboarding answers (topic, purpose, folders, conventions)
+ *
+ * The file also self-updates: it tells Claude to modify these instructions when the
+ * user expresses preferences about how they like things done.
  */
 function generateClaudeMd(opts: {
   topic: string;
@@ -25,63 +32,38 @@ function generateClaudeMd(opts: {
   existingFolders?: string[];
 }): string {
   const today = new Date().toISOString().split("T")[0];
-  const lines: string[] = [];
 
-  lines.push(`# Synapse — Your AI Brain`);
-  lines.push(``);
-  lines.push(
-    `> Created ${today} | Topic: ${opts.topic} | Purpose: ${opts.purpose}`,
-  );
-  lines.push(``);
-  lines.push(`## How This Works`);
-  lines.push(``);
-  lines.push(
-    `This vault is your second brain. I (your AI) read from it before answering questions, save insights back to it automatically, and keep it organized over time. Every conversation makes the brain smarter.`,
-  );
-  lines.push(``);
-  lines.push(`## Read FIRST (before every answer)`);
-  lines.push(``);
-  lines.push(`Before answering any question about ${opts.topic}:`);
-  lines.push(`1. Read \`index.md\` to see what's in the vault`);
-  lines.push(`2. Search for relevant notes with \`vault_search\``);
-  lines.push(`3. Read the most relevant pages before responding`);
-  lines.push(
-    `4. Cite sources using [[wikilinks]] when drawing from vault content`,
-  );
-  lines.push(``);
-  lines.push(`## Write AUTOMATICALLY (don't wait to be asked)`);
-  lines.push(``);
-  lines.push(`After every meaningful interaction:`);
-  lines.push(
-    `- **Research answers:** When you synthesize an answer, save it to \`${opts.outputsFolder}/\``,
-  );
-  lines.push(
-    `- **New insights:** When the user shares something worth remembering, save it to \`${opts.notesFolder}/\``,
-  );
-  lines.push(
-    `- **Source material:** When saving articles or external content, save to \`${opts.sourcesFolder}/\``,
-  );
-  lines.push(
-    `- **Update the index:** After creating any new page, update \`index.md\``,
-  );
-  lines.push(
-    `- **Connect ideas:** Add [[wikilinks]] to link related pages whenever you create or update content`,
-  );
-  lines.push(``);
-  lines.push(`## Folder Structure`);
-  lines.push(``);
-  lines.push(`| Folder | What goes here |`);
-  lines.push(`|--------|---------------|`);
-  lines.push(
-    `| \`${opts.sourcesFolder}/\` | Raw source material — articles, links, pasted content |`,
-  );
-  lines.push(
-    `| \`${opts.notesFolder}/\` | Organized knowledge — concept pages, summaries, entity profiles |`,
-  );
-  lines.push(
-    `| \`${opts.outputsFolder}/\` | Saved query answers and research results |`,
-  );
+  // Purpose-specific filing rules
+  const purposeRows: Record<string, string> = {
+    "knowledge-base": `| Research / analysis | \`${opts.notesFolder}/\` | kebab-case — create sub-folders by topic |
+| Deep dive / evaluation | \`${opts.notesFolder}/<topic>/\` | kebab-case |
+| Saved article or link | \`${opts.sourcesFolder}/\` | kebab-case |
+| Query answer | \`${opts.outputsFolder}/\` | kebab-case |`,
+    business: `| Client / project note | \`${opts.notesFolder}/<client>/\` | kebab-case |
+| Meeting notes | \`${opts.notesFolder}/meetings/\` | \`YYYY-MM-DD-<topic>.md\` |
+| Strategy / analysis | \`${opts.notesFolder}/\` | kebab-case |
+| Saved article or link | \`${opts.sourcesFolder}/\` | kebab-case |
+| Decision log | \`${opts.notesFolder}/decisions/\` | \`YYYY-MM-DD-<topic>.md\` |
+| Query answer | \`${opts.outputsFolder}/\` | kebab-case |`,
+    academic: `| Paper summary | \`${opts.notesFolder}/papers/\` | \`{author}-{year}-{short-title}.md\` |
+| Course notes | \`${opts.notesFolder}/<course>/\` | kebab-case |
+| Concept / topic page | \`${opts.notesFolder}/\` | kebab-case |
+| Saved article or link | \`${opts.sourcesFolder}/\` | kebab-case |
+| Query answer | \`${opts.outputsFolder}/\` | kebab-case |`,
+    "life-os": `| Project note | \`${opts.notesFolder}/projects/<name>/\` | kebab-case |
+| Research / analysis | \`${opts.notesFolder}/research/\` | kebab-case |
+| Daily session log | \`${opts.notesFolder}/daily/\` | \`YYYY-MM-DD-<topic>.md\` |
+| Decision log | \`${opts.notesFolder}/decisions/\` | \`YYYY-MM-DD-<topic>.md\` |
+| Idea / half-baked thought | \`${opts.notesFolder}/ideas/\` | kebab-case |
+| Saved article or link | \`${opts.sourcesFolder}/\` | kebab-case |
+| Meeting notes | \`${opts.notesFolder}/meetings/\` | kebab-case with date |
+| Query answer | \`${opts.outputsFolder}/\` | kebab-case |`,
+  };
 
+  const filingRows = purposeRows[opts.purpose] || purposeRows["knowledge-base"];
+
+  // Build existing folders table rows
+  let existingFolderRows = "";
   if (opts.existingFolders && opts.existingFolders.length > 0) {
     const knownFolders = [
       opts.sourcesFolder,
@@ -93,79 +75,191 @@ function generateClaudeMd(opts: {
       (f) => !knownFolders.includes(f),
     );
     for (const f of otherFolders) {
-      lines.push(
-        `| \`${f}/\` | (existing folder — preserved from your vault) |`,
-      );
+      existingFolderRows += `| \`${f}/\` | (existing — preserved from your vault) |\n`;
     }
   }
 
-  lines.push(``);
-  lines.push(
-    `**Create new sub-folders as needed.** When a topic grows large enough to warrant its own section (5+ notes), create a sub-folder inside \`${opts.notesFolder}/\`. Let the structure grow organically to match how the user actually thinks.`,
-  );
-  lines.push(``);
-  lines.push(`## File Conventions`);
-  lines.push(``);
-  lines.push(
-    `- Filenames: ${opts.fileNaming === "kebab-case" ? "kebab-case, lowercase (e.g., active-inference.md)" : opts.fileNaming === "title-case" ? "Title Case with spaces (e.g., Active Inference.md)" : "match whatever the user uses"}`,
-  );
+  const namingRule =
+    opts.fileNaming === "kebab-case"
+      ? "kebab-case, lowercase (e.g., `active-inference.md`)"
+      : opts.fileNaming === "title-case"
+        ? "Title Case with spaces (e.g., `Active Inference.md`)"
+        : "match whatever the user uses";
 
-  if (opts.useFrontmatter) {
-    lines.push(`- Every page MUST have YAML frontmatter:`);
-    lines.push(`  \`\`\``);
-    lines.push(`  ---`);
-    lines.push(`  title: "Page Title"`);
-    lines.push(`  date_created: YYYY-MM-DD`);
-    lines.push(`  date_modified: YYYY-MM-DD`);
-    lines.push(`  summary: "One-line description"`);
-    lines.push(`  tags: [relevant-tags]`);
-    lines.push(`  ---`);
-    lines.push(`  \`\`\``);
-  }
+  const frontmatterBlock = opts.useFrontmatter
+    ? `- Every page MUST have YAML frontmatter:
+  \`\`\`
+  ---
+  title: "Page Title"
+  date_created: YYYY-MM-DD
+  date_modified: YYYY-MM-DD
+  summary: "One-line description"
+  tags: [relevant-tags]
+  ---
+  \`\`\``
+    : "- Frontmatter is optional in this vault";
 
-  if (opts.useWikilinks) {
-    lines.push(`- Use [[wikilinks]] for all internal cross-references`);
-    lines.push(
-      `- Link the first mention of a concept per section, not every mention`,
-    );
-  }
+  const wikilinkRules = opts.useWikilinks
+    ? `- Use [[wikilinks]] for all internal cross-references
+- Link the first mention of a concept per section, not every mention
+- **Never leave a [[wikilink]] pointing to nothing** — always create at least a stub`
+    : "- Use standard markdown links for cross-references";
 
-  lines.push(``);
-  lines.push(`## When New Sources Are Added`);
-  lines.push(``);
-  lines.push(`1. Read the source`);
-  lines.push(`2. Create a summary page in \`${opts.notesFolder}/\``);
-  lines.push(
-    `3. Identify key concepts and entities — create pages for each if they don't exist`,
-  );
-  lines.push(
-    `4. Update existing pages with new information (append, don't overwrite)`,
-  );
-  lines.push(`5. Add [[wikilinks]] connecting new content to existing pages`);
-  lines.push(`6. Update \`index.md\``);
-  lines.push(``);
-  lines.push(`## When Questions Are Asked`);
-  lines.push(``);
-  lines.push(`1. Check \`index.md\` and search the vault for relevant pages`);
-  lines.push(`2. Read the relevant pages`);
-  lines.push(`3. Synthesize an answer with [[wikilink]] citations`);
-  lines.push(`4. Save the answer to \`${opts.outputsFolder}/\``);
-  lines.push(`5. Update \`index.md\``);
-  lines.push(``);
-  lines.push(`## Quality Rules`);
-  lines.push(``);
-  lines.push(`- Summaries: 200-500 words, synthesize — don't copy`);
-  lines.push(`- Create a full page when a subject appears in 2+ sources`);
-  lines.push(
-    `- For single-mention subjects, create a stub (one-line + link back)`,
-  );
-  lines.push(
-    `- Never leave a [[wikilink]] pointing to nothing — create at least a stub`,
-  );
-  lines.push(`- Flag contradictions with ⚠️, noting both positions`);
-  lines.push(`- Prefer recency when sources conflict`);
+  return `# Synapse — Your AI Brain
 
-  return lines.join("\n");
+> Created ${today} | Topic: ${opts.topic} | Purpose: ${opts.purpose}
+
+## What This Vault Is
+
+This is your second brain — a knowledge base that grows smarter with every conversation. You (the AI) are responsible for reading it, writing to it, and keeping it organized. The user directs strategy; you execute.
+
+- Obsidian renders these files — use [[wikilinks]] to connect ideas
+- All content is markdown — portable, future-proof, human-readable
+- Every interaction should leave the vault better than you found it
+
+---
+
+## Read FIRST (before every answer)
+
+**BLOCKING:** Before answering any question about ${opts.topic}, search the vault first. It has context that general knowledge will miss.
+
+1. Read \`index.md\` to see what's in the vault
+2. Search for relevant notes with \`vault_search\`
+3. Read the most relevant pages before responding
+4. Cite sources using [[wikilinks]] when drawing from vault content
+
+This applies to every conversation, every question. The vault is the source of truth.
+
+## Write AUTOMATICALLY (don't wait to be asked)
+
+Don't wait until the end of a conversation to save things. Write to the vault **after each meaningful exchange**:
+
+- **Research answers:** When you synthesize an answer worth keeping, save it to \`${opts.outputsFolder}/\`
+- **New insights:** When the user shares something worth remembering, save it to \`${opts.notesFolder}/\`
+- **Source material:** When saving articles or external content, use \`synapse_save\` → goes to \`${opts.sourcesFolder}/\`
+- **Session logs:** After major milestones (research completed, decision made), write a note to \`${opts.notesFolder}/daily/\` in format \`YYYY-MM-DD-<topic>.md\`
+- **Update the index:** After creating any new page, update \`index.md\` with a one-line summary
+- **Connect ideas:** Add [[wikilinks]] to link related pages whenever you create or update content
+
+**Don't log:** trivial questions, quick fixes, or exchanges with no lasting value.
+
+---
+
+## Folder Structure
+
+| Folder | What goes here |
+|--------|---------------|
+| \`${opts.sourcesFolder}/\` | Raw source material — articles, links, pasted content |
+| \`${opts.notesFolder}/\` | Organized knowledge — concepts, summaries, entities, analysis |
+| \`${opts.outputsFolder}/\` | Saved query answers and research results |
+${existingFolderRows}
+**NEVER** create files at vault root. Only \`CLAUDE.md\` and \`index.md\` live there.
+
+**Create sub-folders as the vault grows.** When a topic has 5+ notes, give it a sub-folder inside \`${opts.notesFolder}/\`. Let the structure grow organically — don't pre-create empty folders.
+
+## Filing Rules — MANDATORY before every write
+
+Before writing any file, determine its type and file it correctly:
+
+| Note type | Goes in | Naming |
+|---|---|---|
+${filingRows}
+
+**When unsure:** if it's organized knowledge → \`${opts.notesFolder}/\`. If it's raw external content → \`${opts.sourcesFolder}/\`. If it's an answer to a question → \`${opts.outputsFolder}/\`.
+
+**Creating new sub-folders:** Allowed inside \`${opts.notesFolder}/\` when content doesn't fit existing sub-folders. Not allowed at vault root level.
+
+---
+
+## File Conventions
+
+- Filenames: ${namingRule}
+- Date format: YYYY-MM-DD
+- Keep notes atomic — one idea per note when possible
+${frontmatterBlock}
+${wikilinkRules}
+
+## Writing Style
+
+- Direct, no fluff
+- Bullet points over paragraphs
+- Include "why" behind decisions, not just "what"
+- Link to related notes with [[wikilinks]]
+
+---
+
+## Compounding Knowledge Loop
+
+When synthesizing research or answering questions:
+
+1. **Search the vault first** for prior answers on the topic
+2. **If a note on this topic already exists — update it in place.** Don't create a duplicate.
+   - Add a dated section at the top with the new information
+   - Mark superseded sections with ~~strikethrough~~ or move to a "## Previous" section
+   - One note per topic = single source of truth
+3. If no prior note exists, create one in the appropriate folder (see filing rules)
+4. Update \`index.md\` with the new or updated entry
+5. Link back to related notes with [[wikilinks]]
+
+### Handling Contradictions
+
+- **When new info contradicts an existing note:** Update the existing note. Don't leave two notes that say different things.
+- **When two existing notes conflict:** Add ⚠️ to the stale one with a link to the current one. Update or merge.
+- **Always prefer recency.** When vault content conflicts, the most recently modified note wins — but verify it's not just newer-but-wrong.
+
+## Marking Dead / Superseded Content
+
+When a topic is abandoned, a strategy changes, or information becomes obsolete:
+
+1. Add \`status: archived\` to the frontmatter
+2. Add a bold line at the top: **⚠️ ARCHIVED (YYYY-MM-DD) — [reason].**
+3. Update \`index.md\` — append "(ARCHIVED)" to the one-line summary
+
+Never delete dead content — it has historical value. Just mark it clearly so searches don't surface it as active.
+
+---
+
+## Master Index
+
+- **\`index.md\`** at vault root catalogs every page with a one-line summary
+- **Read \`index.md\` first** when searching for vault content — before grepping
+- **Update \`index.md\`** after creating or significantly updating any note
+- Keep entries under 100 characters. Use [[wikilinks]]. Group by topic or folder.
+
+## When New Sources Are Added
+
+1. Read the source
+2. Create a summary page in \`${opts.notesFolder}/\`
+3. Identify key concepts and entities — create pages for each if they don't exist
+4. Update existing pages with new information (append, don't overwrite)
+5. Add [[wikilinks]] connecting new content to existing pages
+6. Update \`index.md\`
+
+## When Questions Are Asked
+
+1. Check \`index.md\` and search the vault for relevant pages
+2. Read the relevant pages
+3. Synthesize an answer with [[wikilink]] citations
+4. Save the answer to \`${opts.outputsFolder}/\`
+5. Update \`index.md\`
+
+## Quality Rules
+
+- Summaries: 200-500 words, synthesize — don't copy
+- Create a full page when a subject appears in 2+ sources
+- For single-mention subjects, create a stub (one-line definition + link back)
+- Never leave a [[wikilink]] pointing to nothing — always create at least a stub
+- Flag contradictions with ⚠️, noting both positions
+- Prefer recency when sources conflict
+- Concept pages: 500-1500 words with a clear lead section
+- Always trace claims to specific source pages
+
+---
+
+## Self-Updating Instructions
+
+If the user expresses a preference about how they like work done — file naming, writing style, what to log, what not to log, folder organization — **update this CLAUDE.md file to reflect it.** These instructions should evolve to match how the user actually works.
+`;
 }
 
 const INDEX_TEMPLATE = `---
