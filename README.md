@@ -62,7 +62,7 @@ Once connected, say:
 Synapse scans your vault and gives you three options:
 
 - **Use my existing vault** — Detects your folder structure, wikilinks, naming conventions. Nothing moved or overwritten. Synapse adapts to you.
-- **Set up a knowledge base** — Creates a structured wiki: `raw/` for sources, `wiki/` for compiled knowledge. Best for a focused research topic.
+- **Set up a knowledge base** — Creates organized folders: `sources/` for raw content, `notes/` for compiled knowledge, `outputs/` for query results. Best for a focused research topic.
 - **Custom** — You tell Synapse how you want things organized.
 
 It also asks what you'll use the vault for (research, business, academic, life OS) so it can tailor the experience.

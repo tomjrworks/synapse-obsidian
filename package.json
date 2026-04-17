@@ -1,7 +1,7 @@
 {
   "name": "synapse-obsidian",
   "version": "0.2.4",
-  "description": "MCP server that turns your Obsidian vault into an AI-powered knowledge base. The Karpathy pattern, packaged.",
+  "description": "MCP server that connects any AI to your Obsidian vault. Save articles, ask questions across your notes, build a compounding knowledge base.",
   "type": "module",
   "bin": {
     "synapse": "dist/index.js",
@@ -22,8 +22,9 @@
     "knowledge-base",
     "ai",
     "claude",
-    "karpathy",
-    "wiki",
+    "synapse",
+    "notes",
+    "google-drive",
     "second-brain"
   ],
   "license": "MIT",
