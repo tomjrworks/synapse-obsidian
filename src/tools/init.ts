@@ -465,20 +465,23 @@ export function registerInitTools(
   backend: StorageBackend,
 ): void {
   // ── synapse_setup ────────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "synapse_setup",
-    `Onboarding entry point for Synapse. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
+    {
+      title: "Synapse Setup",
+      description: `Onboarding entry point for Synapse. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
 - Option A: Use existing vault conventions (adapts to what's already there)
 - Option B: Set up a structured knowledge base (organized folders for a specific topic)
 - Option C: Start fresh with custom settings
 
 After the user chooses, call synapse_configure with their selection.`,
-    {},
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       try {
@@ -603,60 +606,63 @@ After the user chooses, call synapse_configure with their selection.`,
   );
 
   // ── synapse_configure ────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "synapse_configure",
-    `Save Synapse configuration based on the user's choice from synapse_setup. Three modes:
+    {
+      title: "Configure Synapse",
+      description: `Save Synapse configuration based on the user's choice from synapse_setup. Three modes:
 - "existing": Auto-detect conventions from the vault and save config. No folders created.
 - "structured": Set up an organized knowledge base (creates sources/, notes/, CLAUDE.md). Requires a topic.
 - "custom": Save whatever folder paths and conventions the user specified.`,
-    {
-      mode: z
-        .enum(["existing", "structured", "kb", "custom"])
-        .describe(
-          "Configuration mode chosen by the user ('kb' accepted as alias for 'structured')",
-        ),
-      sourcesFolder: z
-        .string()
-        .optional()
-        .describe(
-          "Where to save raw articles (default: auto-detect or 'sources')",
-        ),
-      wikiFolder: z
-        .string()
-        .optional()
-        .describe(
-          "Where organized notes go (default: 'notes' for structured mode, null for existing)",
-        ),
-      outputsFolder: z
-        .string()
-        .optional()
-        .describe(
-          "Where to save query outputs (default: auto-detect or 'outputs')",
-        ),
-      topic: z
-        .string()
-        .optional()
-        .describe("Topic for the knowledge base (required for kb mode)"),
-      fileNaming: z
-        .enum(["kebab-case", "title-case", "as-is"])
-        .optional()
-        .describe(
-          "File naming convention (default: auto-detect or kebab-case)",
-        ),
-      purpose: z
-        .enum(["knowledge-base", "business", "academic", "life-os", "custom"])
-        .optional()
-        .describe("What the user will use this vault for"),
-      purposeDescription: z
-        .string()
-        .optional()
-        .describe("Custom purpose description (when purpose is 'custom')"),
-    },
-    {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      inputSchema: {
+        mode: z
+          .enum(["existing", "structured", "kb", "custom"])
+          .describe(
+            "Configuration mode chosen by the user ('kb' accepted as alias for 'structured')",
+          ),
+        sourcesFolder: z
+          .string()
+          .optional()
+          .describe(
+            "Where to save raw articles (default: auto-detect or 'sources')",
+          ),
+        wikiFolder: z
+          .string()
+          .optional()
+          .describe(
+            "Where organized notes go (default: 'notes' for structured mode, null for existing)",
+          ),
+        outputsFolder: z
+          .string()
+          .optional()
+          .describe(
+            "Where to save query outputs (default: auto-detect or 'outputs')",
+          ),
+        topic: z
+          .string()
+          .optional()
+          .describe("Topic for the knowledge base (required for kb mode)"),
+        fileNaming: z
+          .enum(["kebab-case", "title-case", "as-is"])
+          .optional()
+          .describe(
+            "File naming convention (default: auto-detect or kebab-case)",
+          ),
+        purpose: z
+          .enum(["knowledge-base", "business", "academic", "life-os", "custom"])
+          .optional()
+          .describe("What the user will use this vault for"),
+        purposeDescription: z
+          .string()
+          .optional()
+          .describe("Custom purpose description (when purpose is 'custom')"),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({
       mode,
@@ -859,23 +865,26 @@ After the user chooses, call synapse_configure with their selection.`,
   );
 
   // ── synapse_init (kept as alias, points users to synapse_setup) ──────
-  server.tool(
+  server.registerTool(
     "synapse_init",
-    `Initialize a structured knowledge base in the vault. Creates the folder structure, generates CLAUDE.md with the schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
+    {
+      title: "Initialize Knowledge Base",
+      description: `Initialize a structured knowledge base in the vault. Creates the folder structure, generates CLAUDE.md with the schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
 
 **For new vaults only.** If you have an existing vault, use \`synapse_setup\` instead — it detects your conventions and adapts.`,
-    {
-      topic: z
-        .string()
-        .describe(
-          "The topic or domain for this knowledge base (e.g. 'DeFi protocols', 'machine learning', 'competitive intelligence')",
-        ),
-    },
-    {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      inputSchema: {
+        topic: z
+          .string()
+          .describe(
+            "The topic or domain for this knowledge base (e.g. 'DeFi protocols', 'machine learning', 'competitive intelligence')",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ topic }) => {
       try {

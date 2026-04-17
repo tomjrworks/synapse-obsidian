@@ -66,31 +66,36 @@ export function registerKnowledgeTools(
   backend: StorageBackend,
 ): void {
   // ── synapse_save ────────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "synapse_save",
-    `Save content to the vault's sources folder from a URL or pasted text. Ideal for mobile users who find articles and want to save them without a web clipper.
+    {
+      title: "Save Content",
+      description: `Save content to the vault's sources folder from a URL or pasted text. Ideal for mobile users who find articles and want to save them without a web clipper.
 
 If a URL is provided, fetches the page and converts it to markdown. If content is provided directly, saves it as-is. Always adds frontmatter with metadata.`,
-    {
-      title: z.string().describe("Title for the saved note"),
-      url: z
-        .string()
-        .optional()
-        .describe("URL to fetch and convert to markdown"),
-      content: z
-        .string()
-        .optional()
-        .describe("Raw text or markdown content to save directly"),
-      folder: z
-        .string()
-        .optional()
-        .describe("Where to save, relative to vault root (default: 'sources')"),
-    },
-    {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
+      inputSchema: {
+        title: z.string().describe("Title for the saved note"),
+        url: z
+          .string()
+          .optional()
+          .describe("URL to fetch and convert to markdown"),
+        content: z
+          .string()
+          .optional()
+          .describe("Raw text or markdown content to save directly"),
+        folder: z
+          .string()
+          .optional()
+          .describe(
+            "Where to save, relative to vault root (default: 'sources')",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({ title, url, content, folder }) => {
       try {
@@ -218,15 +223,18 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
   );
 
   // ── synapse_status ──────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "synapse_status",
-    `One-shot status overview. Returns everything needed to understand the vault state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
-    {},
     {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Vault Status Overview",
+      description: `One-shot status overview. Returns everything needed to understand the vault state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       try {
@@ -409,9 +417,11 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
   );
 
   // ── synapse_ingest ──────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "synapse_ingest",
-    `Process a source file into the knowledge base. Reads the source, generates organized pages (summaries, concepts, entities), adds [[wikilinks]], and updates the index and log.
+    {
+      title: "Process Source",
+      description: `Process a source file into the knowledge base. Reads the source, generates organized pages (summaries, concepts, entities), adds [[wikilinks]], and updates the index and log.
 
 You MUST read the source file content first, then generate all pages. Follow the CLAUDE.md schema in the vault root for conventions and folder paths.
 
@@ -423,18 +433,19 @@ Steps:
 5. Add [[wikilinks]] connecting related pages
 6. Update the index
 7. Append to the log`,
-    {
-      sourcePath: z
-        .string()
-        .describe(
-          "Path to the source file relative to vault (e.g. 'sources/my-article.md')",
-        ),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      inputSchema: {
+        sourcePath: z
+          .string()
+          .describe(
+            "Path to the source file relative to vault (e.g. 'sources/my-article.md')",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ sourcePath }) => {
       try {
@@ -523,15 +534,18 @@ Steps:
     },
   );
 
-  server.tool(
+  server.registerTool(
     "synapse_compile",
-    `Scan for all unprocessed sources and compile them into organized pages. Lists which sources exist in the sources folder but don't have corresponding summaries yet. Use synapse_ingest on each one to process them.`,
-    {},
     {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Compile All Sources",
+      description: `Scan for all unprocessed sources and compile them into organized pages. Lists which sources exist in the sources folder but don't have corresponding summaries yet. Use synapse_ingest on each one to process them.`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       try {
@@ -615,23 +629,26 @@ Steps:
     },
   );
 
-  server.tool(
+  server.registerTool(
     "synapse_query",
-    `Research a question against the knowledge base. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to the outputs folder using vault_write after responding.`,
     {
-      question: z.string().describe("The question to research"),
-      save: z
-        .boolean()
-        .optional()
-        .describe(
-          "Whether to save the answer to the outputs folder (default: true). Set false for quick lookups.",
-        ),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Query Knowledge Base",
+      description: `Research a question against the knowledge base. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to the outputs folder using vault_write after responding.`,
+      inputSchema: {
+        question: z.string().describe("The question to research"),
+        save: z
+          .boolean()
+          .optional()
+          .describe(
+            "Whether to save the answer to the outputs folder (default: true). Set false for quick lookups.",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ question, save }) => {
       try {
@@ -746,15 +763,18 @@ Steps:
     },
   );
 
-  server.tool(
+  server.registerTool(
     "synapse_lint",
-    `Health-check the knowledge base. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
-    {},
     {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Knowledge Base Health Check",
+      description: `Health-check the knowledge base. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       try {

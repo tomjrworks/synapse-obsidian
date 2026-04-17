@@ -14,19 +14,23 @@ export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
-  server.tool(
+  server.registerTool(
     "vault_read",
-    "Read a file from the Obsidian vault. Returns the full content including frontmatter.",
     {
-      path: z
-        .string()
-        .describe("Relative path to the file (e.g. 'notes/my-note.md')"),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Read Vault File",
+      description:
+        "Read a file from the Obsidian vault. Returns the full content including frontmatter.",
+      inputSchema: {
+        path: z
+          .string()
+          .describe("Relative path to the file (e.g. 'notes/my-note.md')"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ path: filePath }) => {
       try {
@@ -43,24 +47,28 @@ export function registerVaultTools(
     },
   );
 
-  server.tool(
+  server.registerTool(
     "vault_write",
-    "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new wiki pages, update existing ones, or save any markdown content.",
     {
-      path: z
-        .string()
-        .describe("Relative path for the file (e.g. 'notes/my-concept.md')"),
-      content: z
-        .string()
-        .describe(
-          "Full markdown content to write (including frontmatter if needed)",
-        ),
-    },
-    {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Write Vault File",
+      description:
+        "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new wiki pages, update existing ones, or save any markdown content.",
+      inputSchema: {
+        path: z
+          .string()
+          .describe("Relative path for the file (e.g. 'notes/my-concept.md')"),
+        content: z
+          .string()
+          .describe(
+            "Full markdown content to write (including frontmatter if needed)",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ path: filePath, content }) => {
       try {
@@ -79,27 +87,31 @@ export function registerVaultTools(
     },
   );
 
-  server.tool(
+  server.registerTool(
     "vault_list",
-    "List markdown files in the vault or a subdirectory. Returns relative paths.",
     {
-      path: z
-        .string()
-        .optional()
-        .describe(
-          "Subdirectory to list (e.g. 'sources'). Omit for entire vault.",
-        ),
-      recursive: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe("Whether to list files in subdirectories (default: true)"),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "List Vault Files",
+      description:
+        "List markdown files in the vault or a subdirectory. Returns relative paths.",
+      inputSchema: {
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Subdirectory to list (e.g. 'sources'). Omit for entire vault.",
+          ),
+        recursive: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Whether to list files in subdirectories (default: true)"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ path: subPath, recursive }) => {
       try {
@@ -135,26 +147,30 @@ export function registerVaultTools(
     },
   );
 
-  server.tool(
+  server.registerTool(
     "vault_search",
-    "Search the vault for files containing a text query. Returns matching files with line numbers and context. Case-insensitive.",
     {
-      query: z.string().describe("Text to search for"),
-      path: z
-        .string()
-        .optional()
-        .describe("Subdirectory to limit search to (e.g. 'notes')"),
-      maxResults: z
-        .number()
-        .optional()
-        .default(20)
-        .describe("Maximum number of matching files to return (default: 20)"),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Search Vault",
+      description:
+        "Search the vault for files containing a text query. Returns matching files with line numbers and context. Case-insensitive.",
+      inputSchema: {
+        query: z.string().describe("Text to search for"),
+        path: z
+          .string()
+          .optional()
+          .describe("Subdirectory to limit search to (e.g. 'notes')"),
+        maxResults: z
+          .number()
+          .optional()
+          .default(20)
+          .describe("Maximum number of matching files to return (default: 20)"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ query, path: subPath, maxResults }) => {
       try {
@@ -194,15 +210,19 @@ export function registerVaultTools(
     },
   );
 
-  server.tool(
+  server.registerTool(
     "vault_stats",
-    "Get vault statistics: file counts, folder structure, and whether the knowledge base has been initialized.",
-    {},
     {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Vault Statistics",
+      description:
+        "Get vault statistics: file counts, folder structure, and whether the knowledge base has been initialized.",
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () => {
       try {
@@ -224,17 +244,21 @@ export function registerVaultTools(
     },
   );
 
-  server.tool(
+  server.registerTool(
     "vault_frontmatter",
-    "Read the YAML frontmatter metadata from a vault file. Returns parsed key-value pairs (title, tags, date, status, etc.).",
     {
-      path: z.string().describe("Relative path to the file"),
-    },
-    {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      title: "Read File Metadata",
+      description:
+        "Read the YAML frontmatter metadata from a vault file. Returns parsed key-value pairs (title, tags, date, status, etc.).",
+      inputSchema: {
+        path: z.string().describe("Relative path to the file"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ path: filePath }) => {
       try {
