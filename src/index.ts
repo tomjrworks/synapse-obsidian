@@ -6,6 +6,7 @@ import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
+import { registerResources } from "./resources.js";
 import { LocalBackend } from "./utils/storage.js";
 import { parseArgs } from "./utils/args.js";
 import { printBanner } from "./banner.js";
@@ -35,6 +36,7 @@ async function main() {
       registerKnowledgeTools(server, backend);
       registerInitTools(server, backend);
       registerPrompts(server, backend);
+      registerResources(server, backend);
 
       const transport = new StdioServerTransport();
       await server.connect(transport);

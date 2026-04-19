@@ -10,6 +10,34 @@ import {
   parseFrontmatter,
 } from "../utils/vault.js";
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function getFilingHint(
+  backend: StorageBackend,
+  filePath: string,
+): Promise<string | null> {
+  try {
+    if (!(await backend.exists("CLAUDE.md"))) return null;
+    const claude = await backend.readFile("CLAUDE.md");
+    const topLevel = filePath.split("/")[0];
+    if (!topLevel || topLevel === filePath) return null;
+    // Word-boundary match: topLevel/ must be at line start or preceded by a
+    // non-word, non-hyphen char (e.g. backtick, space, pipe). Prevents
+    // `research/product-ideas/` from matching when topLevel is `ideas`.
+    const pattern = new RegExp(`(?:^|[^\\w-])${escapeRegex(topLevel)}/`);
+    const matches = claude
+      .split("\n")
+      .filter((line) => pattern.test(line))
+      .slice(0, 3);
+    if (matches.length === 0) return null;
+    return `Filing rules for \`${topLevel}/\`:\n${matches.join("\n")}\n\n(Full rules: read resource \`vault://CLAUDE.md\`.)`;
+  } catch {
+    return null;
+  }
+}
+
 export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
@@ -52,7 +80,7 @@ export function registerVaultTools(
     {
       title: "Write Vault File",
       description:
-        "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new wiki pages, update existing ones, or save any markdown content.",
+        "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new pages, update existing ones, or save any markdown content. This vault's filing conventions (folder structure, naming, frontmatter) are available via the `vault-rules` resource (CLAUDE.md) — check it before writing to an unfamiliar folder to avoid convention drift.",
       inputSchema: {
         path: z
           .string()
@@ -73,8 +101,12 @@ export function registerVaultTools(
     async ({ path: filePath, content }) => {
       try {
         await writeVaultFile(backend, filePath, content);
+        const hint = await getFilingHint(backend, filePath);
+        const message = hint
+          ? `Written: ${filePath}\n\n${hint}`
+          : `Written: ${filePath}`;
         return {
-          content: [{ type: "text", text: `Written: ${filePath}` }],
+          content: [{ type: "text", text: message }],
         };
       } catch (err: any) {
         return {

@@ -15,6 +15,7 @@ import {
   INDEX_TEMPLATE,
 } from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
+import { registerResources } from "./resources.js";
 
 interface UserSession {
   accessToken: string;
@@ -1309,6 +1310,7 @@ export async function startCloudServer(port: number): Promise<void> {
     registerKnowledgeTools(server, backend);
     registerInitTools(server, backend);
     registerPrompts(server, backend);
+    registerResources(server, backend);
     return server;
   }
 
