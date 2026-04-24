@@ -166,7 +166,7 @@ export async function startCloudServer(port: number): Promise<void> {
       res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — ${denied ? "Access Denied" : "Connection Error"}</title>
+  <title>Taproot — ${denied ? "Access Denied" : "Connection Error"}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -174,7 +174,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     <h1>${denied ? "No worries" : "Something went wrong"}</h1>
-    <p class="subtitle">${denied ? "Synapse needs access to your Google Drive to connect your notes. No data is stored on our servers — your files stay in Drive." : "Google returned an error. This is usually temporary."}</p>
+    <p class="subtitle">${denied ? "Taproot needs access to your Google Drive to connect your notes. No data is stored on our servers — your files stay in Drive." : "Google returned an error. This is usually temporary."}</p>
     <a href="/auth/google" class="btn">Try Again</a>
     <p class="note" style="margin-top:24px;">${denied ? "We read your folders and create files only inside your chosen vault. You pick exactly which folder to connect." : `Error: ${escapeHtml(String(error || "no authorization code received"))}`}</p>
   </div>
@@ -219,7 +219,7 @@ export async function startCloudServer(port: number): Promise<void> {
     }
   });
 
-  // Shared page styles (MainLoop branded)
+  // Shared page styles (Taproot branded)
   const pageStyles = `
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -317,7 +317,7 @@ export async function startCloudServer(port: number): Promise<void> {
   `;
 
   const pageHeader = `
-    <div class="logo"><span class="logo-dot"></span> Synapse</div>
+    <div class="logo"><span class="logo-dot"></span> Taproot</div>
     <div class="by">by Main Loop Systems</div>
   `;
 
@@ -347,7 +347,7 @@ export async function startCloudServer(port: number): Promise<void> {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Set Up Your Brain</title>
+  <title>Taproot — Set Up Your Brain</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
   <script src="https://apis.google.com/js/api.js"></script>
@@ -356,7 +356,7 @@ export async function startCloudServer(port: number): Promise<void> {
   <div class="container">
     ${pageHeader}
     <h1>Set up your brain</h1>
-    <p class="subtitle">Choose how you want to get started. Your files stay in Google Drive — Synapse just connects them to your AI.</p>
+    <p class="subtitle">Choose how you want to get started. Your files stay in Google Drive — Taproot just connects them to your AI.</p>
 
     <a href="/create-vault?session=${sessionToken}" class="option-card">
       <span class="tag tag-quick">Quick start</span>
@@ -367,7 +367,7 @@ export async function startCloudServer(port: number): Promise<void> {
     <a href="#" onclick="launchImportPicker(); return false;" class="option-card">
       <span class="tag tag-power">Import files</span>
       <h3>Import existing files</h3>
-      <p>Pick individual files from your Drive and we'll copy them into a new Synapse vault. Your originals stay in place.</p>
+      <p>Pick individual files from your Drive and we'll copy them into a new Taproot vault. Your originals stay in place.</p>
     </a>
   </div>
   <script>
@@ -460,7 +460,7 @@ export async function startCloudServer(port: number): Promise<void> {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Create Vault</title>
+  <title>Taproot — Create Vault</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -546,7 +546,7 @@ export async function startCloudServer(port: number): Promise<void> {
       // Create a welcome note
       await drive.files.create({
         requestBody: {
-          name: "Welcome to Synapse.md",
+          name: "Welcome to Taproot.md",
           parents: [folderId],
           mimeType: "text/markdown",
         },
@@ -566,7 +566,7 @@ export async function startCloudServer(port: number): Promise<void> {
       res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Error</title>
+  <title>Taproot — Error</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -691,7 +691,7 @@ export async function startCloudServer(port: number): Promise<void> {
 
       await drive.files.create({
         requestBody: {
-          name: "Welcome to Synapse.md",
+          name: "Welcome to Taproot.md",
           parents: [vaultId],
           mimeType: "text/markdown",
         },
@@ -770,7 +770,7 @@ export async function startCloudServer(port: number): Promise<void> {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — What's this for?</title>
+  <title>Taproot — What's this for?</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -912,7 +912,7 @@ export async function startCloudServer(port: number): Promise<void> {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Your Vault</title>
+  <title>Taproot — Your Vault</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -1089,14 +1089,14 @@ export async function startCloudServer(port: number): Promise<void> {
       }
     } catch (err: any) {
       // Non-fatal — vault still works, just without CLAUDE.md scaffolding.
-      // The user can still run synapse_setup from their AI client.
+      // The user can still run taproot_plant from their AI client.
       console.error(`[Connect] Scaffold error: ${err.message}`);
     }
 
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — Connect Your AI</title>
+  <title>Taproot — Connect Your AI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}</style>
 </head>
@@ -1201,7 +1201,7 @@ export async function startCloudServer(port: number): Promise<void> {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse — You're Connected!</title>
+  <title>Taproot — You're Connected!</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>${pageStyles}
     .url-box {
@@ -1303,7 +1303,7 @@ export async function startCloudServer(port: number): Promise<void> {
       rootFolderId: folderId,
     });
     const server = new McpServer({
-      name: "synapse",
+      name: "taproot",
       version: pkg.version,
     });
     registerVaultTools(server, backend);
@@ -1429,7 +1429,7 @@ export async function startCloudServer(port: number): Promise<void> {
   });
 
   app.listen(port, () => {
-    console.error(`Synapse Cloud running at ${BASE_URL}`);
+    console.error(`Taproot Cloud running at ${BASE_URL}`);
     console.error(`Connect: ${BASE_URL}/auth/google`);
     console.error(`Health: ${BASE_URL}/health`);
   });

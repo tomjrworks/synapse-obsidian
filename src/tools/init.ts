@@ -107,7 +107,7 @@ export function generateClaudeMd(opts: {
 - **Never leave a [[wikilink]] pointing to nothing** — always create at least a stub`
     : "- Use standard markdown links for cross-references";
 
-  return `# Synapse — Your AI Brain
+  return `# Taproot — Your AI Brain
 
 > Created ${today} | Topic: ${opts.topic} | Purpose: ${opts.purpose}
 
@@ -126,7 +126,7 @@ This is your second brain — a knowledge base that grows smarter with every con
 **BLOCKING:** Before answering any question about ${opts.topic}, search the vault first. It has context that general knowledge will miss.
 
 1. Read \`index.md\` to see what's in the vault
-2. Search for relevant notes with \`vault_search\`
+2. Search for relevant notes with \`garden_forage\`
 3. Read the most relevant pages before responding
 4. Cite sources using [[wikilinks]] when drawing from vault content
 
@@ -138,7 +138,7 @@ Don't wait until the end of a conversation to save things. Write to the vault **
 
 - **Research answers:** When you synthesize an answer worth keeping, save it to \`${opts.outputsFolder}/\`
 - **New insights:** When the user shares something worth remembering, save it to \`${opts.notesFolder}/\`
-- **Source material:** When saving articles or external content, use \`synapse_save\` → goes to \`${opts.sourcesFolder}/\`
+- **Source material:** When saving articles or external content, use \`taproot_seed\` → goes to \`${opts.sourcesFolder}/\`
 - **Session logs:** After major milestones (research completed, decision made), write a note to \`${opts.notesFolder}/daily/\` in format \`YYYY-MM-DD-<topic>.md\`
 - **Update the index:** After creating any new page, update \`index.md\` with a one-line summary
 - **Connect ideas:** Add [[wikilinks]] to link related pages whenever you create or update content
@@ -464,17 +464,17 @@ export function registerInitTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
-  // ── synapse_setup ────────────────────────────────────────────────────
+  // ── taproot_plant ────────────────────────────────────────────────────
   server.registerTool(
-    "synapse_setup",
+    "taproot_plant",
     {
-      title: "Synapse Setup",
-      description: `Onboarding entry point for Synapse. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
+      title: "Plant Taproot",
+      description: `Onboarding entry point for Taproot. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
 - Option A: Use existing vault conventions (adapts to what's already there)
 - Option B: Set up a structured knowledge base (organized folders for a specific topic)
 - Option C: Start fresh with custom settings
 
-After the user chooses, call synapse_configure with their selection.`,
+After the user chooses, call taproot_till with their selection.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -490,11 +490,11 @@ After the user chooses, call synapse_configure with their selection.`,
 
         const detection = await detectConventions(backend);
 
-        const output: string[] = ["## Synapse Vault Setup", ""];
+        const output: string[] = ["## Taproot Vault Setup", ""];
 
         if (existingConfig) {
           output.push(
-            `> **Note:** Synapse is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
+            `> **Note:** Taproot is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
             "",
           );
         }
@@ -527,7 +527,7 @@ After the user chooses, call synapse_configure with their selection.`,
           "",
           "### Option A: Use My Existing Vault",
           "",
-          "Synapse adapts to your current structure. No folders created, no files moved.",
+          "Taproot adapts to your current structure. No folders created, no files moved.",
           "",
           `- Sources saved to: \`${detection.suggestedSourcesFolder}\``,
           `- Outputs saved to: \`${detection.suggestedOutputsFolder}\``,
@@ -537,7 +537,7 @@ After the user chooses, call synapse_configure with their selection.`,
           "",
           "To choose this, call:",
           "```",
-          `synapse_configure({ mode: "existing" })`,
+          `taproot_till({ mode: "existing" })`,
           "```",
           "",
         );
@@ -550,7 +550,7 @@ After the user chooses, call synapse_configure with their selection.`,
           "",
           "To choose this, call:",
           "```",
-          `synapse_configure({ mode: "structured", topic: "your topic here" })`,
+          `taproot_till({ mode: "structured", topic: "your topic here" })`,
           "```",
           "",
         );
@@ -559,11 +559,11 @@ After the user chooses, call synapse_configure with their selection.`,
         output.push(
           "### Option C: Start Fresh (Custom)",
           "",
-          "Tell Synapse exactly how you want your vault organized. Specify your own folder names and conventions.",
+          "Tell Taproot exactly how you want your vault organized. Specify your own folder names and conventions.",
           "",
           "To choose this, call:",
           "```",
-          `synapse_configure({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
+          `taproot_till({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
           "```",
           "",
         );
@@ -573,7 +573,7 @@ After the user chooses, call synapse_configure with their selection.`,
           "",
           "### Also ask: What will you use this vault for?",
           "",
-          "This helps Synapse tailor how it saves and organizes content:",
+          "This helps Taproot tailor how it saves and organizes content:",
           "",
           '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
           '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
@@ -581,11 +581,11 @@ After the user chooses, call synapse_configure with their selection.`,
           '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
           '- **"custom"** — Something else (ask them to describe it)',
           "",
-          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `synapse_configure`.",
+          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `taproot_till`.",
           "",
           "---",
           "",
-          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `synapse_configure` with both.",
+          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `taproot_till` with both.",
         );
 
         return {
@@ -605,12 +605,12 @@ After the user chooses, call synapse_configure with their selection.`,
     },
   );
 
-  // ── synapse_configure ────────────────────────────────────────────────
+  // ── taproot_till ─────────────────────────────────────────────────────
   server.registerTool(
-    "synapse_configure",
+    "taproot_till",
     {
-      title: "Configure Synapse",
-      description: `Save Synapse configuration based on the user's choice from synapse_setup. Three modes:
+      title: "Till the Soil",
+      description: `Save Taproot configuration based on the user's choice from taproot_plant. Three modes:
 - "existing": Auto-detect conventions from the vault and save config. No folders created.
 - "structured": Set up an organized knowledge base (creates sources/, notes/, CLAUDE.md). Requires a topic.
 - "custom": Save whatever folder paths and conventions the user specified.`,
@@ -704,7 +704,7 @@ After the user chooses, call synapse_configure with their selection.`,
               {
                 type: "text",
                 text: [
-                  "## Synapse Configured (Existing Vault Mode)",
+                  "## Taproot Configured (Existing Vault Mode)",
                   "",
                   `- **Sources folder:** ${config.sourcesFolder}`,
                   `- **Outputs folder:** ${config.outputsFolder}`,
@@ -718,9 +718,9 @@ After the user chooses, call synapse_configure with their selection.`,
                   "Config saved to `.synapse/config.json`. All tools will now use these settings.",
                   "",
                   "### Next Steps",
-                  `1. Save articles with \`synapse_save\` — they'll go to \`${config.sourcesFolder}\``,
-                  "2. Use `synapse_status` to see your vault overview",
-                  "3. Use `synapse_query` to research your existing notes",
+                  `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
+                  "2. Use `taproot_status` to see your vault overview",
+                  "3. Use `taproot_harvest` to research your existing notes",
                 ].join("\n"),
               },
             ],
@@ -789,11 +789,11 @@ After the user chooses, call synapse_configure with their selection.`,
             "Config saved to `.synapse/config.json`.",
             "",
             "### Next Steps",
-            "1. Add source articles to `sources/` (copy-paste or use `synapse_save` with a URL)",
-            "2. Run `synapse_compile` to see what needs processing",
-            "3. Run `synapse_ingest` for each source to build organized pages",
-            "4. Ask questions with `synapse_query`",
-            "5. Run `synapse_lint` periodically to maintain quality",
+            "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",
+            "2. Run `taproot_cultivate` to see what needs processing",
+            "3. Run `taproot_water` for each source to build organized pages",
+            "4. Ask questions with `taproot_harvest`",
+            "5. Run `taproot_prune` periodically to maintain quality",
           );
 
           return {
@@ -831,7 +831,7 @@ After the user chooses, call synapse_configure with their selection.`,
             {
               type: "text",
               text: [
-                "## Synapse Configured (Custom Mode)",
+                "## Taproot Configured (Custom Mode)",
                 "",
                 `- **Sources folder:** ${config.sourcesFolder}`,
                 `- **Outputs folder:** ${config.outputsFolder}`,
@@ -843,9 +843,9 @@ After the user chooses, call synapse_configure with their selection.`,
                 "Config saved to `.synapse/config.json`. All tools will now use these settings.",
                 "",
                 "### Next Steps",
-                `1. Save articles with \`synapse_save\` — they'll go to \`${config.sourcesFolder}\``,
-                "2. Use `synapse_status` to see your vault overview",
-                "3. Use `synapse_query` to research your notes",
+                `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
+                "2. Use `taproot_status` to see your vault overview",
+                "3. Use `taproot_harvest` to research your notes",
               ].join("\n"),
             },
           ],
@@ -855,7 +855,7 @@ After the user chooses, call synapse_configure with their selection.`,
           content: [
             {
               type: "text",
-              text: `Error configuring Synapse: ${err.message}`,
+              text: `Error configuring Taproot: ${err.message}`,
             },
           ],
           isError: true,
@@ -864,14 +864,14 @@ After the user chooses, call synapse_configure with their selection.`,
     },
   );
 
-  // ── synapse_init (kept as alias, points users to synapse_setup) ──────
+  // ── taproot_sow (kept as alias, points users to taproot_plant) ──────
   server.registerTool(
-    "synapse_init",
+    "taproot_sow",
     {
-      title: "Initialize Knowledge Base",
+      title: "Sow Knowledge Base",
       description: `Initialize a structured knowledge base in the vault. Creates the folder structure, generates CLAUDE.md with the schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
 
-**For new vaults only.** If you have an existing vault, use \`synapse_setup\` instead — it detects your conventions and adapts.`,
+**For new vaults only.** If you have an existing vault, use \`taproot_plant\` instead — it detects your conventions and adapts.`,
       inputSchema: {
         topic: z
           .string()
@@ -933,11 +933,11 @@ After the user chooses, call synapse_configure with their selection.`,
           "Config saved to `.synapse/config.json`.",
           "",
           "### Next Steps",
-          "1. Add source articles to `sources/` (copy-paste or use `synapse_save` with a URL)",
-          "2. Run `synapse_compile` to see what needs processing",
-          "3. Run `synapse_ingest` for each source to build organized pages",
-          "4. Ask questions with `synapse_query`",
-          "5. Run `synapse_lint` periodically to maintain quality",
+          "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",
+          "2. Run `taproot_cultivate` to see what needs processing",
+          "3. Run `taproot_water` for each source to build organized pages",
+          "4. Ask questions with `taproot_harvest`",
+          "5. Run `taproot_prune` periodically to maintain quality",
         );
 
         return {

@@ -11,7 +11,7 @@ import { registerOAuthRoutes, requireAuth } from "./oauth.js";
 
 function createServer(backend: StorageBackend): McpServer {
   const server = new McpServer({
-    name: "synapse",
+    name: "taproot",
     version: "0.1.0",
   });
   registerVaultTools(server, backend);

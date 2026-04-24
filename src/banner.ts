@@ -37,6 +37,6 @@ ${GD}       │           │           │
   ·         ·              ·         ·${R}
 
   ${D}the nervous system between your AI and your notes${R}
-  ${GD}v${v}${R}  ${D}·${R}  ${GD}Main Loop Systems${R}
+  ${GD}v${v}${R}  ${D}·${R}  ${GD}Taproot${R}
 `);
 }

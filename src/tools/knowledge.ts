@@ -14,7 +14,7 @@ import { loadConfig, getDefaultConfig } from "../utils/config.js";
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
-  "\n\n> **Tip:** Run `synapse_setup` to configure Synapse for your vault.";
+  "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
 
 /**
  * Strip HTML tags and decode common entities to get plain text.
@@ -65,11 +65,11 @@ export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
-  // ── synapse_save ────────────────────────────────────────────────────
+  // ── taproot_seed ────────────────────────────────────────────────────
   server.registerTool(
-    "synapse_save",
+    "taproot_seed",
     {
-      title: "Save Content",
+      title: "Seed Content",
       description: `Save content to the vault's sources folder from a URL or pasted text. Ideal for mobile users who find articles and want to save them without a web clipper.
 
 If a URL is provided, fetches the page and converts it to markdown. If content is provided directly, saves it as-is. Always adds frontmatter with metadata.`,
@@ -126,7 +126,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
             const response = await fetch(url, {
               headers: {
                 "User-Agent":
-                  "Mozilla/5.0 (compatible; Synapse/1.0; +https://github.com/tomjrworks/synapse-obsidian)",
+                  "Mozilla/5.0 (compatible; Taproot/1.0; +https://github.com/tomjrworks/synapse-obsidian)",
                 Accept: "text/html,application/xhtml+xml,text/plain,*/*",
               },
               signal: AbortSignal.timeout(15000),
@@ -195,7 +195,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           `Words: ~${wordCount}`,
           sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
           "",
-          '**Next:** Run `synapse_ingest({ sourcePath: "' +
+          '**Next:** Run `taproot_water({ sourcePath: "' +
             filePath +
             '" })` to process this into the wiki.',
         ].join("\n");
@@ -222,11 +222,11 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
     },
   );
 
-  // ── synapse_status ──────────────────────────────────────────────────
+  // ── taproot_status ──────────────────────────────────────────────────
   server.registerTool(
-    "synapse_status",
+    "taproot_status",
     {
-      title: "Vault Status Overview",
+      title: "Taproot Status",
       description: `One-shot status overview. Returns everything needed to understand the vault state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
       inputSchema: {},
       annotations: {
@@ -289,7 +289,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           schema = await readVaultFile(backend, schemaPath);
         }
 
-        const output: string[] = ["## Synapse Knowledge Base Status", ""];
+        const output: string[] = ["## Taproot Knowledge Base Status", ""];
 
         // Config section
         if (config) {
@@ -305,7 +305,7 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           );
         } else {
           output.push(
-            "**Synapse hasn't been configured yet.** Run `synapse_setup` to get started.",
+            "**Taproot hasn't been configured yet.** Run `taproot_plant` to get started.",
             "",
           );
         }
@@ -335,31 +335,31 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
         const actions: string[] = [];
         if (!config) {
           actions.push(
-            "1. **Set up Synapse:** Run `synapse_setup` to configure Synapse for your vault.",
+            "1. **Set up Taproot:** Run `taproot_plant` to configure Taproot for your vault.",
           );
         }
         if (rawFiles.length === 0) {
           const saveFolder = config?.sourcesFolder || "sources";
           actions.push(
-            `1. **Add sources:** Save articles with \`synapse_save\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
+            `1. **Add sources:** Save articles with \`taproot_seed\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
           );
         }
         if (unprocessedCount > 0) {
           actions.push(
-            `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`synapse_compile\` to see them, then \`synapse_ingest\` each one.`,
+            `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`taproot_cultivate\` to see them, then \`taproot_water\` each one.`,
           );
         }
         if (initialized && rawFiles.length > 0 && notesFiles.length <= 3) {
           actions.push(
-            "2. **Build the wiki:** Run `synapse_compile` to process sources into organized pages.",
+            "2. **Build the wiki:** Run `taproot_cultivate` to process sources into organized pages.",
           );
         }
         if (initialized && notesFiles.length > 5) {
           actions.push(
-            "3. **Query:** Ask questions with `synapse_query` to research your knowledge base.",
+            "3. **Query:** Ask questions with `taproot_harvest` to research your knowledge base.",
           );
           actions.push(
-            "4. **Health check:** Run `synapse_lint` to check for broken links, orphan pages, and stale content.",
+            "4. **Health check:** Run `taproot_prune` to check for broken links, orphan pages, and stale content.",
           );
         }
 
@@ -378,27 +378,27 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
           output.push("");
         }
 
-        output.push("### How to Use Synapse");
+        output.push("### How to Use Taproot");
         output.push("");
         output.push(
-          "Synapse turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
-        );
-        output.push("");
-        output.push(
-          "1. **Save** sources with `synapse_save` (URL or pasted text) or add files to your sources folder",
-        );
-        output.push(
-          "2. **Process** them with `synapse_compile` + `synapse_ingest` to build organized pages",
-        );
-        output.push(
-          "3. **Query** your knowledge with `synapse_query` — get answers with citations",
-        );
-        output.push(
-          "4. **Maintain** quality with `synapse_lint` — finds broken links, orphans, stale content",
+          "Taproot turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
         );
         output.push("");
         output.push(
-          "**Available tools:** synapse_setup, synapse_configure, synapse_save, synapse_status, synapse_compile, synapse_ingest, synapse_query, synapse_lint, vault_read, vault_write, vault_list, vault_search, vault_stats, vault_frontmatter",
+          "1. **Save** sources with `taproot_seed` (URL or pasted text) or add files to your sources folder",
+        );
+        output.push(
+          "2. **Process** them with `taproot_cultivate` + `taproot_water` to build organized pages",
+        );
+        output.push(
+          "3. **Query** your knowledge with `taproot_harvest` — get answers with citations",
+        );
+        output.push(
+          "4. **Maintain** quality with `taproot_prune` — finds broken links, orphans, stale content",
+        );
+        output.push("");
+        output.push(
+          "**Available tools:** taproot_plant, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
         );
 
         return { content: [{ type: "text", text: output.join("\n") }] };
@@ -416,11 +416,11 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
     },
   );
 
-  // ── synapse_ingest ──────────────────────────────────────────────────
+  // ── taproot_water ───────────────────────────────────────────────────
   server.registerTool(
-    "synapse_ingest",
+    "taproot_water",
     {
-      title: "Process Source",
+      title: "Water Source",
       description: `Process a source file into the knowledge base. Reads the source, generates organized pages (summaries, concepts, entities), adds [[wikilinks]], and updates the index and log.
 
 You MUST read the source file content first, then generate all pages. Follow the CLAUDE.md schema in the vault root for conventions and folder paths.
@@ -503,7 +503,7 @@ Steps:
           "",
           "### Instructions",
           "",
-          "Read the CLAUDE.md schema above for folder paths and conventions. Use `vault_write` to create/update:",
+          "Read the CLAUDE.md schema above for folder paths and conventions. Use `garden_plant` to create/update:",
           `1. A summary page in \`${notesFolder}/\` — 200-500 word summary with frontmatter`,
           `2. Concept pages in \`${notesFolder}/\` — for each key concept (create if 2+ mentions, stub if 1). Create sub-folders if needed.`,
           `3. Entity pages in \`${notesFolder}/\` — for people, orgs, tools mentioned`,
@@ -535,10 +535,10 @@ Steps:
   );
 
   server.registerTool(
-    "synapse_compile",
+    "taproot_cultivate",
     {
-      title: "Compile All Sources",
-      description: `Scan for all unprocessed sources and compile them into organized pages. Lists which sources exist in the sources folder but don't have corresponding summaries yet. Use synapse_ingest on each one to process them.`,
+      title: "Cultivate Sources",
+      description: `Scan for all unprocessed sources and compile them into organized pages. Lists which sources exist in the sources folder but don't have corresponding summaries yet. Use taproot_water on each one to process them.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -600,13 +600,13 @@ Steps:
 
         if (unprocessed.length > 0) {
           output.push("### Unprocessed Sources");
-          output.push("Call `synapse_ingest` for each of these:\n");
+          output.push("Call `taproot_water` for each of these:\n");
           for (const f of unprocessed) {
             output.push(`- ${f}`);
           }
           output.push("");
           output.push(
-            `Start with: synapse_ingest({ sourcePath: "${unprocessed[0]}" })`,
+            `Start with: taproot_water({ sourcePath: "${unprocessed[0]}" })`,
           );
         } else {
           output.push("All sources have been processed. Wiki is up to date.");
@@ -630,10 +630,10 @@ Steps:
   );
 
   server.registerTool(
-    "synapse_query",
+    "taproot_harvest",
     {
-      title: "Query Knowledge Base",
-      description: `Research a question against the knowledge base. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to the outputs folder using vault_write after responding.`,
+      title: "Harvest Knowledge",
+      description: `Research a question against the knowledge base. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to the outputs folder using garden_plant after responding.`,
       inputSchema: {
         question: z.string().describe("The question to research"),
         save: z
@@ -709,7 +709,7 @@ Steps:
           "### Index",
           index
             ? "```markdown\n" + index.slice(0, 5000) + "\n```"
-            : "(No index found — run synapse_compile first)",
+            : "(No index found — run taproot_cultivate first)",
           "",
           `### Relevant Pages (${relevantFiles.length} found)`,
           "",
@@ -727,7 +727,7 @@ Steps:
             "",
             "### REQUIRED: Save Your Answer",
             "",
-            `After synthesizing your answer, you MUST call vault_write with exactly these parameters:`,
+            `After synthesizing your answer, you MUST call garden_plant with exactly these parameters:`,
             "",
             "```json",
             JSON.stringify(
@@ -764,9 +764,9 @@ Steps:
   );
 
   server.registerTool(
-    "synapse_lint",
+    "taproot_prune",
     {
-      title: "Knowledge Base Health Check",
+      title: "Prune Knowledge Base",
       description: `Health-check the knowledge base. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
       inputSchema: {},
       annotations: {
@@ -796,7 +796,7 @@ Steps:
             content: [
               {
                 type: "text",
-                text: `No files found to check. Run synapse_setup to configure Synapse first.${tipSuffix}`,
+                text: `No files found to check. Run taproot_plant to configure Taproot first.${tipSuffix}`,
               },
             ],
           };
@@ -920,7 +920,7 @@ Steps:
           report.push("### Suggested Actions");
           if (brokenLinks.length > 0) {
             report.push(
-              "- Create stub pages for broken link targets using vault_write",
+              "- Create stub pages for broken link targets using garden_plant",
             );
           }
           if (orphans.length > 0) {
@@ -938,7 +938,7 @@ Steps:
           }
           report.push("");
           report.push(
-            `Save this report using vault_write to: ${outputsFolder}/lint-report-${TODAY()}.md`,
+            `Save this report using garden_plant to: ${outputsFolder}/lint-report-${TODAY()}.md`,
           );
         }
 

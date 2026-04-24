@@ -43,9 +43,9 @@ export function registerVaultTools(
   backend: StorageBackend,
 ): void {
   server.registerTool(
-    "vault_read",
+    "garden_read",
     {
-      title: "Read Vault File",
+      title: "Read Garden File",
       description:
         "Read a file from the Obsidian vault. Returns the full content including frontmatter.",
       inputSchema: {
@@ -76,9 +76,9 @@ export function registerVaultTools(
   );
 
   server.registerTool(
-    "vault_write",
+    "garden_plant",
     {
-      title: "Write Vault File",
+      title: "Plant Garden File",
       description:
         "Write or overwrite a file in the Obsidian vault. Creates parent directories automatically. Use this to create new pages, update existing ones, or save any markdown content. This vault's filing conventions (folder structure, naming, frontmatter) are available via the `vault-rules` resource (CLAUDE.md) — check it before writing to an unfamiliar folder to avoid convention drift.",
       inputSchema: {
@@ -120,9 +120,9 @@ export function registerVaultTools(
   );
 
   server.registerTool(
-    "vault_list",
+    "garden_survey",
     {
-      title: "List Vault Files",
+      title: "Survey Garden",
       description:
         "List markdown files in the vault or a subdirectory. Returns relative paths.",
       inputSchema: {
@@ -180,9 +180,9 @@ export function registerVaultTools(
   );
 
   server.registerTool(
-    "vault_search",
+    "garden_forage",
     {
-      title: "Search Vault",
+      title: "Forage Garden",
       description:
         "Search the vault for files containing a text query. Returns matching files with line numbers and context. Case-insensitive.",
       inputSchema: {
@@ -243,9 +243,9 @@ export function registerVaultTools(
   );
 
   server.registerTool(
-    "vault_stats",
+    "garden_measure",
     {
-      title: "Vault Statistics",
+      title: "Measure Garden",
       description:
         "Get vault statistics: file counts, folder structure, and whether the knowledge base has been initialized.",
       inputSchema: {},
@@ -277,9 +277,9 @@ export function registerVaultTools(
   );
 
   server.registerTool(
-    "vault_frontmatter",
+    "garden_tag",
     {
-      title: "Read File Metadata",
+      title: "Read Garden Tags",
       description:
         "Read the YAML frontmatter metadata from a vault file. Returns parsed key-value pairs (title, tags, date, status, etc.).",
       inputSchema: {

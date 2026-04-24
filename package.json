@@ -1,6 +1,6 @@
 {
   "name": "synapse-obsidian",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "MCP server that connects any AI to your Obsidian vault. Save articles, ask questions across your notes, build a compounding knowledge base.",
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
     "second-brain"
   ],
   "license": "MIT",
-  "author": "MainLoop Systems",
+  "author": "Taproot",
   "repository": {
     "type": "git",
     "url": "https://github.com/tomjrworks/synapse-obsidian"

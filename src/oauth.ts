@@ -114,7 +114,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
-    // Show approval page — MainLoop branded
+    // Show approval page — Taproot branded
     res.send(`<!DOCTYPE html>
 <html>
 <head>
@@ -240,7 +240,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     <div class="security">
       Your data never leaves your machine. Synapse runs locally and<br>
       only connects your vault to your AI client.<br>
-      <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://mainloopsystems.com">MainLoop Systems</a>
+      <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://taproothq.com">Taproot</a>
     </div>
   </div>
 </body>

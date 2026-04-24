@@ -97,21 +97,21 @@ Finds broken links, orphan pages, missing frontmatter, stale content. Fixes what
 
 | Tool                | What it does                                                   |
 | ------------------- | -------------------------------------------------------------- |
-| `synapse_setup`     | Onboarding — scans vault, presents options, configures Synapse |
-| `synapse_configure` | Saves your vault preferences                                   |
-| `synapse_save`      | Save content from a URL or pasted text                         |
-| `synapse_status`    | Full vault overview with suggested actions                     |
-| `synapse_ingest`    | Process a source into organized pages                          |
-| `synapse_compile`   | Find and process all unprocessed sources                       |
-| `synapse_query`     | Research a question across your knowledge base                 |
-| `synapse_lint`      | Health-check for broken links, orphans, gaps                   |
-| `synapse_init`      | Scaffold a new knowledge base from scratch                     |
-| `vault_read`        | Read any file                                                  |
-| `vault_write`       | Create or update any file                                      |
-| `vault_list`        | List files in vault or subdirectory                            |
-| `vault_search`      | Full-text search                                               |
-| `vault_stats`       | File counts and structure                                      |
-| `vault_frontmatter` | Read YAML metadata from a file                                 |
+| `taproot_plant`     | Onboarding — scans vault, presents options, configures Synapse |
+| `taproot_till`      | Saves your vault preferences                                   |
+| `taproot_seed`      | Save content from a URL or pasted text                         |
+| `taproot_status`    | Full vault overview with suggested actions                     |
+| `taproot_water`     | Process a source into organized pages                          |
+| `taproot_cultivate` | Find and process all unprocessed sources                       |
+| `taproot_harvest`   | Research a question across your knowledge base                 |
+| `taproot_prune`     | Health-check for broken links, orphans, gaps                   |
+| `taproot_sow`       | Scaffold a new knowledge base from scratch                     |
+| `garden_read`       | Read any file                                                  |
+| `garden_plant`      | Create or update any file                                      |
+| `garden_survey`     | List files in vault or subdirectory                            |
+| `garden_forage`     | Full-text search                                               |
+| `garden_measure`    | File counts and structure                                      |
+| `garden_tag`        | Read YAML metadata from a file                                 |
 
 ## How It Works
 
@@ -131,4 +131,4 @@ Your vault is just a folder of markdown files. Synapse doesn't need Obsidian to 
 
 ## License
 
-MIT — [MainLoop Systems](https://mainloopsystems.com)
+MIT — [Taproot](https://taproothq.com)

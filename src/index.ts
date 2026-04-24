@@ -28,7 +28,7 @@ async function main() {
       await startHttpServer(backend, args.port);
     } else {
       const server = new McpServer({
-        name: "synapse",
+        name: "taproot",
         version: "0.1.0",
       });
 
@@ -45,6 +45,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Synapse fatal error:", err);
+  console.error("Taproot fatal error:", err);
   process.exit(1);
 });

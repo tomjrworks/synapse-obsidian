@@ -21,7 +21,7 @@ export function registerResources(
           text = await backend.readFile("CLAUDE.md");
         } else {
           text =
-            "# No filing rules configured\n\nThis vault has no CLAUDE.md. Run `synapse_setup` and `synapse_configure` to generate one tailored to the vault's purpose and topics.";
+            "# No filing rules configured\n\nThis vault has no CLAUDE.md. Run `taproot_plant` and `taproot_till` to generate one tailored to the vault's purpose and topics.";
         }
       } catch (err: any) {
         text = `Error reading CLAUDE.md: ${err.message}`;
