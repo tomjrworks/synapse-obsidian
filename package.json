@@ -1,6 +1,6 @@
 {
   "name": "synapse-obsidian",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server that connects any AI to your Obsidian vault. Save articles, ask questions across your notes, build a compounding knowledge base.",
   "type": "module",
   "bin": {

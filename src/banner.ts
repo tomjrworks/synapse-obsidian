@@ -7,7 +7,7 @@ const D = "\x1b[2m";
 const R = "\x1b[0m";
 
 export function printBanner(): void {
-  const v = process.env.npm_package_version || "0.2.3";
+  const v = process.env.npm_package_version || "0.4.0";
   console.error(`
 ${GD}  ·         ·              ·         ·
    ╲       ╱ ╲            ╱ ╲       ╱

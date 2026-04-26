@@ -73,6 +73,10 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
   });
 
   // --- Dynamic Client Registration ---
+  // Echoes back the requesting client's metadata, plus our own server identity
+  // (client_name="Taproot", logo_uri, client_uri, tos_uri, policy_uri) per
+  // RFC 7591 client metadata. Experimental — claude.ai may or may not respect
+  // logo_uri for custom connectors. See [[2026-04-26-taproot-tool-fixes-execution-plan]] Task 11.
   app.post("/register", (req, res) => {
     const { client_name, redirect_uris } = req.body || {};
     const clientId = randomUUID();
@@ -86,7 +90,11 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 
     res.status(201).json({
       client_id: clientId,
-      client_name: client_name || "Unknown",
+      client_name: "Taproot",
+      logo_uri: "https://taproothq.com/images/taproot-logo.png",
+      client_uri: "https://taproothq.com",
+      tos_uri: "https://taproothq.com",
+      policy_uri: "https://taproothq.com",
       redirect_uris: redirect_uris || [],
       token_endpoint_auth_method: "none",
     });
@@ -118,7 +126,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Synapse \u2014 Authorize</title>
+  <title>Taproot \u2014 Authorize</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -215,7 +223,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 </head>
 <body>
   <div class="card">
-    <div class="logo"><span class="logo-dot"></span> Synapse</div>
+    <div class="logo"><span class="logo-dot"></span> Taproot</div>
     <div class="by">by Main Loop Systems</div>
     <div class="request">
       <p><span class="app-name">${client.name}</span> is requesting access to your vault.</p>
@@ -234,11 +242,11 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       <input type="hidden" name="code_challenge" value="${code_challenge}">
       <input type="hidden" name="code_challenge_method" value="${code_challenge_method || "S256"}">
       <input type="hidden" name="state" value="${state || ""}">
-      <input type="password" name="password" placeholder="Enter your Synapse password" autofocus>
+      <input type="password" name="password" placeholder="Enter your Taproot password" autofocus>
       <button type="submit">Approve Access</button>
     </form>
     <div class="security">
-      Your data never leaves your machine. Synapse runs locally and<br>
+      Your data never leaves your machine. Taproot runs locally and<br>
       only connects your vault to your AI client.<br>
       <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://taproothq.com">Taproot</a>
     </div>
@@ -260,7 +268,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 
     if (password !== OWNER_PASSWORD) {
       res.status(403).send(`<!DOCTYPE html>
-<html><head><title>Synapse \u2014 Wrong Password</title>
+<html><head><title>Taproot \u2014 Wrong Password</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }

@@ -29,7 +29,7 @@ async function main() {
     } else {
       const server = new McpServer({
         name: "taproot",
-        version: "0.1.0",
+        version: "0.4.0",
       });
 
       registerVaultTools(server, backend);

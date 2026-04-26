@@ -10,56 +10,13 @@ import {
   parseFrontmatter,
 } from "../utils/vault.js";
 import { loadConfig, getDefaultConfig } from "../utils/config.js";
+import { fetchUrlAsText } from "../utils/fetch.js";
+import { getFilingHintCached } from "../utils/cache.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
-
-/**
- * Strip HTML tags and decode common entities to get plain text.
- * Intentionally simple — the AI will process the content during ingest anyway.
- */
-function htmlToText(html: string): string {
-  let text = html;
-
-  // Remove script and style blocks entirely
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
-  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, "");
-  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, "");
-  text = text.replace(/<header[\s\S]*?<\/header>/gi, "");
-
-  // Convert common block elements to newlines
-  text = text.replace(/<\/?(p|div|br|h[1-6]|li|tr|blockquote)[^>]*>/gi, "\n");
-  text = text.replace(/<\/?(ul|ol|table|thead|tbody)[^>]*>/gi, "\n");
-
-  // Convert headings with markdown markers
-  text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n# $1\n");
-  text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n## $1\n");
-  text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n### $1\n");
-
-  // Strip all remaining tags
-  text = text.replace(/<[^>]+>/g, "");
-
-  // Decode common HTML entities
-  text = text.replace(/&amp;/g, "&");
-  text = text.replace(/&lt;/g, "<");
-  text = text.replace(/&gt;/g, ">");
-  text = text.replace(/&quot;/g, '"');
-  text = text.replace(/&#39;/g, "'");
-  text = text.replace(/&nbsp;/g, " ");
-  text = text.replace(/&#(\d+);/g, (_m, code) =>
-    String.fromCharCode(parseInt(code, 10)),
-  );
-
-  // Normalize whitespace: collapse runs of spaces/tabs, collapse 3+ newlines to 2
-  text = text.replace(/[ \t]+/g, " ");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  text = text.trim();
-
-  return text;
-}
 
 export function registerKnowledgeTools(
   server: McpServer,
@@ -69,10 +26,8 @@ export function registerKnowledgeTools(
   server.registerTool(
     "taproot_seed",
     {
-      title: "Seed Content",
-      description: `Save content to the vault's sources folder from a URL or pasted text. Ideal for mobile users who find articles and want to save them without a web clipper.
-
-If a URL is provided, fetches the page and converts it to markdown. If content is provided directly, saves it as-is. Always adds frontmatter with metadata.`,
+      title: "Save a source",
+      description: `FALLBACK / multi-step entry. Use this only for: (a) saving pasted text content (no URL), or (b) the legacy seed → water → cultivate chain when the user explicitly wants the full processing pipeline. For the common case of "save this URL/article" — prefer \`taproot_save_url\` (single call: fetch + extract + save). Triggers for THIS tool: 'save this raw text to my sources', 'add this pasted content as a source', 'seed this for later processing'. Always writes to the configured sources folder with frontmatter.`,
       inputSchema: {
         title: z.string().describe("Title for the saved note"),
         url: z
@@ -123,39 +78,8 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
 
         if (url) {
           try {
-            const response = await fetch(url, {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (compatible; Taproot/1.0; +https://github.com/tomjrworks/synapse-obsidian)",
-                Accept: "text/html,application/xhtml+xml,text/plain,*/*",
-              },
-              signal: AbortSignal.timeout(15000),
-            });
-
-            if (!response.ok) {
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: `Error fetching URL: HTTP ${response.status} ${response.statusText}`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-
-            const contentType = response.headers.get("content-type") || "";
-            const rawBody = await response.text();
-
-            if (
-              contentType.includes("text/html") ||
-              contentType.includes("application/xhtml")
-            ) {
-              body = htmlToText(rawBody);
-            } else {
-              // Plain text, markdown, etc. — use as-is
-              body = rawBody;
-            }
+            const fetched = await fetchUrlAsText(url);
+            body = fetched.body;
           } catch (fetchErr: any) {
             return {
               content: [
@@ -226,8 +150,8 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
   server.registerTool(
     "taproot_status",
     {
-      title: "Taproot Status",
-      description: `One-shot status overview. Returns everything needed to understand the vault state: configuration, file counts, recent activity, CLAUDE.md schema, and suggested next actions. This is THE tool to call when a user first connects or asks "what can you do?"`,
+      title: "Garden status",
+      description: `Use this whenever the user first connects, asks what's set up, what's pending, or what they should do next. Returns config, file counts, unprocessed source count, recent activity, the CLAUDE.md schema, and suggested next actions in one call. Triggers: 'what can you do', 'what's set up', 'what's pending', 'how do I use this', 'where do I start', 'is this connected'. This is THE first call when a user is exploring or onboarding.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -420,19 +344,8 @@ If a URL is provided, fetches the page and converts it to markdown. If content i
   server.registerTool(
     "taproot_water",
     {
-      title: "Water Source",
-      description: `Process a source file into the knowledge base. Reads the source, generates organized pages (summaries, concepts, entities), adds [[wikilinks]], and updates the index and log.
-
-You MUST read the source file content first, then generate all pages. Follow the CLAUDE.md schema in the vault root for conventions and folder paths.
-
-Steps:
-1. Read the source file
-2. Create a summary page in the configured notes folder
-3. For each key concept: create/update a concept page
-4. For each key entity: create/update an entity page
-5. Add [[wikilinks]] connecting related pages
-6. Update the index
-7. Append to the log`,
+      title: "Process a source (chain)",
+      description: `FALLBACK for the multi-step ingestion pipeline. Use only when the user explicitly wants to re-process or deeply ingest an EXISTING source file at a known path into structured concept/entity pages with wikilinks. For "save this URL" — prefer \`taproot_save_url\` (single call). For "save this pasted text" — use \`taproot_seed\`. Triggers ONLY when: 'process this source file', 'ingest this into the wiki', 'turn this article into structured notes', 're-water X'. The tool returns instructions; you (the caller) must then read the source and create pages with \`garden_plant\` per the CLAUDE.md schema.`,
       inputSchema: {
         sourcePath: z
           .string()
@@ -537,8 +450,8 @@ Steps:
   server.registerTool(
     "taproot_cultivate",
     {
-      title: "Cultivate Sources",
-      description: `Scan for all unprocessed sources and compile them into organized pages. Lists which sources exist in the sources folder but don't have corresponding summaries yet. Use taproot_water on each one to process them.`,
+      title: "Find unprocessed sources",
+      description: `Use this whenever the user wants to know which raw sources still need processing into the wiki. Compares the sources folder against the notes folder and lists the gap. Triggers: 'what hasn't been processed', 'show me unprocessed sources', 'what's left to ingest', 'what's still raw', 'what should I water next'. After getting the list, call \`taproot_water\` on each unprocessed file.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -632,8 +545,8 @@ Steps:
   server.registerTool(
     "taproot_harvest",
     {
-      title: "Harvest Knowledge",
-      description: `Research a question against the knowledge base. Reads the index, identifies relevant pages, and returns their content so you can synthesize an answer. You MUST save the synthesized answer to the outputs folder using garden_plant after responding.`,
+      title: "Research a question",
+      description: `Use this whenever the user wants a synthesized answer drawn from MULTIPLE notes across their vault — a research-style question that needs cross-referencing, citation, and saving the result. Reads the index, locates relevant pages, returns their content so you can synthesize an answer with [[wikilink]] citations. Triggers: 'what does my brain say about X', 'research X across my notes', 'compare what I have on X vs Y', 'deep dive on X', 'summarize everything I know about X'. For looking up a single specific note, prefer \`garden_find\` + \`garden_read\`. For a phrase search, use \`garden_forage\`.`,
       inputSchema: {
         question: z.string().describe("The question to research"),
         save: z
@@ -766,8 +679,8 @@ Steps:
   server.registerTool(
     "taproot_prune",
     {
-      title: "Prune Knowledge Base",
-      description: `Health-check the knowledge base. Scans for contradictions, orphan pages, broken wikilinks, missing frontmatter, stale content, and missing pages. Returns a report and instructions for fixing issues.`,
+      title: "Health check",
+      description: `Use this whenever the user wants a quality audit of their vault — broken links, orphan pages, missing frontmatter, stale content. Returns a report and suggested fixes. Triggers: 'lint my vault', 'health check', 'find broken links', 'find orphan notes', 'audit my brain', 'what's broken', 'is anything stale'. After reviewing the report, you can fix issues with \`garden_plant\`.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -962,6 +875,177 @@ Steps:
       }
     },
   );
+
+  // ── taproot_save_url ────────────────────────────────────────────────
+  server.registerTool(
+    "taproot_save_url",
+    {
+      title: "Save a URL",
+      description: `Use this whenever the user wants to save a URL, article, blog post, web page, or link to their vault. Single call: fetches the URL, extracts text, files it under the configured sources folder (or a folder you suggest) with frontmatter. PREFER this over the \`taproot_seed\` → \`taproot_water\` chain for any URL save. Triggers: 'save this article', 'save this URL', 'add this link to my notes', 'archive this', 'remember this page', plus any URL the user shares with intent to keep. Use \`preview_only: true\` first if you want to confirm filing/title before committing.`,
+      inputSchema: {
+        url: z.string().describe("The URL to fetch and save"),
+        title: z
+          .string()
+          .optional()
+          .describe(
+            "Optional title override. If omitted, uses the page's <title> or a slug of the URL.",
+          ),
+        suggestedFolder: z
+          .string()
+          .optional()
+          .describe(
+            "Optional folder override (relative to vault root). Defaults to the configured sources folder.",
+          ),
+        suggestedTags: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Optional tags to add to frontmatter (in addition to 'raw')",
+          ),
+        userIntent: z
+          .string()
+          .optional()
+          .describe(
+            "Optional one-liner about why the user is saving this — saved as a 'note' field in frontmatter for future context",
+          ),
+        previewOnly: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "If true, return what WOULD be saved (path, title, excerpt) without writing. Default: false.",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({
+      url,
+      title,
+      suggestedFolder,
+      suggestedTags,
+      userIntent,
+      previewOnly,
+    }) => {
+      try {
+        let fetched;
+        try {
+          fetched = await fetchUrlAsText(url);
+        } catch (fetchErr: any) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error fetching URL: ${fetchErr.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const config = await loadConfig(backend);
+        const defaults = getDefaultConfig();
+        const targetFolder =
+          suggestedFolder || config?.sourcesFolder || defaults.sourcesFolder;
+
+        const resolvedTitle =
+          title || fetched.title || urlToSlugTitle(url) || "Saved page";
+        const filename = slugify(resolvedTitle) + ".md";
+        const filePath = `${targetFolder}/${filename}`;
+
+        const wordCount = fetched.body.split(/\s+/).filter(Boolean).length;
+        const excerpt = fetched.body.slice(0, 400);
+
+        if (previewOnly) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: [
+                  "## Preview (not saved)",
+                  "",
+                  `**Would save to:** ${filePath}`,
+                  `**Title:** ${resolvedTitle}`,
+                  `**Source:** ${url}`,
+                  `**Word count:** ~${wordCount}`,
+                  suggestedTags && suggestedTags.length > 0
+                    ? `**Tags:** ${["raw", ...suggestedTags].join(", ")}`
+                    : "**Tags:** raw",
+                  userIntent ? `**Intent:** ${userIntent}` : "",
+                  "",
+                  "### Excerpt",
+                  "```",
+                  excerpt,
+                  fetched.body.length > 400 ? "..." : "",
+                  "```",
+                  "",
+                  "Re-call without `previewOnly` to commit, or pass `title`/`suggestedFolder`/`suggestedTags` to override.",
+                ]
+                  .filter(Boolean)
+                  .join("\n"),
+              },
+            ],
+          };
+        }
+
+        const allTags = ["raw", ...(suggestedTags || [])];
+        const frontmatter = [
+          "---",
+          `title: "${resolvedTitle.replace(/"/g, '\\"')}"`,
+          `source: "${url}"`,
+          `date_created: ${TODAY()}`,
+          `type: article`,
+          `status: raw`,
+          `tags: [${allTags.join(", ")}]`,
+          userIntent ? `note: "${userIntent.replace(/"/g, '\\"')}"` : "",
+          "---",
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        const fullContent = `${frontmatter}\n\n# ${resolvedTitle}\n\n${fetched.body}`;
+
+        await writeVaultFile(backend, filePath, fullContent);
+
+        const filingHint = await getFilingHintCached(backend, filePath);
+
+        const responseText = [
+          `Saved: ${filePath}`,
+          `Title: ${resolvedTitle}`,
+          `Source: ${url}`,
+          `Words: ~${wordCount}`,
+          filingHint ? `\n${filingHint}` : "",
+          config ? "" : SETUP_TIP,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        return {
+          content: [{ type: "text", text: responseText }],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text", text: `Error saving URL: ${err.message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+
+function urlToSlugTitle(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const lastSegment =
+      u.pathname.split("/").filter(Boolean).pop() || u.hostname;
+    return decodeURIComponent(lastSegment.replace(/[-_]+/g, " "));
+  } catch {
+    return null;
+  }
 }
 
 function slugify(text: string): string {

@@ -13,7 +13,7 @@ async function getSchema(backend: StorageBackend): Promise<string> {
   } catch {
     // ignore read errors
   }
-  return "(No CLAUDE.md found — run taproot_plant to configure Synapse, or taproot_sow to set up a knowledge base schema.)";
+  return "(No CLAUDE.md found — run taproot_plant to configure Taproot, or taproot_sow to scaffold a knowledge base schema.)";
 }
 
 export function registerPrompts(
@@ -21,9 +21,13 @@ export function registerPrompts(
   backend: StorageBackend,
 ): void {
   // ── compile ───────────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "compile",
-    "Process all new sources in the knowledge base. Finds unprocessed raw sources and ingests each one into the wiki.",
+    {
+      title: "Compile sources",
+      description:
+        "Process all unprocessed sources in your garden into organized notes with [[wikilinks]].",
+    },
     async () => {
       const schema = await getSchema(backend);
       return {
@@ -33,7 +37,7 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                "Process all new sources in my knowledge base.",
+                "Process all new sources in my garden.",
                 "",
                 "## Schema (CLAUDE.md)",
                 "```markdown",
@@ -57,10 +61,14 @@ export function registerPrompts(
   );
 
   // ── research ──────────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "research",
-    "Research a question across the knowledge base, synthesize an answer with citations, and save it.",
-    { question: z.string() },
+    {
+      title: "Research a question",
+      description:
+        "Research a question across your garden, synthesize an answer with citations, and save it.",
+      argsSchema: { question: z.string() },
+    },
     async ({ question }) => {
       const schema = await getSchema(backend);
       return {
@@ -70,7 +78,7 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                `Research this question across my knowledge base: "${question}"`,
+                `Research this question across my garden: "${question}"`,
                 "",
                 "## Schema (CLAUDE.md)",
                 "```markdown",
@@ -84,7 +92,7 @@ export function registerPrompts(
                 "4. Save the answer using `garden_plant` (the taproot_harvest response will include the exact path and template)",
                 "5. Update index.md to include the new output",
                 "",
-                "If the knowledge base doesn't have enough information, say what's missing and suggest sources to add.",
+                "If the garden doesn't have enough information, say what's missing and suggest sources to add.",
               ].join("\n"),
             },
           },
@@ -94,9 +102,13 @@ export function registerPrompts(
   );
 
   // ── health-check ──────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "health-check",
-    "Run a health check on the knowledge base. Lint for issues and fix what you can.",
+    {
+      title: "Garden health check",
+      description:
+        "Audit your garden for broken links, orphan pages, missing frontmatter, and stale content — and fix what can be fixed.",
+    },
     async () => {
       const schema = await getSchema(backend);
       return {
@@ -106,7 +118,7 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                "Run a health check on my knowledge base and fix any issues you find.",
+                "Run a health check on my garden and fix any issues you find.",
                 "",
                 "## Schema (CLAUDE.md)",
                 "```markdown",
@@ -130,10 +142,14 @@ export function registerPrompts(
   );
 
   // ── save-article ──────────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "save-article",
-    "Save an article from a URL to the knowledge base and process it into the wiki.",
-    { url: z.string() },
+    {
+      title: "Save an article",
+      description:
+        "Save an article from a URL to your garden using the single-call save path.",
+      argsSchema: { url: z.string() },
+    },
     async ({ url }) => {
       const schema = await getSchema(backend);
       return {
@@ -143,7 +159,7 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                `Save this article to my knowledge base and process it: ${url}`,
+                `Save this article to my garden: ${url}`,
                 "",
                 "## Schema (CLAUDE.md)",
                 "```markdown",
@@ -151,11 +167,9 @@ export function registerPrompts(
                 "```",
                 "",
                 "## Steps",
-                `1. Call \`taproot_seed\` with the URL: "${url}" — pick a descriptive title based on the URL/domain`,
-                "2. Review the saved content to make sure it captured the article text",
-                "3. Call `taproot_water` with the saved file path to process it into organized notes",
-                "4. Use `garden_plant` to create the pages as instructed by taproot_water",
-                "5. Give me a summary of the article and what pages were created",
+                `1. Call \`taproot_save_url({ url: "${url}" })\` — single call: fetches, extracts, files under sources/`,
+                "2. Confirm the save and tell me the path + a 1-sentence summary of what's in it",
+                "3. Only run `taproot_water` afterward if I explicitly ask for the full processing pipeline",
               ].join("\n"),
             },
           },
@@ -165,9 +179,13 @@ export function registerPrompts(
   );
 
   // ── getting-started ───────────────────────────────────────────────
-  server.prompt(
+  server.registerPrompt(
     "getting-started",
-    "Build my brain — reads your files, organizes everything, and makes it searchable.",
+    {
+      title: "Build my brain",
+      description:
+        "First-run onboarding — reads your files, organizes everything, and makes it searchable.",
+    },
     async () => {
       // Detect vault structure to give Claude the right instructions
       const hasSourcesFolder = await backend.exists("sources");

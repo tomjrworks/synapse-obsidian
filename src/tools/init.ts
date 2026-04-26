@@ -8,6 +8,7 @@ import {
   type SynapseConfig,
 } from "../utils/config.js";
 import { readVaultFile, listVaultFiles } from "../utils/vault.js";
+import { invalidateClaudeMdCache } from "../utils/cache.js";
 
 /**
  * Generate a personalized CLAUDE.md from onboarding answers.
@@ -440,6 +441,7 @@ async function scaffoldStructuredVault(
   if (!(await backend.exists("CLAUDE.md"))) {
     const claudeContent = generateClaudeMd(opts);
     await backend.writeFile("CLAUDE.md", claudeContent);
+    invalidateClaudeMdCache(backend);
     created.push("CLAUDE.md");
   } else {
     skipped.push("CLAUDE.md (already exists)");
@@ -468,13 +470,8 @@ export function registerInitTools(
   server.registerTool(
     "taproot_plant",
     {
-      title: "Plant Taproot",
-      description: `Onboarding entry point for Taproot. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns configuration options for the user to choose from:
-- Option A: Use existing vault conventions (adapts to what's already there)
-- Option B: Set up a structured knowledge base (organized folders for a specific topic)
-- Option C: Start fresh with custom settings
-
-After the user chooses, call taproot_till with their selection.`,
+      title: "Set up Taproot",
+      description: `Use this the FIRST time a user wants to set up, configure, or initialize Taproot for their vault. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns three options (A: adapt to existing, B: structured knowledge base, C: custom). After the user picks, call \`taproot_till\` with their selection. Triggers: 'set up Taproot', 'set up my brain', 'configure my vault', 'get started', 'initialize Taproot', 'first time setup'. Safe to re-run — won't overwrite existing config without explicit approval.`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -609,11 +606,8 @@ After the user chooses, call taproot_till with their selection.`,
   server.registerTool(
     "taproot_till",
     {
-      title: "Till the Soil",
-      description: `Save Taproot configuration based on the user's choice from taproot_plant. Three modes:
-- "existing": Auto-detect conventions from the vault and save config. No folders created.
-- "structured": Set up an organized knowledge base (creates sources/, notes/, CLAUDE.md). Requires a topic.
-- "custom": Save whatever folder paths and conventions the user specified.`,
+      title: "Apply Taproot config",
+      description: `Use this AFTER \`taproot_plant\` once the user has chosen a setup option (A/B/C) and a purpose. Saves the chosen configuration and (for "structured" mode) scaffolds folders + CLAUDE.md. Three modes: "existing" adapts to the current vault; "structured" creates an organized knowledge base (requires a topic); "custom" uses the folder paths the user specified. This tool is the CONFIGURATION step — only call it after the user has answered taproot_plant's questions, never as a first action.`,
       inputSchema: {
         mode: z
           .enum(["existing", "structured", "kb", "custom"])
@@ -868,10 +862,8 @@ After the user chooses, call taproot_till with their selection.`,
   server.registerTool(
     "taproot_sow",
     {
-      title: "Sow Knowledge Base",
-      description: `Initialize a structured knowledge base in the vault. Creates the folder structure, generates CLAUDE.md with the schema, and creates the initial index and log files. Safe to run on an existing vault — won't overwrite existing files.
-
-**For new vaults only.** If you have an existing vault, use \`taproot_plant\` instead — it detects your conventions and adapts.`,
+      title: "Scaffold a knowledge base",
+      description: `LEGACY shortcut. Use only when the user wants a one-call scaffold of a structured knowledge base on a specific topic (sources/, notes/, outputs/, CLAUDE.md, index.md, config) and is willing to skip the option-A/B/C choice. For most users, prefer \`taproot_plant\` — it scans first and adapts to existing conventions. Safe on existing vaults — won't overwrite existing files.`,
       inputSchema: {
         topic: z
           .string()
