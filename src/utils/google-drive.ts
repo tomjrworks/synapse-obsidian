@@ -1,5 +1,5 @@
 import { google, type drive_v3 } from "googleapis";
-import type { StorageBackend } from "./storage.js";
+import type { StorageBackend, FileStat } from "./storage.js";
 
 /**
  * Google Drive storage backend.
@@ -130,6 +130,27 @@ export class GoogleDriveBackend implements StorageBackend {
 
   async mkdir(dirPath: string): Promise<void> {
     await this.ensureDirectoryPath(dirPath);
+  }
+
+  // Stage 1 T3 added these to the interface; this backend is being killed in T7
+  // (replaced by SupabaseEncryptedMirrorBackend). Stubs throw so any accidental
+  // call lights up loudly rather than silently no-op'ing.
+  async delete(_filePath: string): Promise<void> {
+    throw new Error("GoogleDriveBackend.delete: deprecated, see Stage 1 T7");
+  }
+
+  async move(_oldPath: string, _newPath: string): Promise<void> {
+    throw new Error("GoogleDriveBackend.move: deprecated, see Stage 1 T7");
+  }
+
+  async stat(_filePath: string): Promise<FileStat> {
+    throw new Error("GoogleDriveBackend.stat: deprecated, see Stage 1 T7");
+  }
+
+  async recentFiles(_n: number): Promise<string[]> {
+    throw new Error(
+      "GoogleDriveBackend.recentFiles: deprecated, see Stage 1 T7",
+    );
   }
 
   // --- Internal helpers ---

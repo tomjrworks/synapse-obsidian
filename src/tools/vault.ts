@@ -452,7 +452,7 @@ export function registerVaultTools(
     {
       title: "Recent notes",
       description:
-        "Use this whenever the user wants to see what they've been working on recently — last edited / last added notes. Returns up to N notes ranked by frontmatter `date_modified` then `date_created`, falling back to file listing order. Triggers: 'what did I work on this week', 'show me my recent notes', 'what was I thinking about lately', 'what did I add today', 'last few notes'.",
+        "Use this whenever the user wants to see what they've been working on recently — last edited / last added notes. Returns up to N notes ranked by file modification time (newest first). Triggers: 'what did I work on this week', 'show me my recent notes', 'what was I thinking about lately', 'what did I add today', 'last few notes'.",
       inputSchema: {
         n: z
           .number()
@@ -470,74 +470,29 @@ export function registerVaultTools(
     async ({ n }) => {
       try {
         const limit = Math.min(n ?? 10, 50);
-        const allFiles = await listVaultFiles(backend);
-        if (allFiles.length === 0) {
+        const recent = await backend.recentFiles(limit);
+        if (recent.length === 0) {
           return {
             content: [{ type: "text", text: "No notes in the vault yet." }],
           };
         }
 
-        // Sample up to 3x the limit, read frontmatter, sort by date.
-        // Best-effort — full mtime support comes with the Stage 1 backend rewrite.
-        const sampleSize = Math.min(allFiles.length, limit * 3);
-        const sample = allFiles.slice(0, sampleSize);
-
-        type Item = {
-          file: string;
-          title: string;
-          dateKey: string;
-          source: "modified" | "created" | "fallback";
-        };
-        const items: Item[] = [];
-
-        for (const file of sample) {
+        const lines: string[] = [];
+        for (const file of recent) {
+          let title = path.basename(file, ".md");
           try {
             const content = await readVaultFile(backend, file);
             const fm = parseFrontmatter(content);
-            const dateModified = coerceDate(fm.date_modified);
-            const dateCreated = coerceDate(fm.date_created);
-            const dateKey = dateModified || dateCreated || "";
-            const source = dateModified
-              ? "modified"
-              : dateCreated
-                ? "created"
-                : "fallback";
-            const title =
-              typeof fm.title === "string"
-                ? fm.title
-                : path.basename(file, ".md");
-            items.push({ file, title, dateKey, source });
+            if (typeof fm.title === "string" && fm.title.length > 0) {
+              title = fm.title;
+            }
           } catch {
-            items.push({
-              file,
-              title: path.basename(file, ".md"),
-              dateKey: "",
-              source: "fallback",
-            });
+            // title falls back to basename
           }
+          lines.push(`- **${title}** — ${file}`);
         }
 
-        items.sort((a, b) => {
-          if (a.dateKey && b.dateKey) return b.dateKey.localeCompare(a.dateKey);
-          if (a.dateKey) return -1;
-          if (b.dateKey) return 1;
-          return 0;
-        });
-
-        const top = items.slice(0, limit);
-        const hasAnyDate = top.some((i) => i.dateKey);
-
-        const lines = top.map((i) => {
-          const dateBadge = i.dateKey
-            ? ` (${i.source === "modified" ? "modified" : "created"} ${i.dateKey})`
-            : "";
-          return `- **${i.title}** — ${i.file}${dateBadge}`;
-        });
-
-        const header = hasAnyDate
-          ? `${top.length} most recent note${top.length === 1 ? "" : "s"} (by frontmatter date):`
-          : `${top.length} note${top.length === 1 ? "" : "s"} (no frontmatter dates found — listing order):`;
-
+        const header = `${recent.length} most recent note${recent.length === 1 ? "" : "s"} (by mtime):`;
         return {
           content: [{ type: "text", text: [header, "", ...lines].join("\n") }],
         };
@@ -554,12 +509,4 @@ export function registerVaultTools(
       }
     },
   );
-}
-
-function coerceDate(val: unknown): string {
-  if (typeof val === "string") return val;
-  if (val instanceof Date && !isNaN(val.getTime())) {
-    return val.toISOString().slice(0, 10);
-  }
-  return "";
 }

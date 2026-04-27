@@ -3,14 +3,24 @@ import path from "node:path";
 
 /**
  * Abstract storage backend interface.
- * Implementations: LocalBackend (filesystem), GoogleDriveBackend, DropboxBackend.
+ * Implementations: LocalBackend (filesystem), GoogleDriveBackend (deprecated, killed in Stage 1 T7),
+ * SupabaseEncryptedMirrorBackend (Stage 1 T4).
  */
+export interface FileStat {
+  size: number;
+  modifiedAt: Date;
+}
+
 export interface StorageBackend {
   readFile(filePath: string): Promise<string>;
   writeFile(filePath: string, content: string): Promise<void>;
   listFiles(subPath?: string, recursive?: boolean): Promise<string[]>;
   exists(filePath: string): Promise<boolean>;
   mkdir(dirPath: string): Promise<void>;
+  delete(filePath: string): Promise<void>;
+  move(oldPath: string, newPath: string): Promise<void>;
+  stat(filePath: string): Promise<FileStat>;
+  recentFiles(n: number): Promise<string[]>;
 }
 
 /**
@@ -51,6 +61,34 @@ export class LocalBackend implements StorageBackend {
   async mkdir(dirPath: string): Promise<void> {
     const fullPath = this.resolveSafe(dirPath);
     fs.mkdirSync(fullPath, { recursive: true });
+  }
+
+  async delete(filePath: string): Promise<void> {
+    const fullPath = this.resolveSafe(filePath);
+    fs.unlinkSync(fullPath);
+  }
+
+  async move(oldPath: string, newPath: string): Promise<void> {
+    const oldFull = this.resolveSafe(oldPath);
+    const newFull = this.resolveSafe(newPath);
+    fs.mkdirSync(path.dirname(newFull), { recursive: true });
+    fs.renameSync(oldFull, newFull);
+  }
+
+  async stat(filePath: string): Promise<FileStat> {
+    const fullPath = this.resolveSafe(filePath);
+    const s = fs.statSync(fullPath);
+    return { size: s.size, modifiedAt: s.mtime };
+  }
+
+  async recentFiles(n: number): Promise<string[]> {
+    const all = await this.listFiles(undefined, true);
+    const withMtime = all.map((relative) => ({
+      relative,
+      mtimeMs: fs.statSync(path.join(this.vaultPath, relative)).mtimeMs,
+    }));
+    withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return withMtime.slice(0, n).map((x) => x.relative);
   }
 
   private listRecursive(dir: string, recursive: boolean): string[] {
