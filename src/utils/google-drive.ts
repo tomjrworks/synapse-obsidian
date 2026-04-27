@@ -133,8 +133,11 @@ export class GoogleDriveBackend implements StorageBackend {
   }
 
   // Stage 1 T3 added these to the interface; this backend is being killed in T7
-  // (replaced by SupabaseEncryptedMirrorBackend). Stubs throw so any accidental
-  // call lights up loudly rather than silently no-op'ing.
+  // (replaced by SupabaseEncryptedMirrorBackend). delete/move/stat have no
+  // current callers, so they stay as throw-stubs that light up loudly if
+  // accidentally invoked. recentFiles IS called by garden_recent today, so it
+  // gets a real implementation to preserve cloud behavior through the
+  // T6→T7 transition.
   async delete(_filePath: string): Promise<void> {
     throw new Error("GoogleDriveBackend.delete: deprecated, see Stage 1 T7");
   }
@@ -147,10 +150,62 @@ export class GoogleDriveBackend implements StorageBackend {
     throw new Error("GoogleDriveBackend.stat: deprecated, see Stage 1 T7");
   }
 
-  async recentFiles(_n: number): Promise<string[]> {
-    throw new Error(
-      "GoogleDriveBackend.recentFiles: deprecated, see Stage 1 T7",
-    );
+  async recentFiles(n: number): Promise<string[]> {
+    const out: { path: string; modifiedTime: string }[] = [];
+    await this.walkForRecent(this.rootFolderId, "", new Set(), out);
+    out.sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime));
+    return out.slice(0, n).map((f) => f.path);
+  }
+
+  private async walkForRecent(
+    folderId: string,
+    prefix: string,
+    visited: Set<string>,
+    out: { path: string; modifiedTime: string }[],
+  ): Promise<void> {
+    if (visited.has(folderId)) return;
+    visited.add(folderId);
+
+    let pageToken: string | undefined;
+    do {
+      const res = await this.drive.files.list({
+        q: `'${folderId}' in parents and trashed = false`,
+        fields:
+          "nextPageToken, files(id, name, mimeType, modifiedTime, shortcutDetails)",
+        pageSize: 1000,
+        pageToken,
+      });
+      const files = res.data.files || [];
+
+      for (const file of files) {
+        if (!file.name || file.name.startsWith(".")) continue;
+        const relativePath = prefix ? `${prefix}/${file.name}` : file.name;
+
+        let mimeType = file.mimeType;
+        let fileId = file.id;
+        if (
+          mimeType === "application/vnd.google-apps.shortcut" &&
+          file.shortcutDetails
+        ) {
+          mimeType = file.shortcutDetails.targetMimeType || "";
+          fileId = file.shortcutDetails.targetId || file.id;
+        }
+
+        if (mimeType === "application/vnd.google-apps.folder") {
+          if (fileId) {
+            await this.walkForRecent(fileId, relativePath, visited, out);
+          }
+        } else if (
+          (file.name.endsWith(".md") ||
+            mimeType === "application/vnd.google-apps.document") &&
+          file.modifiedTime
+        ) {
+          out.push({ path: relativePath, modifiedTime: file.modifiedTime });
+        }
+      }
+
+      pageToken = res.data.nextPageToken || undefined;
+    } while (pageToken);
   }
 
   // --- Internal helpers ---
