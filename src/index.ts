@@ -18,8 +18,8 @@ async function main() {
   const backend = new LocalBackend(args.vaultPath);
 
   if (args.mode === "http") {
-    const { startHttpServer } = await import("./http.js");
-    await startHttpServer(backend, args.port);
+    const { startServer } = await import("./server.js");
+    await startServer(backend, args.port);
   } else {
     const server = new McpServer({
       name: "taproot",

@@ -11,13 +11,14 @@ import { registerInitTools } from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
 import { registerOAuthRoutes, requireAuth } from "./oauth.js";
+import { mountApiRoutes } from "./api/routes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
   readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
 );
 
-function createServer(backend: StorageBackend): McpServer {
+function createMcpServer(backend: StorageBackend): McpServer {
   const server = new McpServer({
     name: "taproot",
     version: pkg.version,
@@ -30,17 +31,15 @@ function createServer(backend: StorageBackend): McpServer {
   return server;
 }
 
-export async function startHttpServer(
+export async function startServer(
   backend: StorageBackend,
   port: number,
 ): Promise<void> {
   const app = express();
 
-  // Parse both JSON and URL-encoded bodies (OAuth forms use URL-encoded)
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Request logging
   app.use((req, _res, next) => {
     const body = req.body ? JSON.stringify(req.body).slice(0, 300) : "";
     console.error(
@@ -49,7 +48,6 @@ export async function startHttpServer(
     next();
   });
 
-  // CORS
   app.use((_req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header(
@@ -61,13 +59,12 @@ export async function startHttpServer(
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
-  // OAuth: auto-generate password for HTTP mode if not set
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   if (!process.env.SYNAPSE_PASSWORD) {
     const { randomBytes } = await import("node:crypto");
     const generated = randomBytes(6).toString("hex").match(/.{4}/g)!.join("-");
     process.env.SYNAPSE_PASSWORD = generated;
-    console.error(`\n  Your Synapse password: ${generated}`);
+    console.error(`\n  Your Taproot password: ${generated}`);
     console.error(
       `  (needed when connecting from Claude.ai or other remote clients)\n`,
     );
@@ -75,16 +72,16 @@ export async function startHttpServer(
   registerOAuthRoutes(app, baseUrl);
   console.error(`[OAuth] Enabled. Password protected.`);
 
-  // MCP endpoint — stateless, one transport per request
-  app.post("/mcp", async (req, res) => {
-    // Check auth if enabled
-    if (requireAuth(req, res)) return;
+  mountApiRoutes(app, backend);
+  console.error(`[API] Onboarding endpoints mounted at /api/*`);
 
+  app.post("/mcp", async (req, res) => {
+    if (requireAuth(req, res)) return;
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined as any,
       });
-      const server = createServer(backend);
+      const server = createMcpServer(backend);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err: any) {
@@ -104,7 +101,6 @@ export async function startHttpServer(
     res.status(200).json({ ok: true });
   });
 
-  // Health check
   app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
@@ -114,6 +110,9 @@ export async function startHttpServer(
   });
 
   app.listen(port, () => {
-    console.error(`Synapse MCP server running at http://localhost:${port}/mcp`);
+    console.error(`Taproot server running at http://localhost:${port}`);
+    console.error(`  MCP:    POST /mcp`);
+    console.error(`  API:    /api/*`);
+    console.error(`  Health: GET  /health`);
   });
 }
