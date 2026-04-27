@@ -5,6 +5,7 @@ import {
   asyncHandler,
   type AuthedRequest,
 } from "./middleware.js";
+import { getMembershipForUser } from "./workspace.js";
 
 export function meRouter(): Router {
   const router = Router();
@@ -14,34 +15,20 @@ export function meRouter(): Router {
     requireSupabaseAuth,
     asyncHandler(async (req, res) => {
       const authed = req as AuthedRequest;
-      const userId = authed.user.id;
       const sb = supabaseService();
-
-      const { data, error } = await sb
-        .from("workspace_members")
-        .select("workspace_id, joined_at, workspaces!inner(id, settings)")
-        .eq("user_id", userId)
-        .order("joined_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      if (error) {
-        res.status(500).json({ error: "lookup_failed", detail: error.message });
-        return;
-      }
-      if (!data) {
+      const membership = await getMembershipForUser(sb, authed.user.id);
+      if (!membership) {
         res.status(404).json({ error: "no_workspace" });
         return;
       }
 
-      const ws = (data as any).workspaces;
-      const settings = ws.settings ?? {};
+      const settings = membership.settings;
       const persona = settings.persona ?? {};
 
       res.json({
-        user_id: userId,
+        user_id: authed.user.id,
         email: authed.user.email,
-        workspace_id: ws.id,
+        workspace_id: membership.workspaceId,
         onboarding_step: settings.onboarding_step ?? null,
         persona_traits: Array.isArray(persona.traits) ? persona.traits : [],
         persona_freetext:
