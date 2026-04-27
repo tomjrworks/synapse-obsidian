@@ -3,6 +3,7 @@ import type { StorageBackend } from "../utils/storage.js";
 import { authRouter } from "./auth.js";
 import { meRouter } from "./me.js";
 import { onboardingRouter } from "./onboarding.js";
+import { clientsRouter } from "./clients.js";
 
 export function mountApiRoutes(app: Express, _backend: StorageBackend): void {
   const api = Router();
@@ -14,6 +15,7 @@ export function mountApiRoutes(app: Express, _backend: StorageBackend): void {
   api.use("/", authRouter());
   api.use("/", meRouter());
   api.use("/", onboardingRouter());
+  api.use("/", clientsRouter());
 
   app.use("/api", api);
 }
