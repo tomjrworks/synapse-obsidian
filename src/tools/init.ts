@@ -72,6 +72,7 @@ export function generateClaudeMd(opts: {
       opts.sourcesFolder,
       opts.notesFolder,
       opts.outputsFolder,
+      ".taproot",
       ".synapse",
     ];
     const otherFolders = opts.existingFolders.filter(
@@ -709,7 +710,7 @@ export function registerInitTools(
                   `- **CLAUDE.md:** ${config.schemaPath || "none"}`,
                   `- **Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
                   "",
-                  "Config saved to `.synapse/config.json`. All tools will now use these settings.",
+                  "Config saved to `.taproot/config.json`. All tools will now use these settings.",
                   "",
                   "### Next Steps",
                   `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
@@ -780,7 +781,7 @@ export function registerInitTools(
           }
 
           output.push(
-            "Config saved to `.synapse/config.json`.",
+            "Config saved to `.taproot/config.json`.",
             "",
             "### Next Steps",
             "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",
@@ -834,7 +835,7 @@ export function registerInitTools(
                 `- **Frontmatter:** ${config.useFrontmatter ? "enabled" : "disabled"}`,
                 `- **Wikilinks:** ${config.useWikilinks ? "enabled" : "disabled"}`,
                 "",
-                "Config saved to `.synapse/config.json`. All tools will now use these settings.",
+                "Config saved to `.taproot/config.json`. All tools will now use these settings.",
                 "",
                 "### Next Steps",
                 `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
@@ -922,7 +923,7 @@ export function registerInitTools(
         }
 
         output.push(
-          "Config saved to `.synapse/config.json`.",
+          "Config saved to `.taproot/config.json`.",
           "",
           "### Next Steps",
           "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",

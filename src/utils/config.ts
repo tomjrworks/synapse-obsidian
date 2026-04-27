@@ -1,6 +1,8 @@
 import type { StorageBackend } from "./storage.js";
 
-const CONFIG_PATH = ".synapse/config.json";
+const CONFIG_DIR = ".taproot";
+const CONFIG_PATH = `${CONFIG_DIR}/config.json`;
+const LEGACY_CONFIG_PATH = ".synapse/config.json";
 
 export interface SynapseConfig {
   mode: "existing" | "structured" | "kb" | "custom";
@@ -52,34 +54,39 @@ export function getDefaultConfig(): SynapseConfig {
 }
 
 /**
- * Load the Synapse config from .synapse/config.json in the vault root.
- * Returns null if no config exists yet.
+ * Load the Taproot config from .taproot/config.json in the vault root.
+ * Falls back to the legacy .synapse/config.json for vaults that haven't
+ * been re-saved since the Stage 1 rename. Returns null if no config exists.
  */
 export async function loadConfig(
   backend: StorageBackend,
 ): Promise<SynapseConfig | null> {
   try {
-    if (!(await backend.exists(CONFIG_PATH))) {
-      return null;
+    if (await backend.exists(CONFIG_PATH)) {
+      const raw = await backend.readFile(CONFIG_PATH);
+      return JSON.parse(raw) as SynapseConfig;
     }
-    const raw = await backend.readFile(CONFIG_PATH);
-    const parsed = JSON.parse(raw) as SynapseConfig;
-    return parsed;
+    if (await backend.exists(LEGACY_CONFIG_PATH)) {
+      const raw = await backend.readFile(LEGACY_CONFIG_PATH);
+      return JSON.parse(raw) as SynapseConfig;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 /**
- * Save the Synapse config to .synapse/config.json in the vault root.
+ * Save the Taproot config to .taproot/config.json in the vault root.
+ * Existing .synapse/config.json is left in place but stops being read once
+ * the new file exists; users can delete it manually.
  */
 export async function saveConfig(
   backend: StorageBackend,
   config: SynapseConfig,
 ): Promise<void> {
-  // Ensure .synapse directory exists
-  if (!(await backend.exists(".synapse"))) {
-    await backend.mkdir(".synapse");
+  if (!(await backend.exists(CONFIG_DIR))) {
+    await backend.mkdir(CONFIG_DIR);
   }
   const json = JSON.stringify(config, null, 2);
   await backend.writeFile(CONFIG_PATH, json);
