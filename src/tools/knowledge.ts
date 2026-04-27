@@ -11,7 +11,7 @@ import {
 } from "../utils/vault.js";
 import { loadConfig, getDefaultConfig } from "../utils/config.js";
 import { fetchUrlAsText } from "../utils/fetch.js";
-import { getFilingHintCached } from "../utils/cache.js";
+import { getFilingHintCached, LOCAL_TENANT_KEY } from "../utils/cache.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
@@ -1011,7 +1011,11 @@ export function registerKnowledgeTools(
 
         await writeVaultFile(backend, filePath, fullContent);
 
-        const filingHint = await getFilingHintCached(backend, filePath);
+        const filingHint = await getFilingHintCached(
+          backend,
+          LOCAL_TENANT_KEY,
+          filePath,
+        );
 
         const responseText = [
           `Saved: ${filePath}`,

@@ -13,6 +13,7 @@ import {
 import {
   getFilingHintCached,
   invalidateClaudeMdCache,
+  LOCAL_TENANT_KEY,
 } from "../utils/cache.js";
 
 export function registerVaultTools(
@@ -79,9 +80,13 @@ export function registerVaultTools(
       try {
         await writeVaultFile(backend, filePath, content);
         if (filePath === "CLAUDE.md") {
-          invalidateClaudeMdCache(backend);
+          invalidateClaudeMdCache(LOCAL_TENANT_KEY);
         }
-        const hint = await getFilingHintCached(backend, filePath);
+        const hint = await getFilingHintCached(
+          backend,
+          LOCAL_TENANT_KEY,
+          filePath,
+        );
         const message = hint
           ? `Written: ${filePath}\n\n${hint}`
           : `Written: ${filePath}`;

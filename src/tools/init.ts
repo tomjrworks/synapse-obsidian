@@ -8,7 +8,7 @@ import {
   type SynapseConfig,
 } from "../utils/config.js";
 import { readVaultFile, listVaultFiles } from "../utils/vault.js";
-import { invalidateClaudeMdCache } from "../utils/cache.js";
+import { invalidateClaudeMdCache, LOCAL_TENANT_KEY } from "../utils/cache.js";
 
 /**
  * Generate a personalized CLAUDE.md from onboarding answers.
@@ -442,7 +442,7 @@ async function scaffoldStructuredVault(
   if (!(await backend.exists("CLAUDE.md"))) {
     const claudeContent = generateClaudeMd(opts);
     await backend.writeFile("CLAUDE.md", claudeContent);
-    invalidateClaudeMdCache(backend);
+    invalidateClaudeMdCache(LOCAL_TENANT_KEY);
     created.push("CLAUDE.md");
   } else {
     skipped.push("CLAUDE.md (already exists)");
