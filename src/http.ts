@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { StorageBackend } from "./utils/storage.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
@@ -9,10 +12,15 @@ import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
 import { registerOAuthRoutes, requireAuth } from "./oauth.js";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(
+  readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
+);
+
 function createServer(backend: StorageBackend): McpServer {
   const server = new McpServer({
     name: "taproot",
-    version: "0.1.0",
+    version: pkg.version,
   });
   registerVaultTools(server, backend);
   registerKnowledgeTools(server, backend);
@@ -100,8 +108,8 @@ export async function startHttpServer(
   app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
-      server: "synapse",
-      version: "0.1.0",
+      server: "taproot",
+      version: pkg.version,
     });
   });
 

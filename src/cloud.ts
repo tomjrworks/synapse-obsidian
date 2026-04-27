@@ -1396,7 +1396,7 @@ export async function startCloudServer(port: number): Promise<void> {
   app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
-      server: "synapse-cloud",
+      server: "taproot-cloud",
       version: pkg.version,
       activeSessions: sessions.size,
     });
