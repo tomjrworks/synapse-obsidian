@@ -118,8 +118,7 @@ Finds broken links, orphan pages, missing frontmatter, stale content. Fixes what
 Synapse is an [MCP server](https://modelcontextprotocol.io) — an open protocol for connecting AI to tools and data. It gives your AI read/write access to your vault (and nothing else — sandboxed to the vault directory).
 
 - **Stdio** (default) — For desktop AI apps (Claude Desktop, etc.)
-- **HTTP** (`--http`) — For browser-based AI (Claude.ai, ChatGPT, etc.) via tunnel
-- **Cloud** (`--cloud`) — Hosted mode with Google Drive OAuth (coming soon)
+- **HTTP** (`--http`) — For browser-based AI (Claude.ai, ChatGPT, etc.) behind Tailscale or another tunnel
 
 Your vault is just a folder of markdown files. Synapse doesn't need Obsidian to be running — it works with any folder.
 

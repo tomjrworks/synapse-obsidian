@@ -15,32 +15,25 @@ printBanner();
 const args = parseArgs();
 
 async function main() {
-  if (args.mode === "cloud") {
-    // Cloud mode: Google Drive OAuth, no local vault needed
-    const { startCloudServer } = await import("./cloud.js");
-    await startCloudServer(args.port);
+  const backend = new LocalBackend(args.vaultPath);
+
+  if (args.mode === "http") {
+    const { startHttpServer } = await import("./http.js");
+    await startHttpServer(backend, args.port);
   } else {
-    // Local mode: filesystem backend
-    const backend = new LocalBackend(args.vaultPath);
+    const server = new McpServer({
+      name: "taproot",
+      version: "0.4.0",
+    });
 
-    if (args.mode === "http") {
-      const { startHttpServer } = await import("./http.js");
-      await startHttpServer(backend, args.port);
-    } else {
-      const server = new McpServer({
-        name: "taproot",
-        version: "0.4.0",
-      });
+    registerVaultTools(server, backend);
+    registerKnowledgeTools(server, backend);
+    registerInitTools(server, backend);
+    registerPrompts(server, backend);
+    registerResources(server, backend);
 
-      registerVaultTools(server, backend);
-      registerKnowledgeTools(server, backend);
-      registerInitTools(server, backend);
-      registerPrompts(server, backend);
-      registerResources(server, backend);
-
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
-    }
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
   }
 }
 

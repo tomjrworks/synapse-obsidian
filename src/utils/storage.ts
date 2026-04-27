@@ -3,7 +3,7 @@ import path from "node:path";
 
 /**
  * Abstract storage backend interface.
- * Implementations: LocalBackend (filesystem), GoogleDriveBackend (deprecated, killed in Stage 1 T7),
+ * Implementations: LocalBackend (filesystem),
  * SupabaseEncryptedMirrorBackend (Stage 1 T4).
  */
 export interface FileStat {
