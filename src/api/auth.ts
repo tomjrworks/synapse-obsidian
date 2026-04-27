@@ -87,5 +87,68 @@ export function authRouter(): Router {
     }),
   );
 
+  router.post(
+    "/login",
+    asyncHandler(async (req, res) => {
+      const { email, password } = (req.body ?? {}) as {
+        email?: unknown;
+        password?: unknown;
+      };
+
+      if (typeof email !== "string" || !email.includes("@")) {
+        res.status(400).json({ error: "invalid_email" });
+        return;
+      }
+      if (typeof password !== "string" || !password) {
+        res.status(400).json({ error: "missing_password" });
+        return;
+      }
+
+      const sb = supabaseService();
+      const { data, error } = await sb.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) {
+        res.status(401).json({ error: "login_failed", detail: error.message });
+        return;
+      }
+      if (!data.session || !data.user) {
+        res.status(401).json({ error: "no_session_returned" });
+        return;
+      }
+
+      res.json({
+        user_id: data.user.id,
+        jwt: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at,
+      });
+    }),
+  );
+
+  router.post(
+    "/magic-link",
+    asyncHandler(async (req, res) => {
+      const { email } = (req.body ?? {}) as { email?: unknown };
+
+      if (typeof email !== "string" || !email.includes("@")) {
+        res.status(400).json({ error: "invalid_email" });
+        return;
+      }
+
+      const sb = supabaseService();
+      const { error } = await sb.auth.signInWithOtp({ email });
+      if (error) {
+        res
+          .status(400)
+          .json({ error: "magic_link_failed", detail: error.message });
+        return;
+      }
+
+      res.json({ ok: true });
+    }),
+  );
+
   return router;
 }
