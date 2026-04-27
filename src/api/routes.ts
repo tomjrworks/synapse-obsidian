@@ -1,6 +1,7 @@
 import { Router, type Express } from "express";
 import type { StorageBackend } from "../utils/storage.js";
 import { authRouter } from "./auth.js";
+import { meRouter } from "./me.js";
 
 export function mountApiRoutes(app: Express, _backend: StorageBackend): void {
   const api = Router();
@@ -10,6 +11,7 @@ export function mountApiRoutes(app: Express, _backend: StorageBackend): void {
   });
 
   api.use("/", authRouter());
+  api.use("/", meRouter());
 
   app.use("/api", api);
 }
