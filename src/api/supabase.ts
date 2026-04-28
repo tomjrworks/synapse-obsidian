@@ -1,9 +1,15 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-let serviceClient: SupabaseClient | null = null;
-
+// Per-call fresh service-role client. We deliberately don't memoize here:
+// supabase-js's `auth.getUser(jwt)` (used in middleware to verify the bearer
+// token) mutates the client's auth state, which silently downgrades subsequent
+// DB calls from `service_role` to the user's `authenticated` role. That breaks
+// any operation against an RLS-no-policies table (pair_tokens, tenant_keys,
+// audit_log) once auth has been touched. Returning a new client per call keeps
+// the service-role bypass guarantee per request handler. Cost: a tiny object
+// alloc per call — supabase-js doesn't open a connection until you make a
+// query, so there's no socket overhead.
 export function supabaseService(): SupabaseClient {
-  if (serviceClient) return serviceClient;
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -11,10 +17,9 @@ export function supabaseService(): SupabaseClient {
       "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env",
     );
   }
-  serviceClient = createClient(url, key, {
+  return createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  return serviceClient;
 }
 
 export function supabaseForUser(jwt: string): SupabaseClient {
