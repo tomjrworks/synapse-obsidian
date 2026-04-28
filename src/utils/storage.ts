@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { promises as fsp, constants as fsConstants } from "node:fs";
 import path from "node:path";
 
 /**
@@ -41,34 +41,55 @@ export interface StorageBackend {
 
 /**
  * Local filesystem backend. Reads/writes files directly.
- * Used for Claude Desktop and Claude Code (stdio transport).
+ * Used for Claude Desktop and Claude Code (stdio transport) and as the
+ * personal-MCP backend in HTTP mode (T6.1: /mcp routes through the
+ * encrypted mirror; LocalBackend is reserved for /api/first-wow).
+ *
+ * T5: async I/O throughout (no event-loop blocking under concurrent
+ * requests) and typed NotFoundError / ConflictError matching the
+ * SupabaseEncryptedMirrorBackend semantics so the MCP tool layer can
+ * map errors uniformly across backends.
  */
 export class LocalBackend implements StorageBackend {
   constructor(private vaultPath: string) {}
 
   async readFile(filePath: string): Promise<string> {
     const fullPath = this.resolveSafe(filePath);
-    return fs.readFileSync(fullPath, "utf-8");
+    try {
+      return await fsp.readFile(fullPath, "utf-8");
+    } catch (err: any) {
+      if (err?.code === "ENOENT") throw new NotFoundError(filePath);
+      throw err;
+    }
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
     const fullPath = this.resolveSafe(filePath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, "utf-8");
+    await fsp.mkdir(path.dirname(fullPath), { recursive: true });
+    await fsp.writeFile(fullPath, content, "utf-8");
   }
 
   async listFiles(subPath?: string, recursive = true): Promise<string[]> {
     const dir = subPath ? this.resolveSafe(subPath) : this.vaultPath;
-
-    if (!fs.existsSync(dir)) return [];
-
-    return this.listRecursive(dir, recursive);
+    try {
+      return await this.listRecursive(dir, recursive);
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return [];
+      throw err;
+    }
   }
 
   async exists(filePath: string): Promise<boolean> {
+    if (typeof filePath !== "string" || !filePath.trim()) return false;
+    let fullPath: string;
     try {
-      const fullPath = this.resolveSafe(filePath);
-      return fs.existsSync(fullPath);
+      fullPath = this.resolveSafe(filePath);
+    } catch {
+      return false;
+    }
+    try {
+      await fsp.access(fullPath, fsConstants.F_OK);
+      return true;
     } catch {
       return false;
     }
@@ -76,40 +97,75 @@ export class LocalBackend implements StorageBackend {
 
   async mkdir(dirPath: string): Promise<void> {
     const fullPath = this.resolveSafe(dirPath);
-    fs.mkdirSync(fullPath, { recursive: true });
+    await fsp.mkdir(fullPath, { recursive: true });
   }
 
   async delete(filePath: string): Promise<void> {
     const fullPath = this.resolveSafe(filePath);
-    fs.unlinkSync(fullPath);
+    try {
+      await fsp.unlink(fullPath);
+    } catch (err: any) {
+      if (err?.code === "ENOENT") throw new NotFoundError(filePath);
+      throw err;
+    }
   }
 
   async move(oldPath: string, newPath: string): Promise<void> {
+    if (oldPath === newPath) return;
     const oldFull = this.resolveSafe(oldPath);
     const newFull = this.resolveSafe(newPath);
-    fs.mkdirSync(path.dirname(newFull), { recursive: true });
-    fs.renameSync(oldFull, newFull);
+
+    // Mirror semantics: collision is a typed ConflictError, not a silent
+    // overwrite. POSIX `rename` overwrites by default; pre-check with
+    // access(). Race window between check and rename is acceptable for
+    // single-process LocalBackend (Stage 1 scope).
+    try {
+      await fsp.access(newFull, fsConstants.F_OK);
+      throw new ConflictError(`Target already exists: ${newPath}`);
+    } catch (err: any) {
+      if (err instanceof ConflictError) throw err;
+      if (err?.code !== "ENOENT") throw err;
+    }
+
+    await fsp.mkdir(path.dirname(newFull), { recursive: true });
+    try {
+      await fsp.rename(oldFull, newFull);
+    } catch (err: any) {
+      if (err?.code === "ENOENT") throw new NotFoundError(oldPath);
+      throw err;
+    }
   }
 
   async stat(filePath: string): Promise<FileStat> {
     const fullPath = this.resolveSafe(filePath);
-    const s = fs.statSync(fullPath);
-    return { size: s.size, modifiedAt: s.mtime };
+    try {
+      const s = await fsp.stat(fullPath);
+      return { size: s.size, modifiedAt: s.mtime };
+    } catch (err: any) {
+      if (err?.code === "ENOENT") throw new NotFoundError(filePath);
+      throw err;
+    }
   }
 
   async recentFiles(n: number): Promise<string[]> {
+    if (n <= 0) return [];
     const all = await this.listFiles(undefined, true);
-    const withMtime = all.map((relative) => ({
-      relative,
-      mtimeMs: fs.statSync(path.join(this.vaultPath, relative)).mtimeMs,
-    }));
+    const withMtime = await Promise.all(
+      all.map(async (relative) => ({
+        relative,
+        mtimeMs: (await fsp.stat(path.join(this.vaultPath, relative))).mtimeMs,
+      })),
+    );
     withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return withMtime.slice(0, n).map((x) => x.relative);
   }
 
-  private listRecursive(dir: string, recursive: boolean): string[] {
+  private async listRecursive(
+    dir: string,
+    recursive: boolean,
+  ): Promise<string[]> {
     const results: string[] = [];
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
@@ -118,7 +174,7 @@ export class LocalBackend implements StorageBackend {
       const relative = path.relative(this.vaultPath, entryPath);
 
       if (entry.isDirectory() && recursive) {
-        results.push(...this.listRecursive(entryPath, true));
+        results.push(...(await this.listRecursive(entryPath, true)));
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
         results.push(relative);
       }
