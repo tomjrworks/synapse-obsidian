@@ -1,69 +1,22 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import type { Express, Request, Response } from "express";
 import { supabaseService } from "./api/supabase.js";
 import { getMembershipForUser } from "./api/workspace.js";
 
-// T6.2: tokens carry workspace identity. Stored in-memory + persisted to
-// disk for restart survival. T6.3 lifts both reads and writes to the
-// existing `oauth_tokens` Supabase table (migration 0004).
-interface TokenMeta {
-  userId: string;
-  workspaceId: string;
-  clientId: string;
-  expiresAt: number;
-}
+// T6.3: tokens + clients live in Supabase (`oauth_tokens` + `oauth_clients`
+// tables from migration 0004). The raw token is sha256-hashed at rest —
+// a SQL leak doesn't grant cloud access. /authorize POST upserts the
+// client row keyed on (workspace_id, client_id); /token exchange inserts
+// the token row; requireAuth reads through by token_hash.
 
-const TOKEN_FILE = path.join(
-  process.env.HOME || "/tmp",
-  ".synapse-tokens.json",
-);
+// /register clients are still tracked in-process until /authorize gives
+// them a workspace context. Once authorized, they're persisted to
+// oauth_clients (one row per workspace×client).
+const pendingClients = new Map<
+  string,
+  { name: string; redirectUris: string[] }
+>();
 
-function loadTokens(): Map<string, TokenMeta> {
-  try {
-    const data = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf-8"));
-    if (Array.isArray(data?.entries)) {
-      return new Map(
-        data.entries
-          .filter(
-            (e: any) =>
-              e &&
-              typeof e.token === "string" &&
-              e.meta &&
-              typeof e.meta.userId === "string" &&
-              typeof e.meta.workspaceId === "string",
-          )
-          .map((e: any) => [e.token, e.meta as TokenMeta]),
-      );
-    }
-    // Pre-T6.2 disk format had `{tokens: [string, ...]}` (no workspace
-    // binding). We can't safely migrate those — they'd map to no
-    // workspace. Drop them; the user re-authenticates in claude.ai.
-    return new Map();
-  } catch {
-    return new Map();
-  }
-}
-
-function saveTokens(tokens: Map<string, TokenMeta>): void {
-  try {
-    fs.writeFileSync(
-      TOKEN_FILE,
-      JSON.stringify({
-        entries: [...tokens.entries()].map(([token, meta]) => ({
-          token,
-          meta,
-        })),
-      }),
-      "utf-8",
-    );
-  } catch (err) {
-    console.error(`[OAuth] Failed to persist tokens: ${err}`);
-  }
-}
-
-const clients = new Map<string, { name: string; redirectUris: string[] }>();
 const authCodes = new Map<
   string,
   {
@@ -74,11 +27,24 @@ const authCodes = new Map<
     expiresAt: number;
     userId: string;
     workspaceId: string;
+    clientName: string;
+    redirectUris: string[];
   }
 >();
-const accessTokens = loadTokens();
 
 const TOKEN_TTL_SECONDS = 30 * 86400; // 30 days
+
+function tokenHashHex(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function tokenHashByteaParam(token: string): string {
+  // Postgres bytea literal: \x followed by hex. Always pass via this
+  // form; supabase-js JSON-stringifies a raw Buffer into
+  // {"type":"Buffer","data":[...]} which Postgres stores as the literal
+  // bytes of that JSON string (the same trap T4 documented).
+  return `\\x${tokenHashHex(token)}`;
+}
 
 function authFailedHtml(title: string, message: string): string {
   return `<!DOCTYPE html>
@@ -132,7 +98,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     const { client_name, redirect_uris } = req.body || {};
     const clientId = randomUUID();
 
-    clients.set(clientId, {
+    pendingClients.set(clientId, {
       name: client_name || "Unknown",
       redirectUris: redirect_uris || [],
     });
@@ -167,7 +133,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
-    const client = clients.get(client_id);
+    const client = pendingClients.get(client_id);
     if (!client) {
       res.status(400).send("Unknown client_id");
       return;
@@ -389,6 +355,53 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
+    // Persist the client to oauth_clients now that we know the workspace.
+    // UPSERT keyed on the unique client_id text — `last_authorized_at`
+    // doubles as a "last seen" signal for future dashboard surfacing.
+    const pending = pendingClients.get(client_id);
+    const clientName = pending?.name ?? "Unknown";
+    const redirectUris = pending?.redirectUris ?? [redirect_uri];
+    try {
+      const sb = supabaseService();
+      const { error: upsertErr } = await sb.from("oauth_clients").upsert(
+        {
+          workspace_id: membership.workspaceId,
+          client_id,
+          client_name: clientName,
+          redirect_uris: redirectUris,
+          last_authorized_at: new Date().toISOString(),
+        },
+        { onConflict: "client_id" },
+      );
+      if (upsertErr) {
+        console.error(
+          `[OAuth] oauth_clients upsert failed: ${upsertErr.message}`,
+        );
+        res
+          .status(500)
+          .send(
+            authFailedHtml(
+              "Authorization failed",
+              "We couldn't record this connection. Try again in a moment.",
+            ),
+          );
+        return;
+      }
+    } catch (err: any) {
+      console.error(
+        `[OAuth] oauth_clients upsert threw: ${err.message ?? err}`,
+      );
+      res
+        .status(500)
+        .send(
+          authFailedHtml(
+            "Authorization failed",
+            "We couldn't record this connection. Try again in a moment.",
+          ),
+        );
+      return;
+    }
+
     // Issue authorization code, bound to the resolved {userId, workspaceId}
     const code = randomBytes(32).toString("hex");
     authCodes.set(code, {
@@ -399,6 +412,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       expiresAt: Date.now() + 300000, // 5 minutes
       userId,
       workspaceId: membership.workspaceId,
+      clientName,
+      redirectUris,
     });
 
     console.error(
@@ -414,7 +429,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
   });
 
   // --- Token Endpoint ---
-  app.post("/token", (req, res) => {
+  app.post("/token", async (req, res) => {
     const { grant_type, code, redirect_uri, client_id, code_verifier } =
       req.body || {};
 
@@ -466,17 +481,36 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       }
     }
 
-    // Issue access token, bound to {userId, workspaceId, clientId}.
-    // Stage 1 stores the binding in-memory + persisted to disk; T6.3
-    // lifts both reads and writes to the oauth_tokens DB table.
+    // Mint access token and persist to oauth_tokens. Token is sha256-hashed
+    // at rest — a SQL leak doesn't grant cloud access.
     const token = randomBytes(32).toString("hex");
-    accessTokens.set(token, {
-      userId: authCode.userId,
-      workspaceId: authCode.workspaceId,
-      clientId: client_id,
-      expiresAt: Date.now() + TOKEN_TTL_SECONDS * 1000,
-    });
-    saveTokens(accessTokens);
+    const expiresAt = new Date(Date.now() + TOKEN_TTL_SECONDS * 1000);
+    try {
+      const sb = supabaseService();
+      const { error: insertErr } = await sb.from("oauth_tokens").insert({
+        workspace_id: authCode.workspaceId,
+        client_id,
+        token_hash: tokenHashByteaParam(token),
+        expires_at: expiresAt.toISOString(),
+      });
+      if (insertErr) {
+        console.error(
+          `[OAuth] oauth_tokens insert failed: ${insertErr.message}`,
+        );
+        res.status(500).json({
+          error: "server_error",
+          error_description: "token_persist_failed",
+        });
+        return;
+      }
+    } catch (err: any) {
+      console.error(`[OAuth] oauth_tokens insert threw: ${err.message ?? err}`);
+      res.status(500).json({
+        error: "server_error",
+        error_description: "token_persist_failed",
+      });
+      return;
+    }
 
     console.error(
       `[OAuth] Issued access token for client ${client_id} workspace ${authCode.workspaceId}`,
@@ -501,11 +535,17 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
  * Middleware that validates bearer tokens on protected endpoints.
  * Returns true if the request should be blocked (response already sent).
  *
- * T6.2: tokens are looked up in the in-memory map. T6.3 will swap this
- * for an async DB read against `oauth_tokens` and propagate the workspace
- * binding onto `req` (T6.4) so /mcp can drop the OWNER_WORKSPACE_ID hook.
+ * T6.3: reads `oauth_tokens` by token_hash. Stage-1 latency: a single
+ * indexed SELECT per /mcp call. If this becomes the hot path we'll add
+ * a short-lived in-memory cache (~30s TTL) here; defer until measured.
+ *
+ * T6.4 will populate `req.workspaceId` (and friends) by stashing the
+ * validated row on the request object.
  */
-export function requireAuth(req: Request, res: Response): boolean {
+export async function requireAuth(
+  req: Request,
+  res: Response,
+): Promise<boolean> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     res.status(401).set("WWW-Authenticate", "Bearer").json({
@@ -516,19 +556,37 @@ export function requireAuth(req: Request, res: Response): boolean {
   }
 
   const token = authHeader.slice(7);
-  const meta = accessTokens.get(token);
-  if (!meta) {
-    res.status(401).set("WWW-Authenticate", "Bearer").json({
-      error: "invalid_token",
-    });
-    return true;
-  }
-  if (Date.now() >= meta.expiresAt) {
-    accessTokens.delete(token);
-    saveTokens(accessTokens);
-    res.status(401).set("WWW-Authenticate", "Bearer").json({
-      error: "invalid_token",
-      error_description: "Token expired",
+  try {
+    const sb = supabaseService();
+    const { data, error } = await sb
+      .from("oauth_tokens")
+      .select("workspace_id, expires_at, revoked_at")
+      .eq("token_hash", tokenHashByteaParam(token))
+      .is("revoked_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (error || !data) {
+      res.status(401).set("WWW-Authenticate", "Bearer").json({
+        error: "invalid_token",
+      });
+      return true;
+    }
+    // Best-effort last_used_at touch; failures don't block the request.
+    sb.from("oauth_tokens")
+      .update({ last_used_at: new Date().toISOString() })
+      .eq("token_hash", tokenHashByteaParam(token))
+      .then(({ error: updErr }) => {
+        if (updErr) {
+          console.error(
+            `[OAuth] last_used_at update failed: ${updErr.message}`,
+          );
+        }
+      });
+  } catch (err: any) {
+    console.error(`[OAuth] requireAuth threw: ${err.message ?? err}`);
+    res.status(500).json({
+      error: "server_error",
+      error_description: "auth_lookup_failed",
     });
     return true;
   }

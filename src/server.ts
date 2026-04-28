@@ -82,7 +82,7 @@ export async function startServer(
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
 
   app.post("/mcp", async (req, res) => {
-    if (requireAuth(req, res)) return;
+    if (await requireAuth(req, res)) return;
     try {
       // T6.1: route to the workspace-scoped encrypted mirror. The startServer
       // `backend` argument is still used by /api/* (firstWowRouter writes the
@@ -105,7 +105,7 @@ export async function startServer(
   });
 
   app.get("/mcp", async (req, res) => {
-    if (requireAuth(req, res)) return;
+    if (await requireAuth(req, res)) return;
     res.status(405).json({ error: "Use POST" });
   });
 
