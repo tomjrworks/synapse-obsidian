@@ -1,5 +1,9 @@
 import { Router } from "express";
-import { generateClaudeMd } from "../tools/init.js";
+import {
+  composePersonaClaudeMd,
+  isTraitId,
+  TRAIT_INDEX_HEADERS,
+} from "../tools/persona-claudemd.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -7,54 +11,6 @@ import {
   type AuthedRequest,
 } from "./middleware.js";
 import { getMembershipForUser } from "./workspace.js";
-
-// Trait → CLAUDE.md opts. T10 will refactor generateClaudeMd to take a
-// multi-trait persona directly; for now the API uses the user's first
-// trait if multiple are set, with this placeholder mapping.
-const TRAIT_OPTS: Record<
-  string,
-  {
-    topic: string;
-    purpose: "knowledge-base" | "business" | "academic" | "life-os";
-    section_title: string;
-  }
-> = {
-  founder: {
-    topic: "startup",
-    purpose: "business",
-    section_title: "Founder",
-  },
-  "writer-researcher": {
-    topic: "research and writing",
-    purpose: "knowledge-base",
-    section_title: "Writing & Research",
-  },
-  "creator-designer": {
-    topic: "creative work",
-    purpose: "knowledge-base",
-    section_title: "Creative Work",
-  },
-  salesperson: {
-    topic: "sales pipeline",
-    purpose: "business",
-    section_title: "Sales Pipeline",
-  },
-  student: {
-    topic: "coursework",
-    purpose: "academic",
-    section_title: "Coursework",
-  },
-  "life-os": {
-    topic: "life",
-    purpose: "life-os",
-    section_title: "Life OS",
-  },
-  "professional-services": {
-    topic: "client work",
-    purpose: "business",
-    section_title: "Client Work",
-  },
-};
 
 const UNIVERSAL_SECTIONS = [
   "Decisions",
@@ -84,11 +40,12 @@ function buildIndexStub(traits: string[]): string {
   }
 
   for (const t of traits) {
-    const opt = TRAIT_OPTS[t];
-    if (!opt) continue;
-    if (seen.has(opt.section_title)) continue;
-    seen.add(opt.section_title);
-    sections.push(`## ${opt.section_title}\n\n`);
+    if (!isTraitId(t)) continue;
+    for (const header of TRAIT_INDEX_HEADERS[t]) {
+      if (seen.has(header)) continue;
+      seen.add(header);
+      sections.push(`## ${header}\n\n`);
+    }
   }
 
   return INDEX_HEADER_COMMENT + "\n" + sections.join("");
@@ -113,25 +70,20 @@ export function personaRouter(): Router {
       const traits: string[] = Array.isArray(persona.traits)
         ? persona.traits
         : [];
-      if (traits.length === 0) {
+      const freetext =
+        typeof persona.freetext === "string" ? persona.freetext.trim() : "";
+
+      // Either at least one trait OR non-empty freetext is required —
+      // empty-traits + non-empty freetext still composes a valid CLAUDE.md
+      // (preamble + user context + tail) per the templates spec.
+      if (traits.length === 0 && !freetext) {
         res.status(400).json({ error: "persona_not_set" });
         return;
       }
 
-      // T10 will refactor generateClaudeMd to accept multi-trait directly.
-      // For T2 we use the first trait; multi-trait composition is deferred.
-      const primaryTrait = traits[0];
-      const opt = TRAIT_OPTS[primaryTrait] ?? TRAIT_OPTS["life-os"];
-
-      const claudeMd = generateClaudeMd({
-        topic: opt.topic,
-        purpose: opt.purpose,
-        sourcesFolder: "sources",
-        notesFolder: "notes",
-        outputsFolder: "outputs",
-        fileNaming: "kebab-case",
-        useWikilinks: true,
-        useFrontmatter: true,
+      const claudeMd = composePersonaClaudeMd({
+        traits,
+        personaFreetext: freetext || undefined,
       });
 
       res.type("text/markdown").send(claudeMd);

@@ -339,7 +339,10 @@ async function http(
     { status: claudemd.status, len: claudemd.text.length },
   );
 
-  // 13. /api/persona/index-stub → 7 universal sections + persona sections
+  // 13. /api/persona/index-stub → 7 universal sections + per-trait sections.
+  // Each trait expands to multiple headers (founder → Meetings, Metrics,
+  // Playbook; writer-researcher → Drafts, Published, Quotes). Persona at
+  // this point is ["founder", "writer-researcher"] from step 6 above.
   const indexStub = await http("GET", "/api/persona/index-stub", jwt);
   const universalCount = [
     "Decisions",
@@ -350,16 +353,24 @@ async function http(
     "Ideas",
     "Inbox",
   ].filter((s) => indexStub.text.includes(`## ${s}`)).length;
+  const founderHeaders = ["Meetings", "Metrics", "Playbook"].filter((s) =>
+    indexStub.text.includes(`## ${s}`),
+  ).length;
+  const writerHeaders = ["Drafts", "Published", "Quotes"].filter((s) =>
+    indexStub.text.includes(`## ${s}`),
+  ).length;
   check(
-    "GET /api/persona/index-stub returns all 7 universal sections + Founder section",
+    "GET /api/persona/index-stub returns 7 universal + 3 founder + 3 writer-researcher headers",
     indexStub.status === 200 &&
       universalCount === 7 &&
-      indexStub.text.includes("## Founder") &&
+      founderHeaders === 3 &&
+      writerHeaders === 3 &&
       indexStub.text.startsWith("<!--"),
     {
       status: indexStub.status,
       universalCount,
-      hasFounder: indexStub.text.includes("## Founder"),
+      founderHeaders,
+      writerHeaders,
     },
   );
 
