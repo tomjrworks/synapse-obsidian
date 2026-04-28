@@ -32,7 +32,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageBackend, FileStat } from "./storage.js";
 import { NotFoundError } from "./storage.js";
 import { supabaseService } from "../api/supabase.js";
-import { encryptBlob, unwrapDek } from "../api/crypto.js";
+import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
 
 const VAULT_BLOBS_BUCKET = "vault-blobs";
 const PG_UNIQUE_VIOLATION = "23505";
@@ -101,8 +101,40 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return new SupabaseEncryptedMirrorBackend(sb, workspaceId, dek);
   }
 
-  async readFile(_filePath: string): Promise<string> {
-    throw new Error("NotImplemented: T4.3");
+  async readFile(filePath: string): Promise<string> {
+    const normalized = filePath.trim();
+    if (!normalized) throw new Error("filePath must not be empty");
+
+    const { data: row, error: selectErr } = await this.supabase
+      .from("vault_files")
+      .select("storage_object")
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", normalized)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (selectErr) {
+      throw new Error(`vault_files lookup failed: ${selectErr.message}`);
+    }
+    if (!row) {
+      throw new NotFoundError(normalized);
+    }
+
+    const { data: blob, error: dlErr } = await this.supabase.storage
+      .from(VAULT_BLOBS_BUCKET)
+      .download(row.storage_object);
+    if (dlErr || !blob) {
+      // Metadata says the file exists but the blob is missing — treat as
+      // not-found from the caller's perspective. (Could indicate a botched
+      // delete, a missing Storage object, or a vault_files row that pre-dates
+      // its blob upload. Either way the right answer for readers is NOT a
+      // crypto error; surface it as not-found.)
+      throw new NotFoundError(
+        `storage object missing: ${row.storage_object} (${dlErr?.message ?? "no body"})`,
+      );
+    }
+
+    const ciphertext = Buffer.from(await blob.arrayBuffer());
+    return decryptBlob(ciphertext, this.dek).toString("utf8");
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
