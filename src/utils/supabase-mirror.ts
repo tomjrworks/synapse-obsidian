@@ -30,7 +30,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageBackend, FileStat } from "./storage.js";
-import { NotFoundError } from "./storage.js";
+import { ConflictError, NotFoundError } from "./storage.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
 
@@ -318,17 +318,58 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   }
 
   async mkdir(_dirPath: string): Promise<void> {
-    // Deliberate no-op: vault_files only stores leaf .md files; empty dirs
-    // are not represented. Implemented in T4.5 only to satisfy the interface.
-    throw new Error("NotImplemented: T4.5");
+    // Deliberate no-op: vault_files only stores leaf .md files; empty
+    // directories are not represented in the cloud mirror. A "directory"
+    // exists implicitly the moment a file is written under a non-existent
+    // prefix. If a user creates an empty folder in Obsidian and expects it
+    // to round-trip, it won't. Documented limitation.
   }
 
-  async delete(_filePath: string): Promise<void> {
-    throw new Error("NotImplemented: T4.5");
+  async delete(filePath: string): Promise<void> {
+    const normalized = filePath.trim();
+    if (!normalized) throw new Error("filePath must not be empty");
+
+    const { count, error } = await this.supabase
+      .from("vault_files")
+      .update({ deleted_at: new Date().toISOString() }, { count: "exact" })
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", normalized)
+      .is("deleted_at", null);
+    if (error) throw new Error(`delete failed: ${error.message}`);
+    if ((count ?? 0) === 0) throw new NotFoundError(normalized);
+
+    // Storage blob is intentionally NOT removed on soft delete. T4.6's
+    // nuke flow is what reclaims storage; this leaves a paper trail and
+    // makes "restore from trash" straightforward in a future Stage 2 UX.
   }
 
-  async move(_oldPath: string, _newPath: string): Promise<void> {
-    throw new Error("NotImplemented: T4.5");
+  async move(oldPath: string, newPath: string): Promise<void> {
+    const oldNorm = oldPath.trim();
+    const newNorm = newPath.trim();
+    if (!oldNorm || !newNorm) throw new Error("paths must not be empty");
+    if (oldNorm === newNorm) return;
+
+    // Storage object key is `{workspace_id}/{vault_files.id}` — keyed by
+    // file_id, never by path. So move() is a single SQL UPDATE on the
+    // path column; the blob bytes don't move.
+    const { count, error } = await this.supabase
+      .from("vault_files")
+      .update(
+        { path: newNorm, modified_at: new Date().toISOString() },
+        { count: "exact" },
+      )
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", oldNorm)
+      .is("deleted_at", null);
+
+    if (error) {
+      const code = (error as { code?: string }).code;
+      if (code === PG_UNIQUE_VIOLATION) {
+        throw new ConflictError(`move target already exists: ${newNorm}`);
+      }
+      throw new Error(`move failed: ${error.message}`);
+    }
+    if ((count ?? 0) === 0) throw new NotFoundError(oldNorm);
   }
 
   async stat(filePath: string): Promise<FileStat> {
