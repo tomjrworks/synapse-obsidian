@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
     "dev": "tsx src/index.ts",
-    "prepare": "npm run build"
+    "prepare": "npm run build && husky"
   },
   "keywords": [
     "mcp",
@@ -44,6 +44,7 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "husky": "^9.1.7",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },
