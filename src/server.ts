@@ -73,17 +73,10 @@ export async function startServer(
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
-  if (!process.env.SYNAPSE_PASSWORD) {
-    const { randomBytes } = await import("node:crypto");
-    const generated = randomBytes(6).toString("hex").match(/.{4}/g)!.join("-");
-    process.env.SYNAPSE_PASSWORD = generated;
-    console.error(`\n  Your Taproot password: ${generated}`);
-    console.error(
-      `  (needed when connecting from Claude.ai or other remote clients)\n`,
-    );
-  }
   registerOAuthRoutes(app, baseUrl);
-  console.error(`[OAuth] Enabled. Password protected.`);
+  console.error(
+    `[OAuth] Enabled. Sign in with your Taproot account (taproothq.com).`,
+  );
 
   mountApiRoutes(app, backend);
   console.error(`[API] Onboarding endpoints mounted at /api/*`);

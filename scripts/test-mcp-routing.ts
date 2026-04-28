@@ -50,7 +50,7 @@ function check(name: string, ok: boolean, detail?: unknown) {
 
 const PORT = 3877; // distinct from onboarding smoke (3779) so they can coexist
 const BASE = `http://localhost:${PORT}`;
-const SERVER_PASSWORD = "t6-1-test-pw";
+const TEST_USER_PASSWORD = "t6-1-pw-12345";
 const testEmail = `t6-1-${Date.now()}@taproot-test.local`;
 let userId: string | null = null;
 let workspaceId: string | null = null;
@@ -72,8 +72,8 @@ async function waitForHealth(url: string, timeoutMs = 8000): Promise<boolean> {
 }
 
 // OAuth 2.1 + PKCE handshake against the running server. Mirrors what
-// claude.ai does in production. T6.3 will swap /authorize's password gate
-// for Supabase Auth, but the dance shape stays identical.
+// claude.ai does in production. /authorize POSTs email + password against
+// Supabase Auth (T6.2); /token mints a workspace-bound bearer.
 async function obtainBearer(): Promise<string> {
   // 1. /register — dynamic client registration
   const reg = await fetch(`${BASE}/register`, {
@@ -101,7 +101,8 @@ async function obtainBearer(): Promise<string> {
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     state: "t6-1-state",
-    password: SERVER_PASSWORD,
+    email: testEmail,
+    password: TEST_USER_PASSWORD,
   });
   const authRes = await fetch(`${BASE}/authorize`, {
     method: "POST",
@@ -179,7 +180,7 @@ try {
 
   const { data: userData, error: userErr } = await sb.auth.admin.createUser({
     email: testEmail,
-    password: "t6-1-pw-12345",
+    password: TEST_USER_PASSWORD,
     email_confirm: true,
   });
   if (userErr || !userData.user) throw userErr ?? new Error("no user data");
@@ -209,9 +210,12 @@ try {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     OWNER_WORKSPACE_ID: workspaceId,
-    SYNAPSE_PASSWORD: SERVER_PASSWORD,
     PORT: String(PORT),
   };
+  // T6.2: SYNAPSE_PASSWORD env var is no longer respected — auth uses
+  // Supabase signInWithPassword. Force-clear it in case the parent shell
+  // has it set, so tests aren't shadowed by stale values.
+  delete env.SYNAPSE_PASSWORD;
 
   serverProc = spawn(
     "npx",

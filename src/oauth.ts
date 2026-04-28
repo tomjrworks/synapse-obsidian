@@ -2,27 +2,60 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Express, Request, Response } from "express";
+import { supabaseService } from "./api/supabase.js";
+import { getMembershipForUser } from "./api/workspace.js";
 
-// Persist tokens to file so they survive restarts
+// T6.2: tokens carry workspace identity. Stored in-memory + persisted to
+// disk for restart survival. T6.3 lifts both reads and writes to the
+// existing `oauth_tokens` Supabase table (migration 0004).
+interface TokenMeta {
+  userId: string;
+  workspaceId: string;
+  clientId: string;
+  expiresAt: number;
+}
+
 const TOKEN_FILE = path.join(
   process.env.HOME || "/tmp",
   ".synapse-tokens.json",
 );
 
-function loadTokens(): Set<string> {
+function loadTokens(): Map<string, TokenMeta> {
   try {
     const data = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf-8"));
-    return new Set(data.tokens || []);
+    if (Array.isArray(data?.entries)) {
+      return new Map(
+        data.entries
+          .filter(
+            (e: any) =>
+              e &&
+              typeof e.token === "string" &&
+              e.meta &&
+              typeof e.meta.userId === "string" &&
+              typeof e.meta.workspaceId === "string",
+          )
+          .map((e: any) => [e.token, e.meta as TokenMeta]),
+      );
+    }
+    // Pre-T6.2 disk format had `{tokens: [string, ...]}` (no workspace
+    // binding). We can't safely migrate those — they'd map to no
+    // workspace. Drop them; the user re-authenticates in claude.ai.
+    return new Map();
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
-function saveTokens(tokens: Set<string>): void {
+function saveTokens(tokens: Map<string, TokenMeta>): void {
   try {
     fs.writeFileSync(
       TOKEN_FILE,
-      JSON.stringify({ tokens: [...tokens] }),
+      JSON.stringify({
+        entries: [...tokens.entries()].map(([token, meta]) => ({
+          token,
+          meta,
+        })),
+      }),
       "utf-8",
     );
   } catch (err) {
@@ -39,11 +72,29 @@ const authCodes = new Map<
     codeChallenge: string;
     codeChallengeMethod: string;
     expiresAt: number;
+    userId: string;
+    workspaceId: string;
   }
 >();
 const accessTokens = loadTokens();
 
-const OWNER_PASSWORD = process.env.SYNAPSE_PASSWORD || "synapse";
+const TOKEN_TTL_SECONDS = 30 * 86400; // 30 days
+
+function authFailedHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+<html><head><title>Taproot — ${title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #F2F0EB; color: #3D3529; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { background: white; border-radius: 12px; padding: 40px; max-width: 400px; width: 100%; box-shadow: 0 2px 12px rgba(61,53,41,0.08); border: 1px solid rgba(61,53,41,0.06); text-align: center; }
+  h1 { font-size: 20px; margin-bottom: 8px; }
+  p { color: #8B9490; font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
+  a { display: inline-block; padding: 12px 24px; background: #1A5C32; color: #F2F0EB; border-radius: 6px; text-decoration: none; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
+  a:hover { background: #16472a; }
+</style>
+</head><body><div class="card"><h1>${title}</h1><p>${message}</p><a href="javascript:history.back()">Try Again</a></div></body></html>`;
+}
 
 /**
  * Register all OAuth 2.1 endpoints on the Express app.
@@ -180,6 +231,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       gap: 8px;
     }
     .permissions li::before { content: ''; width: 6px; height: 6px; background: #2ECC71; border-radius: 50%; flex-shrink: 0; }
+    input[type=email],
     input[type=password] {
       width: 100%;
       padding: 14px 16px;
@@ -192,7 +244,9 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       outline: none;
       transition: border-color 0.2s;
     }
+    input[type=email]:focus,
     input[type=password]:focus { border-color: #1A5C32; }
+    input[type=email]::placeholder,
     input[type=password]::placeholder { color: #8B9490; }
     button {
       width: 100%;
@@ -242,7 +296,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       <input type="hidden" name="code_challenge" value="${code_challenge}">
       <input type="hidden" name="code_challenge_method" value="${code_challenge_method || "S256"}">
       <input type="hidden" name="state" value="${state || ""}">
-      <input type="password" name="password" placeholder="Enter your Taproot password" autofocus>
+      <input type="email" name="email" placeholder="Email" autofocus required>
+      <input type="password" name="password" placeholder="Password" required>
       <button type="submit">Approve Access</button>
     </form>
     <div class="security">
@@ -256,34 +311,85 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
   });
 
   // Handle form POST with URL-encoded body
-  app.post("/authorize", (req: Request, res: Response) => {
+  app.post("/authorize", async (req: Request, res: Response) => {
     const {
       client_id,
       redirect_uri,
       code_challenge,
       code_challenge_method,
       state,
+      email,
       password,
     } = req.body || {};
 
-    if (password !== OWNER_PASSWORD) {
-      res.status(403).send(`<!DOCTYPE html>
-<html><head><title>Taproot \u2014 Wrong Password</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; background: #F2F0EB; color: #3D3529; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .card { background: white; border-radius: 12px; padding: 40px; max-width: 400px; width: 100%; box-shadow: 0 2px 12px rgba(61,53,41,0.08); border: 1px solid rgba(61,53,41,0.06); text-align: center; }
-  h1 { font-size: 20px; margin-bottom: 8px; }
-  p { color: #8B9490; font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
-  a { display: inline-block; padding: 12px 24px; background: #1A5C32; color: #F2F0EB; border-radius: 6px; text-decoration: none; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
-  a:hover { background: #16472a; }
-</style>
-</head><body><div class="card"><h1>Wrong password</h1><p>The password you entered doesn't match. Check your terminal for the correct password.</p><a href="javascript:history.back()">Try Again</a></div></body></html>`);
+    if (
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof password !== "string" ||
+      !password
+    ) {
+      res
+        .status(400)
+        .send(
+          authFailedHtml(
+            "Missing credentials",
+            "Email and password are required.",
+          ),
+        );
       return;
     }
 
-    // Issue authorization code
+    // Authenticate against Supabase Auth (the same pool that backs /api/login).
+    let userId: string;
+    try {
+      const sb = supabaseService();
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error || !data.user) {
+        res
+          .status(403)
+          .send(
+            authFailedHtml(
+              "Sign-in failed",
+              "Email or password didn't match. Check the credentials you used to sign up at taproothq.com.",
+            ),
+          );
+        return;
+      }
+      userId = data.user.id;
+    } catch (err: any) {
+      console.error(`[OAuth] signInWithPassword threw: ${err.message ?? err}`);
+      res
+        .status(500)
+        .send(
+          authFailedHtml(
+            "Authentication unavailable",
+            "We couldn't reach Supabase Auth. Try again in a moment.",
+          ),
+        );
+      return;
+    }
+
+    // Resolve the workspace for this user. Atomic signup (T2) guarantees
+    // every confirmed user has exactly one membership; if not, something
+    // went wrong server-side.
+    const membership = await getMembershipForUser(supabaseService(), userId);
+    if (!membership) {
+      console.error(`[OAuth] no workspace for user ${userId}`);
+      res
+        .status(403)
+        .send(
+          authFailedHtml(
+            "No workspace",
+            "Your account doesn't have a workspace yet. Finish signup at taproothq.com first.",
+          ),
+        );
+      return;
+    }
+
+    // Issue authorization code, bound to the resolved {userId, workspaceId}
     const code = randomBytes(32).toString("hex");
     authCodes.set(code, {
       clientId: client_id,
@@ -291,11 +397,15 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       codeChallenge: code_challenge,
       codeChallengeMethod: code_challenge_method || "S256",
       expiresAt: Date.now() + 300000, // 5 minutes
+      userId,
+      workspaceId: membership.workspaceId,
     });
 
-    console.error(`[OAuth] Issued auth code for client ${client_id}`);
+    console.error(
+      `[OAuth] Issued auth code for client ${client_id} user ${userId} workspace ${membership.workspaceId}`,
+    );
 
-    // Redirect back to Claude with the code
+    // Redirect back to the OAuth client with the code
     const redirectUrl = new URL(redirect_uri);
     redirectUrl.searchParams.set("code", code);
     if (state) redirectUrl.searchParams.set("state", state);
@@ -356,17 +466,26 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       }
     }
 
-    // Issue access token and persist to disk
+    // Issue access token, bound to {userId, workspaceId, clientId}.
+    // Stage 1 stores the binding in-memory + persisted to disk; T6.3
+    // lifts both reads and writes to the oauth_tokens DB table.
     const token = randomBytes(32).toString("hex");
-    accessTokens.add(token);
+    accessTokens.set(token, {
+      userId: authCode.userId,
+      workspaceId: authCode.workspaceId,
+      clientId: client_id,
+      expiresAt: Date.now() + TOKEN_TTL_SECONDS * 1000,
+    });
     saveTokens(accessTokens);
 
-    console.error(`[OAuth] Issued access token for client ${client_id}`);
+    console.error(
+      `[OAuth] Issued access token for client ${client_id} workspace ${authCode.workspaceId}`,
+    );
 
     res.json({
       access_token: token,
       token_type: "Bearer",
-      expires_in: 86400 * 30, // 30 days
+      expires_in: TOKEN_TTL_SECONDS,
     });
   });
 
@@ -380,12 +499,13 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 
 /**
  * Middleware that validates bearer tokens on protected endpoints.
- * Returns true if auth is required and the request should be blocked.
+ * Returns true if the request should be blocked (response already sent).
+ *
+ * T6.2: tokens are looked up in the in-memory map. T6.3 will swap this
+ * for an async DB read against `oauth_tokens` and propagate the workspace
+ * binding onto `req` (T6.4) so /mcp can drop the OWNER_WORKSPACE_ID hook.
  */
 export function requireAuth(req: Request, res: Response): boolean {
-  // If no password is set, auth is disabled
-  if (!process.env.SYNAPSE_PASSWORD) return false;
-
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     res.status(401).set("WWW-Authenticate", "Bearer").json({
@@ -396,9 +516,19 @@ export function requireAuth(req: Request, res: Response): boolean {
   }
 
   const token = authHeader.slice(7);
-  if (!accessTokens.has(token)) {
+  const meta = accessTokens.get(token);
+  if (!meta) {
     res.status(401).set("WWW-Authenticate", "Bearer").json({
       error: "invalid_token",
+    });
+    return true;
+  }
+  if (Date.now() >= meta.expiresAt) {
+    accessTokens.delete(token);
+    saveTokens(accessTokens);
+    res.status(401).set("WWW-Authenticate", "Bearer").json({
+      error: "invalid_token",
+      error_description: "Token expired",
     });
     return true;
   }

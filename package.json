@@ -25,7 +25,8 @@
     "smoke:cache": "tsx scripts/test-backend-cache.ts",
     "smoke:mirror": "tsx scripts/smoke-mirror-suite.ts",
     "smoke:onboarding": "tsx scripts/smoke-onboarding.ts",
-    "smoke:mcp-routing": "tsx scripts/test-mcp-routing.ts"
+    "smoke:mcp-routing": "tsx scripts/test-mcp-routing.ts",
+    "smoke:oauth-bridge": "tsx scripts/test-oauth-supabase-bridge.ts"
   },
   "keywords": [
     "mcp",
