@@ -29,6 +29,23 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageBackend, FileStat } from "./storage.js";
+import { NotFoundError } from "./storage.js";
+import { supabaseService } from "../api/supabase.js";
+import { unwrapDek } from "../api/crypto.js";
+
+// Postgres bytea columns come back from PostgREST as `\x...hex...` strings.
+// (Older Supabase configs may use base64; handle both for resilience.)
+function bytesFromPg(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value === "string") {
+    if (value.startsWith("\\x")) return Buffer.from(value.slice(2), "hex");
+    return Buffer.from(value, "base64");
+  }
+  throw new Error(
+    `Unexpected bytea value type: ${typeof value} (constructor: ${(value as object | null)?.constructor?.name ?? "null"})`,
+  );
+}
 
 export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   constructor(
@@ -37,10 +54,47 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     private dek: Buffer,
   ) {}
 
+  // Resolve a workspace's encrypted-mirror backend: load the wrapped DEK from
+  // tenant_keys, unwrap with the KEK held in the Worker secret, log a
+  // `kek_unwrap` audit row, and hand back an instance with the unwrapped DEK
+  // held in memory for the request lifetime.
+  //
+  // Caller MUST hold workspace authorization (validated upstream by
+  // requireSupabaseAuth + workspace membership). This function does NOT
+  // re-check membership — it trusts the workspaceId.
   static async forWorkspace(
-    _workspaceId: string,
+    workspaceId: string,
   ): Promise<SupabaseEncryptedMirrorBackend> {
-    throw new Error("NotImplemented: T4.1");
+    const sb = supabaseService();
+    const { data: keyRow, error: keyErr } = await sb
+      .from("tenant_keys")
+      .select("wrapped_dek")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (keyErr) {
+      throw new Error(`tenant_keys lookup failed: ${keyErr.message}`);
+    }
+    if (!keyRow) {
+      throw new NotFoundError(`tenant_keys for workspace ${workspaceId}`);
+    }
+
+    const wrapped = bytesFromPg(keyRow.wrapped_dek);
+    const dek = unwrapDek(wrapped);
+
+    // Audit insert is fire-and-forget at the call site: per security model,
+    // audit failure must not block user requests. We log but don't throw.
+    const { error: auditErr } = await sb.from("audit_log").insert({
+      workspace_id: workspaceId,
+      operation: "kek_unwrap",
+      details: { reason: "backend_construct" },
+    });
+    if (auditErr) {
+      console.error(
+        `audit_log write failed for workspace ${workspaceId}: ${auditErr.message}`,
+      );
+    }
+
+    return new SupabaseEncryptedMirrorBackend(sb, workspaceId, dek);
   }
 
   async readFile(_filePath: string): Promise<string> {
