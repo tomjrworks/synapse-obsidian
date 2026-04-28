@@ -14,7 +14,17 @@
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
     "dev": "tsx src/index.ts",
-    "prepare": "npm run build && husky"
+    "prepare": "npm run build && husky",
+    "smoke:crypto": "tsx scripts/test-content-crypto.ts",
+    "smoke:forworkspace": "tsx scripts/test-forworkspace.ts",
+    "smoke:write": "tsx scripts/test-mirror-write.ts",
+    "smoke:read": "tsx scripts/test-mirror-read.ts",
+    "smoke:metadata": "tsx scripts/test-mirror-metadata.ts",
+    "smoke:mutate": "tsx scripts/test-mirror-mutate.ts",
+    "smoke:nuke": "tsx scripts/test-mirror-nuke.ts",
+    "smoke:cache": "tsx scripts/test-backend-cache.ts",
+    "smoke:mirror": "tsx scripts/smoke-mirror-suite.ts",
+    "smoke:onboarding": "tsx scripts/smoke-onboarding.ts"
   },
   "keywords": [
     "mcp",
