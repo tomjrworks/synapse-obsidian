@@ -298,6 +298,80 @@ try {
   const revokedStatus = await mcpInitWithBearer(bearer);
   check("/mcp with revoked bearer → 401", revokedStatus === 401, revokedStatus);
 
+  console.log("\n→ /revoke (RFC 7009) end-to-end");
+
+  // Mint a second bearer so we can test /revoke against a live token
+  // without depending on the manually-revoked one above.
+  const { bearer: bearer2 } = await obtainBearer();
+  const liveBefore = await mcpInitWithBearer(bearer2);
+  check("/mcp with second bearer → 200 (live)", liveBefore === 200, liveBefore);
+
+  const revokeRes = await fetch(`${BASE}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: bearer2 }).toString(),
+  });
+  check(
+    "POST /revoke with valid token → 200 (RFC 7009)",
+    revokeRes.status === 200,
+    revokeRes.status,
+  );
+
+  const liveAfter = await mcpInitWithBearer(bearer2);
+  check(
+    "/mcp with revoked-via-/revoke bearer → 401",
+    liveAfter === 401,
+    liveAfter,
+  );
+
+  const { data: revRow } = await sb
+    .from("oauth_tokens")
+    .select("revoked_at")
+    .eq("token_hash", `\\x${tokenHashHex(bearer2)}`)
+    .maybeSingle();
+  check(
+    "DB row has revoked_at set after /revoke",
+    typeof revRow?.revoked_at === "string",
+    revRow?.revoked_at,
+  );
+
+  // Idempotent: re-revoking a revoked token still returns 200 and doesn't
+  // change behavior. RFC 7009 §2.2 — server MUST always return 200.
+  const revokeAgain = await fetch(`${BASE}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: bearer2 }).toString(),
+  });
+  check(
+    "POST /revoke (already-revoked) → 200 (idempotent)",
+    revokeAgain.status === 200,
+    revokeAgain.status,
+  );
+
+  // Bogus token: per RFC must still return 200 (no info disclosure).
+  const revokeBogus = await fetch(`${BASE}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: "not-a-real-token" }).toString(),
+  });
+  check(
+    "POST /revoke (unknown token) → 200 (no info disclosure)",
+    revokeBogus.status === 200,
+    revokeBogus.status,
+  );
+
+  // Missing token field: returns 400 (parameter required).
+  const revokeMissing = await fetch(`${BASE}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "",
+  });
+  check(
+    "POST /revoke without token param → 400",
+    revokeMissing.status === 400,
+    revokeMissing.status,
+  );
+
   console.log(`\n${pass} pass, ${fail} fail`);
   if (fail > 0) {
     console.log("\nFailures:");

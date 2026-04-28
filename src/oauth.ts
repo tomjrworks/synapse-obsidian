@@ -523,6 +523,37 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     });
   });
 
+  // --- Token Revocation Endpoint (RFC 7009) ---
+  // The endpoint always returns 200 when a token field is present, even
+  // for unknown / already-revoked / expired tokens, to avoid disclosing
+  // token validity to unauthenticated callers (RFC 7009 §2.2).
+  app.post("/revoke", async (req, res) => {
+    const { token } = req.body || {};
+    if (typeof token !== "string" || !token.trim()) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "token parameter required",
+      });
+      return;
+    }
+    try {
+      const sb = supabaseService();
+      const { error } = await sb
+        .from("oauth_tokens")
+        .update({ revoked_at: new Date().toISOString() })
+        .eq("token_hash", tokenHashByteaParam(token))
+        .is("revoked_at", null);
+      if (error) {
+        // Don't leak DB errors to the caller; log + 200 per RFC.
+        console.error(`[OAuth] revoke update failed: ${error.message}`);
+      }
+    } catch (err: any) {
+      console.error(`[OAuth] revoke threw: ${err.message ?? err}`);
+    }
+    // RFC 7009: success response is 200 with empty body.
+    res.status(200).end();
+  });
+
   // Clean up expired auth codes periodically
   setInterval(() => {
     for (const [code, data] of authCodes) {
