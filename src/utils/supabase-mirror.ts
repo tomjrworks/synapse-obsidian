@@ -262,12 +262,59 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return { fileId, storageObject };
   }
 
-  async listFiles(_subPath?: string, _recursive?: boolean): Promise<string[]> {
-    throw new Error("NotImplemented: T4.4");
+  async listFiles(subPath?: string, recursive = true): Promise<string[]> {
+    let query = this.supabase
+      .from("vault_files")
+      .select("path")
+      .eq("workspace_id", this.workspaceId)
+      .is("deleted_at", null);
+
+    const trimmedSub = subPath?.trim();
+    const prefix = trimmedSub
+      ? trimmedSub.endsWith("/")
+        ? trimmedSub
+        : `${trimmedSub}/`
+      : null;
+
+    if (prefix) {
+      // NOTE: Postgres LIKE special chars (`_`, `%`) inside `prefix` would
+      // over-match. Stage 1 paths are user-supplied vault paths; they don't
+      // typically contain these. Helper-layer normalization will reject
+      // problematic chars before they reach here.
+      query = query.like("path", `${prefix}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`listFiles failed: ${error.message}`);
+    let paths = (data ?? []).map((r) => r.path as string);
+
+    if (!recursive) {
+      if (prefix) {
+        // Direct children of subPath: no further `/` after the prefix
+        paths = paths.filter((p) => !p.slice(prefix.length).includes("/"));
+      } else {
+        // Top-level only: no `/` at all
+        paths = paths.filter((p) => !p.includes("/"));
+      }
+    }
+
+    return paths;
   }
 
-  async exists(_filePath: string): Promise<boolean> {
-    throw new Error("NotImplemented: T4.4");
+  async exists(filePath: string): Promise<boolean> {
+    const normalized = filePath.trim();
+    // Match LocalBackend semantics: empty / whitespace path is "doesn't exist",
+    // not an error.
+    if (!normalized) return false;
+
+    const { count, error } = await this.supabase
+      .from("vault_files")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", normalized)
+      .is("deleted_at", null);
+    if (error) throw new Error(`exists failed: ${error.message}`);
+    return (count ?? 0) > 0;
   }
 
   async mkdir(_dirPath: string): Promise<void> {
@@ -284,11 +331,38 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     throw new Error("NotImplemented: T4.5");
   }
 
-  async stat(_filePath: string): Promise<FileStat> {
-    throw new Error("NotImplemented: T4.4");
+  async stat(filePath: string): Promise<FileStat> {
+    const normalized = filePath.trim();
+    if (!normalized) throw new Error("filePath must not be empty");
+
+    const { data, error } = await this.supabase
+      .from("vault_files")
+      .select("size_bytes, modified_at")
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", normalized)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (error) throw new Error(`stat failed: ${error.message}`);
+    if (!data) throw new NotFoundError(normalized);
+
+    return {
+      size: data.size_bytes as number,
+      modifiedAt: new Date(data.modified_at as string),
+    };
   }
 
-  async recentFiles(_n: number): Promise<string[]> {
-    throw new Error("NotImplemented: T4.4");
+  async recentFiles(n: number): Promise<string[]> {
+    const limit = Math.max(0, Math.floor(n));
+    if (limit === 0) return [];
+
+    const { data, error } = await this.supabase
+      .from("vault_files")
+      .select("path")
+      .eq("workspace_id", this.workspaceId)
+      .is("deleted_at", null)
+      .order("modified_at", { ascending: false })
+      .limit(limit);
+    if (error) throw new Error(`recentFiles failed: ${error.message}`);
+    return (data ?? []).map((r) => r.path as string);
   }
 }
