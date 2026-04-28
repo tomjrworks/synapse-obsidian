@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { StorageBackend } from "../utils/storage.js";
+import { nukeWorkspace } from "../utils/supabase-mirror.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -62,14 +63,39 @@ export function firstWowRouter(backend: StorageBackend): Router {
     }),
   );
 
+  // "Leave Taproot" — deletes the cloud mirror only. Local files stay
+  // (helper-managed). Workspace row + memberships survive so the user can
+  // re-onboard. Full account delete is a separate Stage 2+ button.
   router.post(
     "/leave",
     requireSupabaseAuth,
-    asyncHandler(async (_req, res) => {
-      res.status(501).json({
-        error: "not_implemented",
-        detail: "Workspace deletion ships in Stage 3.",
-      });
+    asyncHandler(async (req, res) => {
+      const sb = supabaseService();
+      const userId = (req as AuthedRequest).user.id;
+      const membership = await getMembershipForUser(sb, userId);
+      if (!membership) {
+        res.status(404).json({ error: "no_workspace" });
+        return;
+      }
+
+      // Stage 1 has no team flow yet — every workspace has exactly one
+      // member who is the owner. Stage 2 will need an owner-only gate
+      // here (members of a teamed workspace shouldn't be able to nuke
+      // someone else's mirror). Tracked under T2 follow-ups.
+
+      try {
+        const result = await nukeWorkspace(sb, membership.workspaceId, userId);
+        res.json({
+          nuked: true,
+          object_count: result.objectCount,
+          file_row_count: result.fileRowCount,
+        });
+      } catch (err: any) {
+        res.status(500).json({
+          error: "nuke_failed",
+          detail: err?.message ?? String(err),
+        });
+      }
     }),
   );
 

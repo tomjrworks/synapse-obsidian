@@ -374,13 +374,46 @@ async function http(
     },
   );
 
-  // 14. /api/leave → 501 stub
+  // 14. /api/leave → nukes the cloud mirror end-to-end (T4.6)
+  // Note: this comes near the END of the smoke because it deletes
+  // tenant_keys — anything that needs the unwrapped DEK after this
+  // point would fail. Order intentionally preserved.
   const leave = await http("POST", "/api/leave", jwt);
+  check("POST /api/leave returns 200", leave.status === 200, leave.json);
   check(
-    "POST /api/leave returns 501 not_implemented",
-    leave.status === 501,
+    "POST /api/leave responds nuked:true",
+    leave.json?.nuked === true,
     leave.json,
   );
+
+  const { count: postNukeFiles } = await sb
+    .from("vault_files")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId);
+  check("post-leave: vault_files rows = 0", (postNukeFiles ?? 0) === 0);
+
+  const { count: postNukeKeys } = await sb
+    .from("tenant_keys")
+    .select("workspace_id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId);
+  check("post-leave: tenant_keys row = 0", (postNukeKeys ?? 0) === 0);
+
+  const { count: postNukeAudit } = await sb
+    .from("audit_log")
+    .select("id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId)
+    .eq("operation", "vault_nuke");
+  check(
+    "post-leave: audit_log has a vault_nuke row",
+    (postNukeAudit ?? 0) >= 1,
+  );
+
+  // Account survives — workspace + member rows stay
+  const { count: postNukeWs } = await sb
+    .from("workspaces")
+    .select("id", { count: "exact", head: true })
+    .eq("id", workspaceId);
+  check("post-leave: workspaces row survives", (postNukeWs ?? 0) === 1);
 
   // Cleanup
   console.log("\nCleanup:");

@@ -407,3 +407,84 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return (data ?? []).map((r) => r.path as string);
   }
 }
+
+// Supabase Storage `remove([])` accepts up to 1000 paths per call.
+const STORAGE_REMOVE_BATCH = 1000;
+
+export interface NukeResult {
+  objectCount: number;
+  fileRowCount: number;
+}
+
+// "Leave Taproot" — hard-delete the cloud mirror end-to-end. Per the locked
+// T4 decision: the mirror dies (Storage blobs + vault_files rows + tenant_keys
+// row), but the workspace + workspace_members + auth.users rows survive so the
+// user can re-onboard or invite teammates without going through full account
+// recreation. Full account delete is a separate Stage 2+ button.
+//
+// Audit row (`operation = 'vault_nuke'`) is fire-and-forget, same posture as
+// `kek_unwrap`: if the audit insert fails, the deletion already happened — log
+// the failure but don't roll back. Rolling back a half-completed nuke is
+// worse than a missing audit row.
+//
+// This function is idempotent: calling it on a workspace whose mirror is
+// already gone is a no-op (returns counts of 0).
+export async function nukeWorkspace(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  actorUserId: string | null,
+): Promise<NukeResult> {
+  const { data: rows, error: listErr } = await supabase
+    .from("vault_files")
+    .select("storage_object")
+    .eq("workspace_id", workspaceId);
+  if (listErr) {
+    throw new Error(`nuke: vault_files list failed: ${listErr.message}`);
+  }
+  const storageObjects = (rows ?? []).map((r) => r.storage_object as string);
+
+  for (let i = 0; i < storageObjects.length; i += STORAGE_REMOVE_BATCH) {
+    const chunk = storageObjects.slice(i, i + STORAGE_REMOVE_BATCH);
+    const { error: rmErr } = await supabase.storage
+      .from(VAULT_BLOBS_BUCKET)
+      .remove(chunk);
+    if (rmErr) {
+      throw new Error(
+        `nuke: Storage remove batch (${i}-${i + chunk.length}) failed: ${rmErr.message}`,
+      );
+    }
+  }
+
+  const { count: deletedFileCount, error: filesDelErr } = await supabase
+    .from("vault_files")
+    .delete({ count: "exact" })
+    .eq("workspace_id", workspaceId);
+  if (filesDelErr) {
+    throw new Error(`nuke: vault_files delete failed: ${filesDelErr.message}`);
+  }
+
+  const { error: keysDelErr } = await supabase
+    .from("tenant_keys")
+    .delete()
+    .eq("workspace_id", workspaceId);
+  if (keysDelErr) {
+    throw new Error(`nuke: tenant_keys delete failed: ${keysDelErr.message}`);
+  }
+
+  const { error: auditErr } = await supabase.from("audit_log").insert({
+    workspace_id: workspaceId,
+    user_id: actorUserId,
+    operation: "vault_nuke",
+    details: { object_count: storageObjects.length },
+  });
+  if (auditErr) {
+    console.error(
+      `audit_log write failed for vault_nuke ${workspaceId}: ${auditErr.message}`,
+    );
+  }
+
+  return {
+    objectCount: storageObjects.length,
+    fileRowCount: deletedFileCount ?? 0,
+  };
+}
