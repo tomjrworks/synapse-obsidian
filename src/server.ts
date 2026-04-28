@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express, { type Request } from "express";
+import express from "express";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,11 @@ import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
-import { registerOAuthRoutes, requireAuth } from "./oauth.js";
+import {
+  registerOAuthRoutes,
+  requireAuth,
+  type AuthedMcpRequest,
+} from "./oauth.js";
 import { mountApiRoutes } from "./api/routes.js";
 import { getBackend } from "./utils/backend-cache.js";
 
@@ -30,18 +34,6 @@ function createMcpServer(backend: StorageBackend): McpServer {
   registerPrompts(server, backend);
   registerResources(server, backend);
   return server;
-}
-
-// T6.1 placeholder. Reads OWNER_WORKSPACE_ID from env. T6.4 swaps this for
-// req.workspaceId populated by the workspace-aware requireAuth.
-function resolveWorkspaceId(_req: Request): string {
-  const id = process.env.OWNER_WORKSPACE_ID;
-  if (!id) {
-    throw new Error(
-      "OWNER_WORKSPACE_ID env var required (T6.1 single-workspace placeholder)",
-    );
-  }
-  return id;
 }
 
 export async function startServer(
@@ -84,11 +76,12 @@ export async function startServer(
   app.post("/mcp", async (req, res) => {
     if (await requireAuth(req, res)) return;
     try {
-      // T6.1: route to the workspace-scoped encrypted mirror. The startServer
-      // `backend` argument is still used by /api/* (firstWowRouter writes the
-      // first-wow note to the local helper-managed vault); /mcp is the path
-      // that goes through Supabase. Two writers, two paths, intentional.
-      const workspaceId = resolveWorkspaceId(req);
+      // Route to the workspace-scoped encrypted mirror. The startServer
+      // `backend` argument is still used by /api/* (firstWowRouter writes
+      // the first-wow note to the local helper-managed vault); /mcp is
+      // the path that goes through Supabase. Two writers, two paths,
+      // intentional.
+      const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined as any,

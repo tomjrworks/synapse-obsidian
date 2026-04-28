@@ -532,6 +532,20 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 }
 
 /**
+ * Express request augmented with the workspace identity resolved from a
+ * valid bearer. After `requireAuth` returns false, downstream handlers
+ * may read `req.workspaceId` directly.
+ *
+ * Stage 1 single-user-per-workspace: `userId` is not plumbed onto the
+ * request — MCP tool calls operate on the workspace's vault, and any
+ * actor-attribution work uses `workspaces.owner_user_id` server-side.
+ * Stage 2 (teams) will revisit this once tokens are minted per user.
+ */
+export interface AuthedMcpRequest extends Request {
+  workspaceId: string;
+}
+
+/**
  * Middleware that validates bearer tokens on protected endpoints.
  * Returns true if the request should be blocked (response already sent).
  *
@@ -539,8 +553,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
  * indexed SELECT per /mcp call. If this becomes the hot path we'll add
  * a short-lived in-memory cache (~30s TTL) here; defer until measured.
  *
- * T6.4 will populate `req.workspaceId` (and friends) by stashing the
- * validated row on the request object.
+ * T6.4: on success, attaches the validated `workspace_id` onto the
+ * request as `(req as AuthedMcpRequest).workspaceId`.
  */
 export async function requireAuth(
   req: Request,
@@ -571,6 +585,7 @@ export async function requireAuth(
       });
       return true;
     }
+    (req as AuthedMcpRequest).workspaceId = data.workspace_id as string;
     // Best-effort last_used_at touch; failures don't block the request.
     sb.from("oauth_tokens")
       .update({ last_used_at: new Date().toISOString() })

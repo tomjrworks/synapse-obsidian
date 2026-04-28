@@ -133,7 +133,6 @@ try {
   tmpVault = mkdtempSync(join(tmpdir(), "taproot-oauth-bridge-"));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    OWNER_WORKSPACE_ID: workspaceId,
     PORT: String(PORT),
   };
   delete env.SYNAPSE_PASSWORD;

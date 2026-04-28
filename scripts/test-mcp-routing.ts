@@ -1,17 +1,13 @@
 /**
  * Stage 1 T6.1 — /mcp routes via getBackend(workspaceId) smoke.
  *
- * Provisions a test user + workspace + tenant_keys, spawns the HTTP server
- * with OWNER_WORKSPACE_ID set to the test workspace, drives a real OAuth
- * 2.1 + PKCE handshake against /register + /authorize + /token to obtain a
- * bearer token, then exercises the /mcp MCP path and asserts that a tool
- * call lands in the workspace-scoped encrypted mirror (vault_files row +
- * Storage object + decrypt round-trip).
- *
- * The OAuth flow here uses the existing OWNER_PASSWORD gate (current Stage
- * 1 reality). T6.3 will swap that for Supabase Auth (email + password) and
- * T6.4 will derive workspaceId from the bearer instead of the env var.
- * Until then this smoke isolates to "is the right backend being routed?"
+ * Provisions a test user + workspace + tenant_keys, spawns the HTTP server,
+ * drives a real OAuth 2.1 + PKCE handshake against /register + /authorize +
+ * /token (Supabase Auth backs /authorize per T6.2) to obtain a bearer
+ * token, then exercises /mcp and asserts the tool call lands in the
+ * workspace-scoped encrypted mirror (vault_files row + Storage object +
+ * decrypt round-trip). T6.4: workspace identity now flows from the bearer
+ * (oauth_tokens.workspace_id), not an env var.
  *
  * Run: tsx scripts/test-mcp-routing.ts
  *   Requires: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TAPROOT_KEK in env.
@@ -209,12 +205,10 @@ try {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    OWNER_WORKSPACE_ID: workspaceId,
     PORT: String(PORT),
   };
-  // T6.2: SYNAPSE_PASSWORD env var is no longer respected — auth uses
-  // Supabase signInWithPassword. Force-clear it in case the parent shell
-  // has it set, so tests aren't shadowed by stale values.
+  // SYNAPSE_PASSWORD env var is no longer respected (T6.2 dropped it for
+  // Supabase Auth). Force-clear it in case the parent shell has it set.
   delete env.SYNAPSE_PASSWORD;
 
   serverProc = spawn(
