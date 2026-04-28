@@ -36,3 +36,23 @@ export function unwrapDek(wrapped: Buffer): Buffer {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
+
+// Layout matches wrapDek/unwrapDek: [iv | tag | ciphertext]. Distinct names
+// from wrapDek/unwrapDek so reviewers don't conflate "encrypt content with DEK"
+// with "wrap DEK with KEK" — same primitive, different trust boundary.
+export function encryptBlob(plaintext: Buffer, dek: Buffer): Buffer {
+  const iv = randomBytes(IV_LEN);
+  const cipher = createCipheriv(ALG, dek, iv);
+  const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, ct]);
+}
+
+export function decryptBlob(blob: Buffer, dek: Buffer): Buffer {
+  const iv = blob.subarray(0, IV_LEN);
+  const tag = blob.subarray(IV_LEN, IV_LEN + TAG_LEN);
+  const ct = blob.subarray(IV_LEN + TAG_LEN);
+  const decipher = createDecipheriv(ALG, dek, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ct), decipher.final()]);
+}

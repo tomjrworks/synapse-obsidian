@@ -11,6 +11,22 @@ export interface FileStat {
   modifiedAt: Date;
 }
 
+// Typed errors so MCP tool layer can map cleanly: NotFoundError → not_found,
+// ConflictError → conflict, anything else → internal.
+export class NotFoundError extends Error {
+  constructor(filePath: string) {
+    super(`Not found: ${filePath}`);
+    this.name = "NotFoundError";
+  }
+}
+
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
+  }
+}
+
 export interface StorageBackend {
   readFile(filePath: string): Promise<string>;
   writeFile(filePath: string, content: string): Promise<void>;
