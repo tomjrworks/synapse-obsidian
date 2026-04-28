@@ -27,11 +27,15 @@
  *
  * See [[projects/synapse/2026-04-27-taproot-stage1-t4-subtask-plan]] for contracts.
  */
+import { createHash, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageBackend, FileStat } from "./storage.js";
 import { NotFoundError } from "./storage.js";
 import { supabaseService } from "../api/supabase.js";
-import { unwrapDek } from "../api/crypto.js";
+import { encryptBlob, unwrapDek } from "../api/crypto.js";
+
+const VAULT_BLOBS_BUCKET = "vault-blobs";
+const PG_UNIQUE_VIOLATION = "23505";
 
 // Postgres bytea columns come back from PostgREST as `\x...hex...` strings.
 // (Older Supabase configs may use base64; handle both for resilience.)
@@ -101,8 +105,129 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     throw new Error("NotImplemented: T4.3");
   }
 
-  async writeFile(_filePath: string, _content: string): Promise<void> {
-    throw new Error("NotImplemented: T4.2");
+  async writeFile(filePath: string, content: string): Promise<void> {
+    const normalized = filePath.trim();
+    if (!normalized) throw new Error("filePath must not be empty");
+
+    const plaintext = Buffer.from(content, "utf8");
+    const ciphertext = encryptBlob(plaintext, this.dek);
+    const sha256 = createHash("sha256").update(plaintext).digest();
+    const sha256Param = `\\x${sha256.toString("hex")}`;
+    const nowIso = new Date().toISOString();
+
+    const { fileId, storageObject } = await this.upsertMetadata(
+      normalized,
+      plaintext.length,
+      sha256Param,
+      nowIso,
+    );
+
+    const { error: uploadErr } = await this.supabase.storage
+      .from(VAULT_BLOBS_BUCKET)
+      .upload(storageObject, ciphertext, {
+        upsert: true,
+        contentType: "application/octet-stream",
+      });
+    if (uploadErr) {
+      throw new Error(
+        `Storage upload failed for ${storageObject} (file_id=${fileId}): ${uploadErr.message}`,
+      );
+    }
+  }
+
+  // SELECT → UPDATE-or-INSERT for vault_files. Returns the file_id so the
+  // caller knows which storage_object key to upload the blob under. The
+  // partial unique index on (workspace_id, path) WHERE deleted_at IS NULL
+  // protects against concurrent writers — if two writers both miss the
+  // SELECT and both INSERT, one wins and the other gets PG 23505; the
+  // loser re-resolves via SELECT and falls through to UPDATE.
+  private async upsertMetadata(
+    filePath: string,
+    plaintextSize: number,
+    sha256Param: string,
+    nowIso: string,
+  ): Promise<{ fileId: string; storageObject: string }> {
+    const { data: existing, error: selectErr } = await this.supabase
+      .from("vault_files")
+      .select("id, storage_object")
+      .eq("workspace_id", this.workspaceId)
+      .eq("path", filePath)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (selectErr) {
+      throw new Error(`vault_files lookup failed: ${selectErr.message}`);
+    }
+
+    if (existing) {
+      const { error: updateErr } = await this.supabase
+        .from("vault_files")
+        .update({
+          size_bytes: plaintextSize,
+          plaintext_sha256: sha256Param,
+          modified_at: nowIso,
+        })
+        .eq("id", existing.id);
+      if (updateErr) {
+        throw new Error(`vault_files UPDATE failed: ${updateErr.message}`);
+      }
+      return { fileId: existing.id, storageObject: existing.storage_object };
+    }
+
+    // Mint id client-side so storage_object (NOT NULL) can be set in the
+    // same INSERT — saves a follow-up UPDATE round-trip per new file.
+    const fileId = randomUUID();
+    const storageObject = `${this.workspaceId}/${fileId}`;
+
+    const { error: insertErr } = await this.supabase
+      .from("vault_files")
+      .insert({
+        id: fileId,
+        workspace_id: this.workspaceId,
+        path: filePath,
+        size_bytes: plaintextSize,
+        plaintext_sha256: sha256Param,
+        mime_type: "text/markdown",
+        storage_object: storageObject,
+        modified_at: nowIso,
+      });
+
+    if (insertErr) {
+      // Race lost: another writer inserted at the same path between our
+      // SELECT and our INSERT. Re-resolve and UPDATE through the existing
+      // row exactly once. A second 23505 surfaces.
+      const code = (insertErr as { code?: string }).code;
+      if (code === PG_UNIQUE_VIOLATION) {
+        const { data: race, error: raceErr } = await this.supabase
+          .from("vault_files")
+          .select("id, storage_object")
+          .eq("workspace_id", this.workspaceId)
+          .eq("path", filePath)
+          .is("deleted_at", null)
+          .single();
+        if (raceErr || !race) {
+          throw new Error(
+            `vault_files race resolve failed: ${raceErr?.message ?? "row vanished"}`,
+          );
+        }
+        const { error: updateErr } = await this.supabase
+          .from("vault_files")
+          .update({
+            size_bytes: plaintextSize,
+            plaintext_sha256: sha256Param,
+            modified_at: nowIso,
+          })
+          .eq("id", race.id);
+        if (updateErr) {
+          throw new Error(
+            `vault_files UPDATE after race failed: ${updateErr.message}`,
+          );
+        }
+        return { fileId: race.id, storageObject: race.storage_object };
+      }
+      throw new Error(`vault_files INSERT failed: ${insertErr.message}`);
+    }
+
+    return { fileId, storageObject };
   }
 
   async listFiles(_subPath?: string, _recursive?: boolean): Promise<string[]> {

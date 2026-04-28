@@ -89,23 +89,10 @@ try {
     "forWorkspace returns SupabaseEncryptedMirrorBackend instance",
     backend instanceof SupabaseEncryptedMirrorBackend,
   );
-
-  // Confirm in-memory DEK is real by checking that a NotImplemented sub-task
-  // method is the only thing that fails (the constructor accepted a Buffer).
-  // We can't introspect the private DEK, so reach via a method that expects
-  // it to be present and confirm we get NotImplemented (T4.2), not a crypto
-  // error or null-deref.
-  let writeErrMsg = "";
-  try {
-    await backend.writeFile("foo.md", "hi");
-  } catch (e: any) {
-    writeErrMsg = e.message ?? "";
-  }
-  check(
-    "instance is constructed with DEK in place (writeFile throws NotImplemented: T4.2, not a crypto/null error)",
-    writeErrMsg.includes("NotImplemented: T4.2"),
-    writeErrMsg,
-  );
+  // The audit_log assertions below already prove the unwrap actually ran
+  // (otherwise no kek_unwrap row would have been written). Per-sub-task
+  // smokes don't depend on later sub-tasks' NotImplemented messages —
+  // those flip from "throws" to "works" as the rest of T4 lands.
 
   const auditAfter = await sb
     .from("audit_log")
