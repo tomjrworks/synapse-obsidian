@@ -28,7 +28,8 @@
     "smoke:mcp-routing": "tsx scripts/test-mcp-routing.ts",
     "smoke:oauth-bridge": "tsx scripts/test-oauth-supabase-bridge.ts",
     "smoke:oauth-tokens": "tsx scripts/test-oauth-tokens.ts",
-    "smoke:mcp-e2e": "tsx scripts/test-mcp-end-to-end.ts"
+    "smoke:mcp-e2e": "tsx scripts/test-mcp-end-to-end.ts",
+    "smoke:cloud": "tsx scripts/smoke-cloud-suite.ts"
   },
   "keywords": [
     "mcp",
