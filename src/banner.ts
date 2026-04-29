@@ -36,7 +36,7 @@ ${GD}       │           │           │
    ╱       ╲ ╱            ╲ ╱       ╲
   ·         ·              ·         ·${R}
 
-  ${D}the nervous system between your AI and your notes${R}
+  ${D}the memory layer for your AI${R}
   ${GD}v${v}${R}  ${D}·${R}  ${GD}Taproot${R}
 `);
 }

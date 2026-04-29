@@ -267,8 +267,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       <button type="submit">Approve Access</button>
     </form>
     <div class="security">
-      Your data never leaves your machine. Taproot runs locally and<br>
-      only connects your vault to your AI client.<br>
+      Encrypted at rest. Open source &mdash; check what we do.<br>
+      Leave any time and we delete your mirror with one click.<br>
       <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://taproothq.com">Taproot</a>
     </div>
   </div>
