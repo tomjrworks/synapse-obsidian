@@ -17,6 +17,11 @@ let package = Package(
                     "-Xlinker", "Sources/TaprootHelper/Info.plist",
                 ])
             ]
-        )
+        ),
+        .testTarget(
+            name: "TaprootHelperTests",
+            dependencies: ["TaprootHelper"],
+            path: "Tests/TaprootHelperTests"
+        ),
     ]
 )
