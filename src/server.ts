@@ -45,8 +45,26 @@ export async function startServer(
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
+  // Add new credential-equivalent keys here; replacer applies at every nesting level.
+  const SENSITIVE_BODY_KEYS = new Set([
+    "password",
+    "code_verifier",
+    "client_secret",
+    "refresh_token",
+    "access_token",
+    "bearer",
+    "jwt",
+    "token",
+    "code",
+  ]);
+
   app.use((req, _res, next) => {
-    const body = req.body ? JSON.stringify(req.body).slice(0, 300) : "";
+    let body = "";
+    if (req.body) {
+      body = JSON.stringify(req.body, (key, value) =>
+        SENSITIVE_BODY_KEYS.has(key) ? "[redacted]" : value,
+      ).slice(0, 300);
+    }
     console.error(
       `[${new Date().toISOString()}] ${req.method} ${req.path} body=${body}`,
     );
