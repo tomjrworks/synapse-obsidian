@@ -14,6 +14,8 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>TaprootBaseURL</key>
+    <string>https://connect.taproothq.com</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

@@ -12,13 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var workspaces: [Workspace] = []
     /// Internal access so tests can verify watcher lifecycle.
     var watchers: [UUID: WorkspaceWatcher] = [:]
-    private let keychain: KeychainStore
+    private let services: Services
 
     /// `nonisolated` so `main.swift` (top-level synchronous code, no actor)
     /// and tests can construct AppDelegate without `await`. The init only stores
     /// a value-type ref; mutating methods + property access stay `@MainActor`.
-    nonisolated init(keychain: KeychainStore = KeychainStore()) {
-        self.keychain = keychain
+    nonisolated init(services: Services = .production()) {
+        self.services = services
         super.init()
     }
 
@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func loadWorkspacesFromKeychain() {
         do {
-            let entries = try keychain.retrieveAll()
+            let entries = try services.keychain.retrieveAll()
             workspaces = entries.map { (id, bearer) in
                 Workspace(
                     id: id,
@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func handleAuthURL(_ url: URL) {
         do {
             let link = try DeepLinkParser.parseAuth(url)
-            try keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
+            try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
             if let idx = workspaces.firstIndex(where: { $0.id == link.workspaceID }) {
                 workspaces[idx].bearer = link.bearer
             } else {
@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
         do {
-            try keychain.delete(workspaceID: workspaceID)
+            try services.keychain.delete(workspaceID: workspaceID)
             workspaces.removeAll { $0.id == workspaceID }
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
         } catch {

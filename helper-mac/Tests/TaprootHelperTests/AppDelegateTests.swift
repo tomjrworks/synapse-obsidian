@@ -1,6 +1,16 @@
 import XCTest
 @testable import TaprootHelper
 
+/// No-op HTTPClient for AppDelegate tests that don't exercise the sync path.
+/// Commit 3 (T11.3 SyncEngine wire-in) will introduce a richer fake with
+/// stubbing + capture; this minimal version just satisfies the `Services`
+/// constructor so existing 8 tests remain one-line migrations.
+private final class FakeHTTPClient: HTTPClient {
+    func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+        return HTTPResponse(status: 200, body: Data())
+    }
+}
+
 @MainActor
 final class AppDelegateTests: XCTestCase {
     private let testService = "com.taproot.helper.tests"
@@ -10,11 +20,23 @@ final class AppDelegateTests: XCTestCase {
     override func setUpWithError() throws {
         keychain = KeychainStore(service: testService)
         try keychain.deleteAllForService()
-        app = AppDelegate(keychain: keychain)
+        app = AppDelegate(services: makeServices(keychain: keychain))
     }
 
     override func tearDownWithError() throws {
         try keychain.deleteAllForService()
+    }
+
+    private func makeServices(
+        keychain: KeychainStore,
+        httpClient: HTTPClient = FakeHTTPClient()
+    ) -> Services {
+        Services(
+            keychain: keychain,
+            httpClient: httpClient,
+            baseURL: URL(string: "http://localhost:0")!,
+            now: { Date(timeIntervalSince1970: 0) }
+        )
     }
 
     func testHandleAuthURLAddsNewWorkspace() throws {
@@ -83,7 +105,7 @@ final class AppDelegateTests: XCTestCase {
         try keychain.store(workspaceID: id2, bearer: "bearer-2")
 
         // Fresh delegate sharing the same keychain (simulates app relaunch).
-        let freshApp = AppDelegate(keychain: keychain)
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
 
         XCTAssertEqual(freshApp.workspaces.count, 2)
@@ -97,7 +119,7 @@ final class AppDelegateTests: XCTestCase {
         try keychain.store(workspaceID: id1, bearer: "bearer-1")
         try keychain.store(workspaceID: id2, bearer: "bearer-2")
 
-        let freshApp = AppDelegate(keychain: keychain)
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
         freshApp.startAllWatchers()
 
