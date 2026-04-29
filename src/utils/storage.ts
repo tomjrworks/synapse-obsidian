@@ -27,6 +27,28 @@ export class ConflictError extends Error {
   }
 }
 
+// T11.4 pull-engine wire types. listChanged powers GET /api/sync/pull —
+// helper polls the server for vault changes since a (modifiedAt, id) tuple
+// cursor and applies them to the local folder.
+export interface VaultFileChange {
+  path: string;
+  size: number;
+  modifiedAt: string; // ISO8601 — opaque cursor token, server-defined
+  id: string; // UUID — tiebreaker for tuple cursor
+  deleted: boolean;
+  content?: string; // plaintext for non-deleted rows (D1.a inline content)
+}
+
+export interface PullCursor {
+  modifiedAt: string;
+  id: string;
+}
+
+export interface ListChangedResult {
+  files: VaultFileChange[];
+  next: PullCursor | null;
+}
+
 export interface StorageBackend {
   readFile(filePath: string): Promise<string>;
   writeFile(filePath: string, content: string): Promise<void>;
@@ -37,6 +59,10 @@ export interface StorageBackend {
   move(oldPath: string, newPath: string): Promise<void>;
   stat(filePath: string): Promise<FileStat>;
   recentFiles(n: number): Promise<string[]>;
+  listChanged(
+    cursor: PullCursor | null,
+    limit: number,
+  ): Promise<ListChangedResult>;
 }
 
 /**
@@ -158,6 +184,16 @@ export class LocalBackend implements StorageBackend {
     );
     withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return withMtime.slice(0, n).map((x) => x.relative);
+  }
+
+  async listChanged(
+    _cursor: PullCursor | null,
+    _limit: number,
+  ): Promise<ListChangedResult> {
+    // LocalBackend is reserved for /api/first-wow + stdio Claude-Desktop
+    // path. /api/sync/pull only routes through SupabaseEncryptedMirrorBackend.
+    // Throw rather than no-op so a misrouted request fails loudly.
+    throw new Error("listChanged is not supported by LocalBackend");
   }
 
   private async listRecursive(

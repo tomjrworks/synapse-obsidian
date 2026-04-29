@@ -12,9 +12,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var workspaces: [Workspace] = []
     /// Internal access so tests can verify watcher lifecycle.
     var watchers: [UUID: WorkspaceWatcher] = [:]
+    /// Internal access so tests can verify poller lifecycle.
+    var pullPollers: [UUID: Task<Void, Never>] = [:]
+    /// Internal access so tests can verify cursor advance + clear.
+    var pullCursors: [UUID: PullCursor] = [:]
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
+
+    /// Polling interval in ms. `TAPROOT_PULL_INTERVAL_MS` env-var seam matches
+    /// the existing `TAPROOT_BASE_URL` / `TAPROOT_LOCAL_FOLDER_BASE` test
+    /// pattern. Read at instance construction; tests set the env before init.
+    private let pullIntervalMs: UInt64 = {
+        if let raw = ProcessInfo.processInfo.environment["TAPROOT_PULL_INTERVAL_MS"],
+           let n = UInt64(raw), n > 0 {
+            return n
+        }
+        return 30_000
+    }()
+
+    /// D5 cap: max pages drained per tick. Bounds the watcher-pause window to
+    /// roughly 5000 files / 10s on initial pull of a large workspace.
+    static let maxDrainPagesPerTick = 10
 
     /// `nonisolated` so `main.swift` (top-level synchronous code, no actor)
     /// and tests can construct AppDelegate without `await`. The init only stores
@@ -53,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         startAllWatchers()
+        startAllPullPollers()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
@@ -85,6 +105,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
+            }
+            // Seed cursors from UserDefaults so the first pull tick after
+            // launch resumes from where the previous session left off (or
+            // initial-pull if never persisted).
+            for ws in workspaces {
+                if let c = loadCursor(for: ws.id) {
+                    pullCursors[ws.id] = c
+                }
             }
             NSLog("[Taproot] Loaded \(workspaces.count) workspace(s) from Keychain")
         } catch {
@@ -135,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 workspaces.append(newWorkspace)
                 startWatcher(for: newWorkspace)
+                startPullPoller(for: newWorkspace)
             }
             NSLog("[Taproot] Stored bearer for workspace \(link.workspaceID.uuidString)")
         } catch {
@@ -143,14 +172,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Stub for T11.5 menubar UI. Removes the Keychain entry + in-memory record.
-    /// Stop the watcher BEFORE the do-block so a Keychain throw can't leave a
-    /// running watcher attached to a workspace we're trying to delete.
+    /// Stop the poller AND the watcher BEFORE the do-block so a Keychain throw
+    /// can't leave a running poller/watcher attached to a workspace we're
+    /// trying to delete. Cancel poller first so an in-flight tick can't race
+    /// a final pull through a stopped watcher.
     func signOut(workspaceID: UUID) {
+        stopPullPoller(for: workspaceID)
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
         do {
             try services.keychain.delete(workspaceID: workspaceID)
             workspaces.removeAll { $0.id == workspaceID }
+            pullCursors.removeValue(forKey: workspaceID)
+            clearCursor(for: workspaceID)
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
@@ -202,6 +236,148 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [syncEngine] in
             await syncEngine.push(workspace: snapshot, events: events)
         }
+    }
+
+    // MARK: - Pull poller lifecycle (T11.4)
+
+    /// Idempotent. Spawns an unstructured Task that issues GET /api/sync/pull
+    /// every `pullIntervalMs` until cancelled.
+    func startPullPoller(for workspace: Workspace) {
+        guard pullPollers[workspace.id] == nil else { return }
+        let id = workspace.id
+        let interval = pullIntervalMs
+        pullPollers[id] = Task { [weak self] in
+            // Initial tick on a tiny delay so AppDelegate finishes launching
+            // before we hit the network.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            while !Task.isCancelled {
+                await self?.pullTick(workspaceID: id)
+                try? await Task.sleep(nanoseconds: interval * 1_000_000)
+            }
+        }
+    }
+
+    /// Iterates `workspaces` and starts a poller per workspace. Mirrors
+    /// `startAllWatchers`'s testable-seam pattern.
+    func startAllPullPollers() {
+        workspaces.forEach { startPullPoller(for: $0) }
+    }
+
+    /// Idempotent.
+    func stopPullPoller(for workspaceID: UUID) {
+        pullPollers[workspaceID]?.cancel()
+        pullPollers.removeValue(forKey: workspaceID)
+    }
+
+    /// One pull tick. Pauses watcher, drains up to `maxDrainPagesPerTick`
+    /// pages from the server, persists the cursor, resumes the watcher.
+    /// Internal access so tests can drive directly without spawning the
+    /// background poller Task.
+    func pullTick(workspaceID: UUID) async {
+        guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else { return }
+        let snapshot = WorkspaceSnapshot(
+            id: workspace.id,
+            bearer: workspace.bearer,
+            localFolder: workspace.localFolder
+        )
+        let watcher = watchers[workspaceID]
+        watcher?.stop()
+
+        var cursor = pullCursors[workspaceID]
+        var pageCount = 0
+        drainLoop: while pageCount < Self.maxDrainPagesPerTick {
+            let outcome = await syncEngine.pull(
+                workspace: snapshot,
+                cursor: cursor,
+                applyWrite: { [weak self] target, content in
+                    await self?.writeFileWithMkdir(at: target, content: content)
+                },
+                applyDelete: { [weak self] target in
+                    await self?.deleteFileIfExists(at: target)
+                }
+            )
+            pageCount += 1
+            switch outcome {
+            case .caughtUp(let next):
+                if let next { cursor = next }
+                break drainLoop
+            case .morePages(let next):
+                cursor = next
+            case .transportError:
+                // Cursor unchanged; bail out for this tick.
+                break drainLoop
+            }
+        }
+
+        if let cursor {
+            pullCursors[workspaceID] = cursor
+            persistCursor(cursor, for: workspaceID)
+        }
+        watcher?.start()
+
+        if pageCount >= Self.maxDrainPagesPerTick {
+            NSLog("[Taproot] pullTick: hit D5 cap (\(Self.maxDrainPagesPerTick) pages); next tick will continue draining workspace \(workspaceID.uuidString)")
+        }
+    }
+
+    private func writeFileWithMkdir(at target: URL, content: String) async {
+        let dir = target.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(content.utf8).write(to: target, options: .atomic)
+        } catch {
+            NSLog("[Taproot] pull: write failed for \(target.path): \(error)")
+        }
+    }
+
+    private func deleteFileIfExists(at target: URL) async {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: target.path) else { return }
+        do {
+            try fm.removeItem(at: target)
+        } catch {
+            NSLog("[Taproot] pull: delete failed for \(target.path): \(error)")
+        }
+    }
+
+    // MARK: - Cursor persistence (UserDefaults)
+
+    /// Test seam matching `TAPROOT_BASE_URL` / `TAPROOT_KEYCHAIN_SERVICE` /
+    /// `TAPROOT_LOCAL_FOLDER_BASE`: when set, cursor persistence routes
+    /// through `UserDefaults(suiteName:)` so the E2E smoke can read the
+    /// shipped cursor via `defaults read <suite> ...` without polluting the
+    /// global domain. Inert in production unless set.
+    private func cursorDefaults() -> UserDefaults {
+        if let suite = ProcessInfo.processInfo.environment["TAPROOT_USERDEFAULTS_SUITE"],
+           !suite.isEmpty,
+           let suited = UserDefaults(suiteName: suite) {
+            return suited
+        }
+        return .standard
+    }
+
+    private func persistCursor(_ cursor: PullCursor, for id: UUID) {
+        let defaults = cursorDefaults()
+        defaults.set(cursor.modifiedAt, forKey: "taproot.lastSync.\(id.uuidString)")
+        defaults.set(cursor.id, forKey: "taproot.lastSyncId.\(id.uuidString)")
+    }
+
+    private func loadCursor(for id: UUID) -> PullCursor? {
+        let defaults = cursorDefaults()
+        guard
+            let modifiedAt = defaults.string(forKey: "taproot.lastSync.\(id.uuidString)"),
+            let cursorId = defaults.string(forKey: "taproot.lastSyncId.\(id.uuidString)"),
+            !modifiedAt.isEmpty, !cursorId.isEmpty
+        else {
+            return nil
+        }
+        return PullCursor(modifiedAt: modifiedAt, id: cursorId)
+    }
+
+    private func clearCursor(for id: UUID) {
+        let defaults = cursorDefaults()
+        defaults.removeObject(forKey: "taproot.lastSync.\(id.uuidString)")
+        defaults.removeObject(forKey: "taproot.lastSyncId.\(id.uuidString)")
     }
 
     @objc private func quit() {

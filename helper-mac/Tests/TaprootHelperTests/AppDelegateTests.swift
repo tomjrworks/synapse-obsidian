@@ -213,6 +213,196 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(count, 0, "Unknown workspace ID must not produce HTTP send")
     }
 
+    // MARK: - T11.4 pull-poller lifecycle tests
+
+    /// `pullIntervalMs` is read at AppDelegate init from
+    /// `TAPROOT_PULL_INTERVAL_MS`. Set the env BEFORE constructing the
+    /// AppDelegate so the property initializer captures the test value.
+    private func appWithPullInterval(
+        ms: Int,
+        keychain: KeychainStore,
+        httpClient: HTTPClient = FakeHTTPClient()
+    ) -> AppDelegate {
+        setenv("TAPROOT_PULL_INTERVAL_MS", "\(ms)", 1)
+        defer { unsetenv("TAPROOT_PULL_INTERVAL_MS") }
+        return AppDelegate(services: makeServices(keychain: keychain, httpClient: httpClient))
+    }
+
+    private func cleanCursorDefaults(for id: UUID) {
+        UserDefaults.standard.removeObject(forKey: "taproot.lastSync.\(id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "taproot.lastSyncId.\(id.uuidString)")
+    }
+
+    func testStartPullPollerRunsTickAndAdvancesCursor() async throws {
+        let id = UUID()
+        defer { cleanCursorDefaults(for: id) }
+
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let cursorMtime = "2026-04-29T05:00:00.000Z"
+        let cursorId = "00000000-0000-4000-8000-000000000001"
+        let json = """
+        {"files":[{"path":"hello.md","size":5,"mtime":"\(cursorMtime)","deleted":false,"content":"hello"}],
+         "next_since":"\(cursorMtime)","next_since_id":"\(cursorId)"}
+        """
+        let localFake = FakeHTTPClient()
+        await localFake.setStubbedResponse(.success(HTTPResponse(status: 200, body: Data(json.utf8))))
+
+        let testApp = appWithPullInterval(ms: 200, keychain: keychain, httpClient: localFake)
+        testApp.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "test-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        let exp = expectation(description: "first pull tick fired")
+        exp.assertForOverFulfill = false  // poller keeps ticking; we only care about the first fire
+        await localFake.setOnSend { exp.fulfill() }
+
+        testApp.startAllPullPollers()
+        await fulfillment(of: [exp], timeout: 2.0)
+
+        // Give the post-send work (cursor persist) a chance to run on @MainActor.
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(testApp.pullCursors[id]?.modifiedAt, cursorMtime)
+        XCTAssertEqual(testApp.pullCursors[id]?.id, cursorId)
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: "taproot.lastSync.\(id.uuidString)"),
+            cursorMtime
+        )
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: "taproot.lastSyncId.\(id.uuidString)"),
+            cursorId
+        )
+
+        testApp.stopPullPoller(for: id)
+    }
+
+    func testSignOutCancelsPullPollerAndClearsCursor() async throws {
+        let id = UUID()
+        defer { cleanCursorDefaults(for: id) }
+
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let cursorMtime = "2026-04-29T05:00:00.000Z"
+        let cursorId = "00000000-0000-4000-8000-000000000001"
+        let json = """
+        {"files":[{"path":"hello.md","size":5,"mtime":"\(cursorMtime)","deleted":false,"content":"hello"}],
+         "next_since":"\(cursorMtime)","next_since_id":"\(cursorId)"}
+        """
+        let localFake = FakeHTTPClient()
+        await localFake.setStubbedResponse(.success(HTTPResponse(status: 200, body: Data(json.utf8))))
+
+        let testApp = appWithPullInterval(ms: 200, keychain: keychain, httpClient: localFake)
+        try keychain.store(workspaceID: id, bearer: "to-clear")
+        testApp.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "to-clear",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        let exp = expectation(description: "first pull tick fired")
+        exp.assertForOverFulfill = false  // poller keeps ticking; we only care about the first fire
+        await localFake.setOnSend { exp.fulfill() }
+
+        testApp.startAllPullPollers()
+        await fulfillment(of: [exp], timeout: 2.0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertNotNil(testApp.pullPollers[id])
+        XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.lastSync.\(id.uuidString)"))
+
+        let sendsBeforeSignOut = await localFake.sendCount
+        testApp.signOut(workspaceID: id)
+
+        XCTAssertNil(testApp.pullPollers[id], "signOut must remove poller from dict")
+        XCTAssertNil(testApp.pullCursors[id], "signOut must clear in-memory cursor")
+        XCTAssertNil(UserDefaults.standard.string(forKey: "taproot.lastSync.\(id.uuidString)"))
+        XCTAssertNil(UserDefaults.standard.string(forKey: "taproot.lastSyncId.\(id.uuidString)"))
+
+        // Give any in-flight tick a generous beat to finish + verify no NEW
+        // sends fire after sign-out.
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let sendsAfter = await localFake.sendCount
+        XCTAssertLessThanOrEqual(
+            sendsAfter,
+            sendsBeforeSignOut + 1,
+            "no new pull sends after signOut (allow 1 in-flight tick that started before cancel)"
+        )
+    }
+
+    func testPullTickD5CapBoundsDrain() async throws {
+        let id = UUID()
+        defer { cleanCursorDefaults(for: id) }
+
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        // Generate a JSON page with `files.count == 500` so engine.pull's
+        // ">= limit" check fires every iteration → drain loop hits the cap.
+        // Each entry has a unique mtime so cursor strictly advances; cap exit
+        // is what stops the loop, NOT exhausting the page.
+        var entries: [String] = []
+        entries.reserveCapacity(500)
+        for i in 0..<500 {
+            // Unique mtime per row keeps the cursor monotonic; deterministic.
+            let mm = String(format: "%02d", i / 60)
+            let ss = String(format: "%02d", i % 60)
+            entries.append(
+                "{\"path\":\"f\(i).md\",\"size\":1,\"mtime\":\"2026-04-29T05:\(mm):\(ss).000Z\",\"deleted\":false,\"content\":\"x\"}"
+            )
+        }
+        let nextMtime = "2026-04-29T05:08:19.000Z"  // last row's mtime
+        let nextId = "00000000-0000-4000-8000-000000000500"
+        let json = "{\"files\":[\(entries.joined(separator: ","))]," +
+            "\"next_since\":\"\(nextMtime)\",\"next_since_id\":\"\(nextId)\"}"
+
+        let localFake = FakeHTTPClient()
+        await localFake.setStubbedResponse(.success(HTTPResponse(status: 200, body: Data(json.utf8))))
+
+        // Default 30s interval is fine; we drive pullTick directly so the
+        // background poller never fires under us.
+        let testApp = AppDelegate(services: makeServices(keychain: keychain, httpClient: localFake))
+        testApp.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "test-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        await testApp.pullTick(workspaceID: id)
+
+        let sendCount = await localFake.sendCount
+        XCTAssertEqual(
+            sendCount,
+            AppDelegate.maxDrainPagesPerTick,
+            "drain must hit D5 cap exactly (\(AppDelegate.maxDrainPagesPerTick) sends)"
+        )
+        XCTAssertEqual(testApp.pullCursors[id]?.modifiedAt, nextMtime)
+        XCTAssertEqual(testApp.pullCursors[id]?.id, nextId)
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: "taproot.lastSync.\(id.uuidString)"),
+            nextMtime
+        )
+    }
+
     /// Locks idempotency analysis from plan §4: a 401-fired re-entrant signOut
     /// (via `SyncEngine.onUnauthorized`) overlapping with a direct user signOut
     /// must leave clean state and not crash. KeychainStore.delete tolerates

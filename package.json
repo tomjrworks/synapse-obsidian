@@ -31,7 +31,8 @@
     "smoke:mcp-e2e": "tsx scripts/test-mcp-end-to-end.ts",
     "smoke:cloud": "tsx scripts/smoke-cloud-suite.ts",
     "smoke:local-backend": "tsx scripts/test-local-backend.ts",
-    "smoke:sync-push": "bash scripts/smoke-sync-push.sh"
+    "smoke:sync-push": "bash scripts/smoke-sync-push.sh",
+    "smoke:sync-pull": "bash scripts/smoke-sync-pull.sh"
   },
   "keywords": [
     "mcp",

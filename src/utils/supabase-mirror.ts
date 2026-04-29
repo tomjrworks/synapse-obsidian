@@ -29,7 +29,13 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { StorageBackend, FileStat } from "./storage.js";
+import type {
+  FileStat,
+  ListChangedResult,
+  PullCursor,
+  StorageBackend,
+  VaultFileChange,
+} from "./storage.js";
 import { ConflictError, NotFoundError } from "./storage.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
@@ -329,9 +335,13 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     const normalized = filePath.trim();
     if (!normalized) throw new Error("filePath must not be empty");
 
+    // T11.4 IQ-1: bump modified_at alongside deleted_at so soft-deletes
+    // advance the (modified_at, id) cursor used by GET /api/sync/pull.
+    // Without this, the cursor query silently misses tombstones.
+    const nowIso = new Date().toISOString();
     const { count, error } = await this.supabase
       .from("vault_files")
-      .update({ deleted_at: new Date().toISOString() }, { count: "exact" })
+      .update({ deleted_at: nowIso, modified_at: nowIso }, { count: "exact" })
       .eq("workspace_id", this.workspaceId)
       .eq("path", normalized)
       .is("deleted_at", null);
@@ -405,6 +415,94 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       .limit(limit);
     if (error) throw new Error(`recentFiles failed: ${error.message}`);
     return (data ?? []).map((r) => r.path as string);
+  }
+
+  // T11.4 — pull cursor query. Returns rows since the (modifiedAt, id) tuple
+  // cursor in (modified_at, id) ASC order. Initial pull (cursor=null) returns
+  // alive rows only; cursor pulls return all rows including soft-deleted
+  // tombstones (per IQ-1, soft-delete bumps modified_at so deletes advance
+  // the cursor). Inline `content` decrypted for non-deleted rows (D1.a) so
+  // the helper has no decrypt path of its own.
+  async listChanged(
+    cursor: PullCursor | null,
+    limit: number,
+  ): Promise<ListChangedResult> {
+    // Cursor goes back to the helper, which round-trips it as a `since` query
+    // param. Express's query parser decodes `+` as a space (form-encoded
+    // semantics), so a Postgres timestamptz like `2026-...+00:00` would
+    // arrive as `2026-... 00:00` and Zod's datetime() validator would 400.
+    // Normalize the trailing `+00:00` to `Z` (RFC 3339 short form). The
+    // prefix is preserved exactly so we don't drop sub-millisecond precision.
+    const normalizeIso = (t: string): string =>
+      t.endsWith("+00:00") ? t.slice(0, -6) + "Z" : t;
+
+    let query = this.supabase
+      .from("vault_files")
+      .select("id, path, size_bytes, modified_at, deleted_at, storage_object")
+      .eq("workspace_id", this.workspaceId)
+      .order("modified_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(limit);
+
+    if (cursor) {
+      // Tuple inequality: (modified_at > since) OR (modified_at = since AND id > since_id)
+      query = query.or(
+        `modified_at.gt.${cursor.modifiedAt},and(modified_at.eq.${cursor.modifiedAt},id.gt.${cursor.id})`,
+      );
+    } else {
+      // Initial pull — only alive files. Helper has no local tombstones to
+      // reconcile; sending soft-deleted rows would be noise.
+      query = query.is("deleted_at", null);
+    }
+
+    const { data: rows, error } = await query;
+    if (error) throw new Error(`listChanged query failed: ${error.message}`);
+
+    // Per row: if alive, fetch + decrypt content via the same path readFile
+    // uses. Reuses the in-memory DEK held by this backend instance.
+    const files: VaultFileChange[] = [];
+    for (const row of rows ?? []) {
+      const baseFields = {
+        path: row.path as string,
+        size: row.size_bytes as number,
+        modifiedAt: normalizeIso(row.modified_at as string),
+        id: row.id as string,
+        deleted: row.deleted_at !== null,
+      };
+      if (baseFields.deleted) {
+        files.push(baseFields);
+        continue;
+      }
+      const { data: blob, error: dlErr } = await this.supabase.storage
+        .from(VAULT_BLOBS_BUCKET)
+        .download(row.storage_object as string);
+      if (dlErr || !blob) {
+        // Metadata says alive but blob missing — same posture as readFile:
+        // surface as deleted to the helper so it removes any stale local copy.
+        console.error(
+          `[listChanged] storage object missing for ${row.path}: ${dlErr?.message ?? "no body"}`,
+        );
+        files.push({ ...baseFields, deleted: true });
+        continue;
+      }
+      const ciphertext = Buffer.from(await blob.arrayBuffer());
+      const plaintext = decryptBlob(ciphertext, this.dek).toString("utf8");
+      files.push({ ...baseFields, content: plaintext });
+    }
+
+    // Cursor: last row of returned page. Empty page echoes input cursor
+    // (so a polling helper that's caught up keeps re-asking with the same
+    // since/since_id and the server keeps returning empty).
+    let next: PullCursor | null = cursor;
+    if (rows && rows.length > 0) {
+      const last = rows[rows.length - 1];
+      next = {
+        modifiedAt: normalizeIso(last.modified_at as string),
+        id: last.id as string,
+      };
+    }
+
+    return { files, next };
   }
 }
 

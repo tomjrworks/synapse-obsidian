@@ -263,6 +263,347 @@ final class SyncEngineTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertNil(captured.get(), "Transport errors must NOT trigger sign-out (Stage 1 drop semantics)")
     }
+
+    // MARK: - Pull tests (T11.4)
+
+    private func stubPullResponse(_ json: String, status: Int = 200) -> HTTPResponse {
+        HTTPResponse(status: status, body: Data(json.utf8))
+    }
+
+    func testPullSendsRequestToCorrectURLWithCursor() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(stubPullResponse(
+            "{\"files\":[],\"next_since\":null,\"next_since_id\":null}"
+        )))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let cursor = PullCursor(
+            modifiedAt: "2026-04-29T05:00:00.000Z",
+            id: "00000000-0000-4000-8000-000000000001"
+        )
+        let tracker = ApplyTracker()
+        _ = await engine.pull(
+            workspace: snapshot,
+            cursor: cursor,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let lastReq = await fake.lastRequest
+        let req = try XCTUnwrap(lastReq)
+        XCTAssertEqual(req.method, "GET")
+        XCTAssertEqual(req.headers["Authorization"], "Bearer test-bearer")
+        let comps = try XCTUnwrap(URLComponents(url: req.url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(comps.path, "/api/sync/pull")
+        let items = comps.queryItems ?? []
+        XCTAssertTrue(items.contains(URLQueryItem(name: "limit", value: "500")))
+        XCTAssertTrue(items.contains(URLQueryItem(name: "since", value: cursor.modifiedAt)))
+        XCTAssertTrue(items.contains(URLQueryItem(name: "since_id", value: cursor.id)))
+    }
+
+    func testPullSendsRequestWithNoCursorOnInitial() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(stubPullResponse(
+            "{\"files\":[],\"next_since\":null,\"next_since_id\":null}"
+        )))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let tracker = ApplyTracker()
+        _ = await engine.pull(
+            workspace: snapshot,
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let lastReq = await fake.lastRequest
+        let req = try XCTUnwrap(lastReq)
+        let comps = try XCTUnwrap(URLComponents(url: req.url, resolvingAgainstBaseURL: false))
+        let names = (comps.queryItems ?? []).map(\.name)
+        XCTAssertTrue(names.contains("limit"))
+        XCTAssertFalse(names.contains("since"), "no cursor → no since")
+        XCTAssertFalse(names.contains("since_id"), "no cursor → no since_id")
+    }
+
+    func testPullEmptyResponseReturnsCaughtUpAndDoesNotApply() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(stubPullResponse(
+            "{\"files\":[],\"next_since\":null,\"next_since_id\":null}"
+        )))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: snapshot,
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        switch outcome {
+        case .caughtUp(let next): XCTAssertNil(next)
+        default: XCTFail("expected .caughtUp(nil), got \(outcome)")
+        }
+        let writes = await tracker.snapshotWrites()
+        let deletes = await tracker.snapshotDeletes()
+        XCTAssertEqual(writes.count, 0)
+        XCTAssertEqual(deletes.count, 0)
+    }
+
+    func testPullSingleFileResponseAppliesWrite() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"hello.md","size":5,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"hello"}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: snapshot,
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.0.path, tmpDir.appendingPathComponent("hello.md").path)
+        XCTAssertEqual(writes.first?.1, "hello")
+        switch outcome {
+        case .caughtUp(let next):
+            XCTAssertEqual(next?.modifiedAt, "2026-04-29T05:00:00.000Z")
+            XCTAssertEqual(next?.id, "00000000-0000-4000-8000-000000000001")
+        default: XCTFail("expected .caughtUp, got \(outcome)")
+        }
+    }
+
+    func testPullPaginatedResponseReturnsMorePages() async throws {
+        // limit=2 + 2 returned files = full page → .morePages
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[
+            {"path":"a.md","size":1,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"a"},
+            {"path":"b.md","size":1,"mtime":"2026-04-29T05:00:01.000Z","deleted":false,"content":"b"}
+        ],"next_since":"2026-04-29T05:00:01.000Z","next_since_id":"00000000-0000-4000-8000-000000000002"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            limit: 2,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        switch outcome {
+        case .morePages(let cursor):
+            XCTAssertEqual(cursor.modifiedAt, "2026-04-29T05:00:01.000Z")
+            XCTAssertEqual(cursor.id, "00000000-0000-4000-8000-000000000002")
+        default: XCTFail("expected .morePages, got \(outcome)")
+        }
+    }
+
+    func testPullDeletionResponseAppliesDelete() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"gone.md","size":0,"mtime":"2026-04-29T05:00:00.000Z","deleted":true}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        let deletes = await tracker.snapshotDeletes()
+        XCTAssertEqual(writes.count, 0, "deleted entry must not call applyWrite")
+        XCTAssertEqual(deletes.count, 1)
+        XCTAssertEqual(deletes.first?.path, tmpDir.appendingPathComponent("gone.md").path)
+    }
+
+    func testPullCursorAdvancesOnPartialPage() async throws {
+        // 2 entries vs limit=500 = partial page → .caughtUp with cursor of LAST returned row
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[
+            {"path":"a.md","size":1,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"a"},
+            {"path":"b.md","size":1,"mtime":"2026-04-29T05:00:01.000Z","deleted":false,"content":"b"}
+        ],"next_since":"2026-04-29T05:00:01.000Z","next_since_id":"00000000-0000-4000-8000-000000000002"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            limit: 500,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        switch outcome {
+        case .caughtUp(let cursor):
+            XCTAssertEqual(cursor?.modifiedAt, "2026-04-29T05:00:01.000Z")
+            XCTAssertEqual(cursor?.id, "00000000-0000-4000-8000-000000000002")
+        default: XCTFail("expected .caughtUp(cursor), got \(outcome)")
+        }
+    }
+
+    func testPullHandles401ByCallingOnUnauthorized() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 401, body: Data())))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+
+        let workspaceID = UUID()
+        let unauthorizedExp = expectation(description: "onUnauthorized called")
+        let captured = ActorBox<UUID>()
+        await engine.setOnUnauthorized { id in
+            captured.set(id)
+            unauthorizedExp.fulfill()
+        }
+
+        let snapshot = WorkspaceSnapshot(id: workspaceID, bearer: "stale", localFolder: tmpDir)
+        let tracker = ApplyTracker()
+        let outcome = await engine.pull(
+            workspace: snapshot,
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        await fulfillment(of: [unauthorizedExp], timeout: 2.0)
+        XCTAssertEqual(captured.get(), workspaceID)
+        switch outcome {
+        case .transportError: break
+        default: XCTFail("401 must surface as .transportError, got \(outcome)")
+        }
+    }
+
+    func testPullHandlesTransportErrorGracefully() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.failure(URLError(.notConnectedToInternet)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let captured = ActorBox<UUID>()
+        await engine.setOnUnauthorized { id in captured.set(id) }
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        switch outcome {
+        case .transportError: break
+        default: XCTFail("URLError must surface as .transportError, got \(outcome)")
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(captured.get(), "transport errors must NOT trigger sign-out")
+    }
+
+    func testPullPathTraversalRejected() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"../escape.md","size":3,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"esc"}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        let deletes = await tracker.snapshotDeletes()
+        XCTAssertEqual(writes.count, 0, "../escape.md must be rejected by safeJoin")
+        XCTAssertEqual(deletes.count, 0)
+    }
+
+    func testPullAliveEntryWithoutContentIsSkipped() async throws {
+        let fake = FakeHTTPClient()
+        // Defensive against server bug — alive entries should always carry content
+        // per D1.a; if they don't, helper skips rather than writing empty.
+        let json = """
+        {"files":[{"path":"buggy.md","size":5,"mtime":"2026-04-29T05:00:00.000Z","deleted":false}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        let outcome = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        XCTAssertEqual(writes.count, 0, "alive entry without content must skip applyWrite")
+        // tick still completes cleanly with cursor advanced
+        switch outcome {
+        case .caughtUp: break
+        default: XCTFail("expected .caughtUp despite skip, got \(outcome)")
+        }
+    }
+
+    // MARK: - safeJoin pure-function tests
+
+    func testSafeJoinRejectsAbsolute() {
+        let folder = URL(fileURLWithPath: "/tmp/wks")
+        XCTAssertNil(SyncEngine.safeJoin(folder: folder, relative: "/etc/passwd"))
+    }
+
+    func testSafeJoinRejectsParentEscape() {
+        let folder = URL(fileURLWithPath: "/tmp/wks")
+        XCTAssertNil(SyncEngine.safeJoin(folder: folder, relative: "../escape.md"))
+        XCTAssertNil(SyncEngine.safeJoin(folder: folder, relative: "sub/../../escape.md"))
+    }
+
+    func testSafeJoinAcceptsCleanRelative() {
+        let folder = URL(fileURLWithPath: "/tmp/wks")
+        let target = SyncEngine.safeJoin(folder: folder, relative: "sub/file.md")
+        XCTAssertEqual(target?.path, "/tmp/wks/sub/file.md")
+    }
+}
+
+/// Tracks `applyWrite` / `applyDelete` invocations across the pull burst.
+/// `actor` so we can append from @MainActor closures and snapshot from the
+/// test body without lock dancing.
+private actor ApplyTracker {
+    private var writes: [(URL, String)] = []
+    private var deletes: [URL] = []
+
+    func recordWrite(_ url: URL, _ content: String) {
+        writes.append((url, content))
+    }
+
+    func recordDelete(_ url: URL) {
+        deletes.append(url)
+    }
+
+    func snapshotWrites() -> [(URL, String)] { writes }
+    func snapshotDeletes() -> [URL] { deletes }
 }
 
 /// Sendable, lock-protected single-value box. The `@MainActor` `onUnauthorized`
