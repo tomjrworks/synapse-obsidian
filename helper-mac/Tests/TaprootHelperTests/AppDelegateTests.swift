@@ -192,6 +192,11 @@ final class AppDelegateTests: XCTestCase {
             "Expected URL to end with /api/sync/push, got \(req.url.absoluteString)"
         )
         XCTAssertEqual(req.headers["Authorization"], "Bearer test-bearer")
+
+        // T11.5 commit 3 wires syncStatus around push. Beat for the post-Task
+        // .idle flip to land on MainActor before asserting steady state.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(app.workspaces[0].syncStatus, .idle)
     }
 
     func testHandleFileChangesDropsEventsForUnknownWorkspace() async throws {
@@ -572,6 +577,124 @@ final class AppDelegateTests: XCTestCase {
         // Beta submenu items are pinned to ws2.id.
         XCTAssertEqual(betaSubmenu.items[0].representedObject as? UUID, id2)
         XCTAssertEqual(betaSubmenu.items[3].representedObject as? UUID, id2)
+    }
+
+    func testPullTickFlipsSyncStatusToSyncingThenIdle() async throws {
+        let id = UUID()
+        defer { cleanCursorDefaults(for: id) }
+
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        // One row, no further pages. Drain hits .caughtUp on first iteration.
+        let cursorMtime = "2026-04-29T05:00:00.000Z"
+        let cursorId = "00000000-0000-4000-8000-000000000001"
+        let json = """
+        {"files":[{"path":"hello.md","size":5,"mtime":"\(cursorMtime)","deleted":false,"content":"hello"}],
+         "next_since":"\(cursorMtime)","next_since_id":"\(cursorId)"}
+        """
+        let localFake = FakeHTTPClient()
+        await localFake.setStubbedResponse(.success(HTTPResponse(status: 200, body: Data(json.utf8))))
+
+        let testApp = AppDelegate(services: makeServices(keychain: keychain, httpClient: localFake))
+        testApp.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "test-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        // Capture every status the workspace passes through during the tick.
+        var statusHistory: [SyncStatus] = []
+        testApp.workspaceMutationObserver = { wks in
+            if let s = wks.first(where: { $0.id == id })?.syncStatus {
+                statusHistory.append(s)
+            }
+        }
+
+        XCTAssertEqual(testApp.workspaces[0].syncStatus, .idle, "Pre: idle")
+
+        await testApp.pullTick(workspaceID: id)
+
+        XCTAssertEqual(
+            statusHistory,
+            [.syncing, .idle],
+            "pullTick must flip status .syncing then back to .idle on a clean drain"
+        )
+        XCTAssertEqual(testApp.workspaces[0].syncStatus, .idle, "Post: idle")
+    }
+
+    func testHandleFileChangesFlipsSyncStatusAroundPush() async throws {
+        let id = UUID()
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "test-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        var statusHistory: [SyncStatus] = []
+        app.workspaceMutationObserver = { wks in
+            if let s = wks.first(where: { $0.id == id })?.syncStatus {
+                statusHistory.append(s)
+            }
+        }
+
+        let filePath = folder.appendingPathComponent("note.md")
+        try Data("hello".utf8).write(to: filePath)
+
+        let exp = expectation(description: "http send fired")
+        await fake.setOnSend { exp.fulfill() }
+
+        app.handleFileChanges(
+            workspaceID: id,
+            events: [FileChangeEvent(path: filePath, kind: .created, mtime: nil)]
+        )
+
+        await fulfillment(of: [exp], timeout: 2.0)
+        // Beat for the post-Task .idle flip to land on MainActor.
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(statusHistory, [.syncing, .idle])
+        XCTAssertEqual(app.workspaces[0].syncStatus, .idle)
+    }
+
+    func testPullTickTransportErrorSetsErrorStatus() async throws {
+        let id = UUID()
+        defer { cleanCursorDefaults(for: id) }
+
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let localFake = FakeHTTPClient()
+        await localFake.setStubbedResponse(.success(HTTPResponse(status: 500, body: Data())))
+
+        let testApp = AppDelegate(services: makeServices(keychain: keychain, httpClient: localFake))
+        testApp.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "test-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+
+        await testApp.pullTick(workspaceID: id)
+
+        XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("transport"))
     }
 
     func testRebuildMenuFiresOnSignOut() throws {

@@ -20,6 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// so tests can read but external code can't mutate it. Always non-nil after
     /// the first `rebuildMenu` call (which `applicationDidFinishLaunching` runs).
     private(set) var currentMenu: NSMenu?
+    /// Test seam: fires inside `mutateWorkspaces` after the body runs (and
+    /// before `rebuildMenu`). Receives a snapshot of the post-mutation
+    /// workspaces. Default no-op; tests inject to capture mutation history
+    /// without racing through actor boundaries.
+    var workspaceMutationObserver: ([Workspace]) -> Void = { _ in }
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -88,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// code-review / test catch, not a runtime silent failure.
     func mutateWorkspaces(_ body: (inout [Workspace]) -> Void) {
         body(&workspaces)
+        workspaceMutationObserver(workspaces)
         rebuildMenu()
     }
 
@@ -354,8 +360,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bearer: workspace.bearer,
             localFolder: workspace.localFolder
         )
-        Task { [syncEngine] in
+        mutateWorkspaces { wks in
+            if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
+                wks[i].syncStatus = .syncing
+            }
+        }
+        // Always-flip to .idle after push: SyncEngine.push is fire-and-forget
+        // at Stage 1 (transport failures NSLog + drop). Surfacing them as
+        // .error here would require a SyncEngine.push return-type change —
+        // deferred per Decision 2.
+        Task { @MainActor [weak self, syncEngine] in
             await syncEngine.push(workspace: snapshot, events: events)
+            self?.mutateWorkspaces { wks in
+                if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
+                    wks[i].syncStatus = .idle
+                }
+            }
         }
     }
 
@@ -401,11 +421,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bearer: workspace.bearer,
             localFolder: workspace.localFolder
         )
+        mutateWorkspaces { wks in
+            if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
+                wks[i].syncStatus = .syncing
+            }
+        }
         let watcher = watchers[workspaceID]
         watcher?.stop()
 
         var cursor = pullCursors[workspaceID]
         var pageCount = 0
+        var terminalStatus: SyncStatus = .idle
         drainLoop: while pageCount < Self.maxDrainPagesPerTick {
             let outcome = await syncEngine.pull(
                 workspace: snapshot,
@@ -425,7 +451,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .morePages(let next):
                 cursor = next
             case .transportError:
-                // Cursor unchanged; bail out for this tick.
+                // Cursor unchanged; bail out for this tick. Surface as error
+                // so the menubar icon flips and the menu shows last-error.
+                terminalStatus = .error("transport")
                 break drainLoop
             }
         }
@@ -435,6 +463,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             persistCursor(cursor, for: workspaceID)
         }
         watcher?.start()
+
+        mutateWorkspaces { wks in
+            if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
+                wks[i].syncStatus = terminalStatus
+            }
+        }
 
         if pageCount >= Self.maxDrainPagesPerTick {
             NSLog("[Taproot] pullTick: hit D5 cap (\(Self.maxDrainPagesPerTick) pages); next tick will continue draining workspace \(workspaceID.uuidString)")
