@@ -152,8 +152,8 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       }
 
       // Sequential ops: predictable Supabase backpressure, isolatable
-      // per-op failures. T11.4 will revisit batching shape once the pull
-      // engine lands.
+      // per-op failures. Stage 1 keeps sequential — revisit if push-side
+      // throughput surfaces a need.
       const results: PushResultEntry[] = [];
       for (const op of parsed.data.ops) {
         try {

@@ -106,7 +106,9 @@ struct WorkspaceSnapshot: Sendable {
 ///   the Task body never reads actor-isolated state — that would require
 ///   `await self.onUnauthorized` and was the §3.3 contradiction the plan caught.
 ///
-/// Stage 1 semantics: log + drop on transport failure; T11.4 owns retries/queue.
+/// Stage 1 semantics: log + drop on transport failure; eventual consistency
+/// via the next pull tick / FSEvent. Retry/queue layer deferred — add only if
+/// telemetry shows transport-loss matters in practice.
 actor SyncEngine {
     private let httpClient: HTTPClient
     private let baseURL: URL
@@ -170,7 +172,7 @@ actor SyncEngine {
                 NSLog("[Taproot] push: HTTP \(response.status) body=\(bodyStr.prefix(200))")
             }
         } catch {
-            NSLog("[Taproot] push: transport error: \(error) — Stage 1 drop, T11.4 retries")
+            NSLog("[Taproot] push: transport error: \(error) — drop, eventual consistency via next FSEvent")
         }
     }
 
