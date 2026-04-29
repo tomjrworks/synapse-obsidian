@@ -13,12 +13,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Internal access so tests can verify watcher lifecycle.
     var watchers: [UUID: WorkspaceWatcher] = [:]
     private let services: Services
+    /// Internal access so tests can drive push-side wire-in checks.
+    let syncEngine: SyncEngine
 
     /// `nonisolated` so `main.swift` (top-level synchronous code, no actor)
     /// and tests can construct AppDelegate without `await`. The init only stores
     /// a value-type ref; mutating methods + property access stay `@MainActor`.
     nonisolated init(services: Services = .production()) {
         self.services = services
+        self.syncEngine = SyncEngine(httpClient: services.httpClient, baseURL: services.baseURL)
         super.init()
     }
 
@@ -41,6 +44,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         loadWorkspacesFromKeychain()
+        // Wire SyncEngine's 401 callback to AppDelegate.signOut. `[weak self]`
+        // because the engine outlives a notional teardown, and we don't want
+        // its callback to keep AppDelegate alive past app shutdown.
+        Task { [weak self] in
+            await self?.syncEngine.setOnUnauthorized { [weak self] id in
+                self?.signOut(workspaceID: id)
+            }
+        }
         startAllWatchers()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -65,7 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     id: id,
                     name: "Workspace",
                     bearer: bearer,
-                    localFolder: defaultLocalFolder(for: id),
+                    // §5: resolve symlinks so prefix-comparison in SyncEngine.toOp
+                    // matches WorkspaceWatcher's already-canonicalized event paths.
+                    localFolder: defaultLocalFolder(for: id).resolvingSymlinksInPath(),
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
@@ -78,9 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func defaultLocalFolder(for workspaceID: UUID) -> URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        // `TAPROOT_LOCAL_FOLDER_BASE` is a smoke-test seam (T11.3 §7); inert in
+        // production unless set, in which case the base directory is rooted
+        // wherever the smoke driver chose. Always logged at launch via the
+        // surrounding callers' workspace-load NSLog.
+        let base = ProcessInfo.processInfo.environment["TAPROOT_LOCAL_FOLDER_BASE"]
+            .flatMap { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        return docs.appendingPathComponent("Taproot/\(workspaceID.uuidString)")
+        return base.appendingPathComponent("Taproot/\(workspaceID.uuidString)")
     }
 
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
@@ -106,7 +125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     id: link.workspaceID,
                     name: "Workspace",
                     bearer: link.bearer,
-                    localFolder: defaultLocalFolder(for: link.workspaceID),
+                    // §5: resolve symlinks (see loadWorkspacesFromKeychain).
+                    localFolder: defaultLocalFolder(for: link.workspaceID).resolvingSymlinksInPath(),
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
@@ -158,9 +178,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaces.forEach { startWatcher(for: $0) }
     }
 
-    /// T11.2 stops here — log only. T11.3 will route these to the HTTP push client.
-    private func handleFileChanges(workspaceID: UUID, events: [FileChangeEvent]) {
+    /// Routes batched file change events to `SyncEngine.push`. Internal access
+    /// so tests can drive the wire-in directly without spinning up a real watcher.
+    ///
+    /// In-flight push during signOut is NOT cancelled. Idempotency analysis lives
+    /// in the T11.3 plan §4: the 401-fired re-entrant `signOut` is safe because
+    /// `KeychainStore.delete` tolerates `errSecItemNotFound`, watchers dict lookup
+    /// is optional, and `workspaces.removeAll` no-ops on empty match.
+    func handleFileChanges(workspaceID: UUID, events: [FileChangeEvent]) {
         NSLog("[Taproot] Watcher fired for \(workspaceID.uuidString): \(events.count) event(s)")
+        guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else {
+            NSLog("[Taproot] Dropping events for unknown workspace \(workspaceID.uuidString)")
+            return
+        }
+        let snapshot = WorkspaceSnapshot(
+            id: workspace.id,
+            bearer: workspace.bearer,
+            localFolder: workspace.localFolder
+        )
+        Task { [syncEngine] in
+            await syncEngine.push(workspace: snapshot, events: events)
+        }
     }
 
     @objc private func quit() {
