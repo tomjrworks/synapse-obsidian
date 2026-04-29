@@ -16,20 +16,18 @@
  * Run: tsx scripts/test-mcp-end-to-end.ts
  *   Requires: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TAPROOT_KEK in env.
  */
-import { createClient } from "@supabase/supabase-js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { nukeWorkspace } from "../src/utils/supabase-mirror.js";
-
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import {
+  provisionTenant,
+  obtainBearer,
+  waitForHealth,
+  sb,
+  type Tenant,
+} from "./lib/test-fixtures.js";
 
 let pass = 0;
 let fail = 0;
@@ -49,85 +47,6 @@ function check(name: string, ok: boolean, detail?: unknown) {
 const PORT = 3880;
 const BASE = `http://localhost:${PORT}`;
 const PASSWORD = "t6-4-pw-12345";
-
-interface Tenant {
-  email: string;
-  userId: string;
-  workspaceId: string;
-}
-
-async function provisionTenant(suffix: string): Promise<Tenant> {
-  const email = `t6-4-${suffix}-${Date.now()}@taproot-test.local`;
-  const { data: userData, error: userErr } = await sb.auth.admin.createUser({
-    email,
-    password: PASSWORD,
-    email_confirm: true,
-  });
-  if (userErr || !userData.user) throw userErr ?? new Error("no user");
-  const userId = userData.user.id;
-  const wrappedParam = `\\x${wrapDek(generateDek()).toString("hex")}`;
-  const { data: ws, error: wsErr } = await sb.rpc(
-    "create_workspace_for_new_user",
-    {
-      p_user_id: userId,
-      p_workspace_name: `t6-4-${suffix}`,
-      p_wrapped_dek: wrappedParam,
-    },
-  );
-  if (wsErr) throw wsErr;
-  return { email, userId, workspaceId: ws as string };
-}
-
-async function obtainBearer(email: string): Promise<string> {
-  const reg = await fetch(`${BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: `t6-4-client-${email}`,
-      redirect_uris: ["http://localhost/oauth/callback"],
-    }),
-  });
-  const { client_id } = await reg.json();
-  const codeVerifier = randomBytes(32).toString("base64url");
-  const codeChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
-  const authForm = new URLSearchParams({
-    client_id,
-    redirect_uri: "http://localhost/oauth/callback",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    state: "t6-4",
-    email,
-    password: PASSWORD,
-  });
-  const authRes = await fetch(`${BASE}/authorize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: authForm.toString(),
-    redirect: "manual",
-  });
-  if (authRes.status !== 302) {
-    throw new Error(`/authorize ${authRes.status}: ${await authRes.text()}`);
-  }
-  const code = new URL(authRes.headers.get("location") ?? "").searchParams.get(
-    "code",
-  );
-  const tokenForm = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: code ?? "",
-    redirect_uri: "http://localhost/oauth/callback",
-    client_id,
-    code_verifier: codeVerifier,
-  });
-  const tokenRes = await fetch(`${BASE}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: tokenForm.toString(),
-  });
-  const { access_token } = await tokenRes.json();
-  return access_token;
-}
 
 async function plant(bearer: string, path: string, content: string) {
   return mcpCall(bearer, "tools/call", {
@@ -170,27 +89,16 @@ async function mcpCall(
   }
 }
 
-async function waitForHealth(timeoutMs = 8000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      if ((await fetch(`${BASE}/health`)).ok) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
-}
-
 let serverProc: ChildProcess | null = null;
 let tmpVault: string | null = null;
 const tenants: Tenant[] = [];
 
 try {
   console.log("\n→ Provisioning two independent tenants");
-  const A = await provisionTenant("A");
+  const A = await provisionTenant({ testName: "t6-4", suffix: "A" });
   tenants.push(A);
   check("tenant A provisioned", typeof A.workspaceId === "string");
-  const B = await provisionTenant("B");
+  const B = await provisionTenant({ testName: "t6-4", suffix: "B" });
   tenants.push(B);
   check("tenant B provisioned", typeof B.workspaceId === "string");
   check(
@@ -210,15 +118,29 @@ try {
   const logs: string[] = [];
   serverProc.stdout?.on("data", (d) => logs.push(`[stdout] ${d}`));
   serverProc.stderr?.on("data", (d) => logs.push(`[stderr] ${d}`));
-  if (!(await waitForHealth())) {
+  if (!(await waitForHealth(BASE))) {
     console.error(logs.slice(-20).join(""));
     throw new Error("server boot failed");
   }
   check("server up at /health", true);
 
   console.log("\n→ Obtain bearers via independent OAuth handshakes");
-  const bearerA = await obtainBearer(A.email);
-  const bearerB = await obtainBearer(B.email);
+  const bearerA = (
+    await obtainBearer({
+      baseUrl: BASE,
+      email: A.email,
+      password: PASSWORD,
+      testName: "t6-4",
+    })
+  ).bearer;
+  const bearerB = (
+    await obtainBearer({
+      baseUrl: BASE,
+      email: B.email,
+      password: PASSWORD,
+      testName: "t6-4",
+    })
+  ).bearer;
   check(
     "bearers issued for both tenants",
     bearerA.length > 0 && bearerB.length > 0,

@@ -12,9 +12,7 @@
  * Run: tsx scripts/test-mcp-routing.ts
  *   Requires: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TAPROOT_KEK in env.
  */
-import { createClient } from "@supabase/supabase-js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,12 +20,7 @@ import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { SupabaseEncryptedMirrorBackend } from "../src/utils/supabase-mirror.js";
 import { clearAll as clearBackendCache } from "../src/utils/backend-cache.js";
 import { nukeWorkspace } from "../src/utils/supabase-mirror.js";
-
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import { obtainBearer, waitForHealth, sb } from "./lib/test-fixtures.js";
 
 let pass = 0;
 let fail = 0;
@@ -52,91 +45,6 @@ let userId: string | null = null;
 let workspaceId: string | null = null;
 let serverProc: ChildProcess | null = null;
 let tmpVault: string | null = null;
-
-async function waitForHealth(url: string, timeoutMs = 8000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const r = await fetch(`${url}/health`);
-      if (r.ok) return true;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
-}
-
-// OAuth 2.1 + PKCE handshake against the running server. Mirrors what
-// claude.ai does in production. /authorize POSTs email + password against
-// Supabase Auth (T6.2); /token mints a workspace-bound bearer.
-async function obtainBearer(): Promise<string> {
-  // 1. /register — dynamic client registration
-  const reg = await fetch(`${BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "t6-1-smoke-client",
-      redirect_uris: ["http://localhost/oauth/callback"],
-    }),
-  });
-  if (!reg.ok) throw new Error(`/register failed: ${reg.status}`);
-  const { client_id } = await reg.json();
-
-  // 2. PKCE pair
-  const codeVerifier = randomBytes(32).toString("base64url");
-  const codeChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
-
-  // 3. /authorize — POST the form directly (skip the HTML render).
-  // Server returns a 302 with `code` in the redirect URL.
-  const authForm = new URLSearchParams({
-    client_id,
-    redirect_uri: "http://localhost/oauth/callback",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    state: "t6-1-state",
-    email: testEmail,
-    password: TEST_USER_PASSWORD,
-  });
-  const authRes = await fetch(`${BASE}/authorize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: authForm.toString(),
-    redirect: "manual",
-  });
-  if (authRes.status !== 302) {
-    const body = await authRes.text();
-    throw new Error(
-      `/authorize expected 302, got ${authRes.status}: ${body.slice(0, 200)}`,
-    );
-  }
-  const location = authRes.headers.get("location") ?? "";
-  const code = new URL(location).searchParams.get("code");
-  if (!code) throw new Error(`/authorize redirect missing code: ${location}`);
-
-  // 4. /token — exchange code for bearer
-  const tokenForm = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: "http://localhost/oauth/callback",
-    client_id,
-    code_verifier: codeVerifier,
-  });
-  const tokenRes = await fetch(`${BASE}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: tokenForm.toString(),
-  });
-  if (!tokenRes.ok) {
-    const body = await tokenRes.text();
-    throw new Error(`/token failed ${tokenRes.status}: ${body.slice(0, 200)}`);
-  }
-  const { access_token } = await tokenRes.json();
-  if (!access_token) throw new Error(`/token returned no access_token`);
-  return access_token;
-}
 
 let bearer = "";
 
@@ -231,7 +139,12 @@ try {
 
   console.log("\n→ OAuth handshake (register → authorize → token)");
 
-  bearer = await obtainBearer();
+  ({ bearer } = await obtainBearer({
+    baseUrl: BASE,
+    email: testEmail,
+    password: TEST_USER_PASSWORD,
+    testName: "t6-1-smoke",
+  }));
   check("bearer token obtained via OAuth + PKCE", bearer.length > 0);
 
   // Negative: missing bearer should 401 (proves the gate is on)

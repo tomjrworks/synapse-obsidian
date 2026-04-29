@@ -15,20 +15,14 @@
  * Run: tsx scripts/test-oauth-tokens.ts
  *   Requires: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TAPROOT_KEK in env.
  */
-import { createClient } from "@supabase/supabase-js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { nukeWorkspace } from "../src/utils/supabase-mirror.js";
-
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import { obtainBearer, waitForHealth, sb } from "./lib/test-fixtures.js";
 
 let pass = 0;
 let fail = 0;
@@ -54,74 +48,8 @@ let workspaceId: string | null = null;
 let serverProc: ChildProcess | null = null;
 let tmpVault: string | null = null;
 
-async function waitForHealth(url: string, timeoutMs = 8000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const r = await fetch(`${url}/health`);
-      if (r.ok) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
-}
-
 function tokenHashHex(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-async function obtainBearer(): Promise<{
-  bearer: string;
-  clientId: string;
-}> {
-  const reg = await fetch(`${BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "t6-3-smoke-client",
-      redirect_uris: ["http://localhost/oauth/callback"],
-    }),
-  });
-  const { client_id } = await reg.json();
-  const codeVerifier = randomBytes(32).toString("base64url");
-  const codeChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
-  const authForm = new URLSearchParams({
-    client_id,
-    redirect_uri: "http://localhost/oauth/callback",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    state: "t6-3-state",
-    email: testEmail,
-    password: TEST_USER_PASSWORD,
-  });
-  const authRes = await fetch(`${BASE}/authorize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: authForm.toString(),
-    redirect: "manual",
-  });
-  if (authRes.status !== 302) {
-    throw new Error(`/authorize ${authRes.status}: ${await authRes.text()}`);
-  }
-  const code = new URL(authRes.headers.get("location") ?? "").searchParams.get(
-    "code",
-  );
-  const tokenForm = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: code ?? "",
-    redirect_uri: "http://localhost/oauth/callback",
-    client_id,
-    code_verifier: codeVerifier,
-  });
-  const tokenRes = await fetch(`${BASE}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: tokenForm.toString(),
-  });
-  const { access_token } = await tokenRes.json();
-  return { bearer: access_token, clientId: client_id };
 }
 
 async function mcpInitWithBearer(bearer: string): Promise<number> {
@@ -196,7 +124,12 @@ try {
   check("server up at /health", true);
 
   console.log("\n→ Mint a bearer via OAuth handshake");
-  const { bearer, clientId } = await obtainBearer();
+  const { bearer, clientId } = await obtainBearer({
+    baseUrl: BASE,
+    email: testEmail,
+    password: TEST_USER_PASSWORD,
+    testName: "t6-3-smoke",
+  });
   check("bearer obtained via /authorize + /token", bearer.length > 0);
 
   console.log("\n→ DB invariants on oauth_clients + oauth_tokens");
@@ -211,7 +144,7 @@ try {
   check(
     "oauth_clients row UPSERTed for workspace + client_id",
     clientRow?.workspace_id === workspaceId &&
-      clientRow?.client_name === "t6-3-smoke-client",
+      clientRow?.client_name === `t6-3-smoke-client-${testEmail}`,
     clientRow,
   );
   check(
@@ -302,7 +235,12 @@ try {
 
   // Mint a second bearer so we can test /revoke against a live token
   // without depending on the manually-revoked one above.
-  const { bearer: bearer2 } = await obtainBearer();
+  const { bearer: bearer2 } = await obtainBearer({
+    baseUrl: BASE,
+    email: testEmail,
+    password: TEST_USER_PASSWORD,
+    testName: "t6-3-smoke",
+  });
   const liveBefore = await mcpInitWithBearer(bearer2);
   check("/mcp with second bearer → 200 (live)", liveBefore === 200, liveBefore);
 

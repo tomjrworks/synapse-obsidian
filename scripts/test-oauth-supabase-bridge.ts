@@ -10,7 +10,6 @@
  * Run: tsx scripts/test-oauth-supabase-bridge.ts
  *   Requires: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TAPROOT_KEK in env.
  */
-import { createClient } from "@supabase/supabase-js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,12 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { nukeWorkspace } from "../src/utils/supabase-mirror.js";
-
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+import { waitForHealth, sb } from "./lib/test-fixtures.js";
 
 let pass = 0;
 let fail = 0;
@@ -48,20 +42,6 @@ let userId: string | null = null;
 let workspaceId: string | null = null;
 let serverProc: ChildProcess | null = null;
 let tmpVault: string | null = null;
-
-async function waitForHealth(url: string, timeoutMs = 8000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const r = await fetch(`${url}/health`);
-      if (r.ok) return true;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
-}
 
 async function registerClient(): Promise<string> {
   const reg = await fetch(`${BASE}/register`, {

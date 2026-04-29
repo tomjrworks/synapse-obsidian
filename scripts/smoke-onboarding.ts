@@ -13,19 +13,13 @@
  * Prereqs: server running at TAPROOT_BASE_URL (default http://localhost:3779),
  * env loaded with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY + TAPROOT_KEK.
  */
-import { createClient } from "@supabase/supabase-js";
-import { createHash, randomBytes } from "node:crypto";
 import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { obtainBearer, sb } from "./lib/test-fixtures.js";
 
 const BASE = process.env.TAPROOT_BASE_URL ?? "http://localhost:3779";
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
 
 let pass = 0;
 let fail = 0;
@@ -339,54 +333,16 @@ async function http(
   const wowPath: string = firstWow.json.path;
   const wowText = "Tom prefers Discord over Telegram for notifications.";
 
-  const reg = await fetch(`${BASE}/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "smoke-first-wow-cross-flow",
-      redirect_uris: ["http://localhost/oauth/callback"],
-    }),
-  });
-  const { client_id } = (await reg.json()) as { client_id: string };
-  const codeVerifier = randomBytes(32).toString("base64url");
-  const codeChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
-  const authForm = new URLSearchParams({
-    client_id,
-    redirect_uri: "http://localhost/oauth/callback",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    state: "first-wow-cross-flow",
+  const { bearer: access_token } = await obtainBearer({
+    baseUrl: BASE,
     email: testEmail,
     password: testPassword,
+    testName: "first-wow-cross-flow",
   });
-  const authRes = await fetch(`${BASE}/authorize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: authForm.toString(),
-    redirect: "manual",
-  });
-  const authCode = new URL(
-    authRes.headers.get("location") ?? "",
-  ).searchParams.get("code");
-  const tokenForm = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: authCode ?? "",
-    redirect_uri: "http://localhost/oauth/callback",
-    client_id,
-    code_verifier: codeVerifier,
-  });
-  const tokenRes = await fetch(`${BASE}/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: tokenForm.toString(),
-  });
-  const { access_token } = (await tokenRes.json()) as { access_token: string };
   check(
     "OAuth bearer obtained for same workspace via /authorize + /token",
     typeof access_token === "string" && access_token.length > 10,
-    { authStatus: authRes.status, tokenStatus: tokenRes.status },
+    { tokenLen: access_token?.length ?? 0 },
   );
 
   const mcpRes = await fetch(`${BASE}/mcp`, {
