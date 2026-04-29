@@ -39,9 +39,7 @@
     "ai",
     "claude",
     "synapse",
-    "notes",
-    "google-drive",
-    "second-brain"
+    "notes"
   ],
   "license": "MIT",
   "author": "Taproot",

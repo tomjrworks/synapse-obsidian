@@ -77,7 +77,7 @@ async function http(
   );
   if (ping.status !== 200) {
     console.error(
-      `\nServer not reachable. Start it with:\n  set -a && source .env && set +a && SYNAPSE_PASSWORD=devpw npx tsx src/index.ts <vault> --http --port 3779`,
+      `\nServer not reachable. Start it with:\n  set -a && source .env && set +a && npx tsx src/index.ts <vault> --http --port 3779`,
     );
     process.exit(2);
   }
