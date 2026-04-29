@@ -74,18 +74,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startAllWatchers()
         startAllPullPollers()
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = item.button {
-            button.image = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Taproot")
-        }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        rebuildMenu()
+    }
 
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Taproot Helper (placeholder)", action: nil, keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
-        item.menu = menu
-
-        statusItem = item
+    /// Projects current `workspaces` state onto the menubar icon + dropdown.
+    /// Commit 2 wires `mutateWorkspaces` to call this after every mutation.
+    /// Safe when `statusItem == nil` (tests construct AppDelegate without
+    /// ever realizing the NSStatusItem).
+    func rebuildMenu() {
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: statusIconName(for: workspaces),
+            accessibilityDescription: "Taproot"
+        )
+        statusItem?.menu = buildMenu(for: workspaces)
     }
 
     func loadWorkspacesFromKeychain() {
@@ -189,6 +191,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
         }
+    }
+
+    // MARK: - T11.5 menu construction
+
+    /// Pure presentation: builds the menubar menu given the current workspaces.
+    /// Internal access so tests can drive `[Workspace] -> NSMenu` without
+    /// instantiating NSStatusBar / NSStatusItem (which is unavailable in
+    /// headless XCTest). Side-effect-free.
+    func buildMenu(for workspaces: [Workspace]) -> NSMenu {
+        let menu = NSMenu()
+        if workspaces.isEmpty {
+            let label = NSMenuItem(title: "Not signed in", action: nil, keyEquivalent: "")
+            label.isEnabled = false
+            menu.addItem(label)
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+            return menu
+        }
+        if workspaces.count == 1 {
+            // Flat layout: name acts as a section header above the actions.
+            let nameLabel = NSMenuItem(title: workspaces[0].name, action: nil, keyEquivalent: "")
+            nameLabel.isEnabled = false
+            menu.addItem(nameLabel)
+            appendActionItems(for: workspaces[0], to: menu)
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+            return menu
+        }
+        // Nested layout: top-level row per workspace; actions live in submenu.
+        for workspace in workspaces {
+            let row = NSMenuItem(title: workspace.name, action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            appendActionItems(for: workspace, to: submenu)
+            row.submenu = submenu
+            menu.addItem(row)
+        }
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        return menu
+    }
+
+    /// SF Symbol name for the menubar icon. Worst-status precedence:
+    /// `.error > .syncing > .paused > .idle`. `[]` and all-idle render the
+    /// default `leaf.fill`.
+    func statusIconName(for workspaces: [Workspace]) -> String {
+        if workspaces.contains(where: { if case .error = $0.syncStatus { return true } else { return false } }) {
+            return "exclamationmark.triangle.fill"
+        }
+        if workspaces.contains(where: { $0.syncStatus == .syncing }) {
+            return "arrow.triangle.2.circlepath"
+        }
+        if workspaces.contains(where: { $0.syncStatus == .paused }) {
+            return "pause.fill"
+        }
+        return "leaf.fill"
+    }
+
+    /// Adds the 4 per-workspace action items (Open vault folder, Pause sync,
+    /// Settings…, Sign out) to `menu`. Used by both flat and nested layouts.
+    private func appendActionItems(for workspace: Workspace, to menu: NSMenu) {
+        let openFolder = NSMenuItem(
+            title: "Open vault folder",
+            action: #selector(menuOpenVaultFolder(_:)),
+            keyEquivalent: ""
+        )
+        openFolder.target = self
+        openFolder.representedObject = workspace.id
+        menu.addItem(openFolder)
+
+        let pauseSync = NSMenuItem(
+            title: "Pause sync",
+            action: #selector(menuTogglePauseSync(_:)),
+            keyEquivalent: ""
+        )
+        pauseSync.target = self
+        pauseSync.representedObject = workspace.id
+        menu.addItem(pauseSync)
+
+        // TODO T11.6: enable when settings window lands.
+        let settings = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: "")
+        settings.isEnabled = false
+        menu.addItem(settings)
+
+        let signOut = NSMenuItem(
+            title: "Sign out",
+            action: #selector(menuSignOut(_:)),
+            keyEquivalent: ""
+        )
+        signOut.target = self
+        signOut.representedObject = workspace.id
+        menu.addItem(signOut)
+    }
+
+    @objc func menuOpenVaultFolder(_ sender: NSMenuItem) {
+        // Wired in Commit 4.
+    }
+
+    @objc func menuTogglePauseSync(_ sender: NSMenuItem) {
+        // Wired in Commit 4.
+    }
+
+    @objc func menuSignOut(_ sender: NSMenuItem) {
+        // Wired in Commit 4.
     }
 
     // MARK: - Watcher lifecycle

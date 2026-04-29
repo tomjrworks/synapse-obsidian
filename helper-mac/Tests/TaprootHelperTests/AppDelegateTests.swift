@@ -466,4 +466,148 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertTrue(testApp.watchers.isEmpty)
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
     }
+
+    // MARK: - T11.5 menu builder tests
+
+    func testBuildMenuShowsNotSignedInForZeroWorkspaces() {
+        let menu = app.buildMenu(for: [])
+
+        XCTAssertEqual(menu.items.count, 3, "Zero-workspace menu shape: [Not signed in, separator, Quit]")
+
+        let label = menu.items[0]
+        XCTAssertEqual(label.title, "Not signed in")
+        XCTAssertFalse(label.isEnabled, "'Not signed in' is a disabled label, not a clickable action")
+
+        XCTAssertTrue(menu.items[1].isSeparatorItem)
+
+        XCTAssertEqual(menu.items[2].title, "Quit")
+    }
+
+    func testBuildMenuFlatLayoutForSingleWorkspace() throws {
+        let id = UUID()
+        let workspace = Workspace(
+            id: id,
+            name: "WS",
+            bearer: "b",
+            localFolder: URL(fileURLWithPath: "/tmp/ws"),
+            lastSyncAt: nil,
+            syncStatus: .idle
+        )
+
+        let menu = app.buildMenu(for: [workspace])
+
+        // Shape: [name (disabled), Open vault folder, Pause sync, Settings… (disabled),
+        //         Sign out, separator, Quit] = 7 items.
+        XCTAssertEqual(menu.items.count, 7)
+
+        XCTAssertEqual(menu.items[0].title, "WS")
+        XCTAssertFalse(menu.items[0].isEnabled, "Workspace name row is a disabled label")
+
+        let openFolder = menu.items[1]
+        XCTAssertEqual(openFolder.title, "Open vault folder")
+        XCTAssertEqual(openFolder.representedObject as? UUID, id)
+
+        let pauseSync = menu.items[2]
+        XCTAssertEqual(pauseSync.title, "Pause sync")
+        XCTAssertEqual(pauseSync.representedObject as? UUID, id)
+
+        let settings = menu.items[3]
+        XCTAssertEqual(settings.title, "Settings…")
+        XCTAssertFalse(settings.isEnabled, "Settings… is disabled until T11.6 lands")
+
+        let signOut = menu.items[4]
+        XCTAssertEqual(signOut.title, "Sign out")
+        XCTAssertEqual(signOut.representedObject as? UUID, id)
+
+        XCTAssertTrue(menu.items[5].isSeparatorItem)
+
+        XCTAssertEqual(menu.items[6].title, "Quit")
+    }
+
+    func testBuildMenuNestedLayoutForTwoWorkspaces() throws {
+        let id1 = UUID()
+        let id2 = UUID()
+        let ws1 = Workspace(
+            id: id1,
+            name: "Alpha",
+            bearer: "b1",
+            localFolder: URL(fileURLWithPath: "/tmp/a"),
+            lastSyncAt: nil,
+            syncStatus: .idle
+        )
+        let ws2 = Workspace(
+            id: id2,
+            name: "Beta",
+            bearer: "b2",
+            localFolder: URL(fileURLWithPath: "/tmp/b"),
+            lastSyncAt: nil,
+            syncStatus: .idle
+        )
+
+        let menu = app.buildMenu(for: [ws1, ws2])
+
+        // Nested shape: [ws1 > submenu, ws2 > submenu, separator, Quit] = 4 items.
+        XCTAssertEqual(menu.items.count, 4)
+
+        XCTAssertEqual(menu.items[0].title, "Alpha")
+        let alphaSubmenu = try XCTUnwrap(menu.items[0].submenu)
+        XCTAssertEqual(menu.items[1].title, "Beta")
+        let betaSubmenu = try XCTUnwrap(menu.items[1].submenu)
+
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+        XCTAssertEqual(menu.items[3].title, "Quit")
+
+        // Each submenu carries the 4 per-workspace actions, no name-label
+        // (the top-level row already labels which workspace).
+        XCTAssertEqual(alphaSubmenu.items.count, 4)
+        XCTAssertEqual(alphaSubmenu.items[0].title, "Open vault folder")
+        XCTAssertEqual(alphaSubmenu.items[0].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[1].title, "Pause sync")
+        XCTAssertEqual(alphaSubmenu.items[1].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[2].title, "Settings…")
+        XCTAssertFalse(alphaSubmenu.items[2].isEnabled)
+        XCTAssertEqual(alphaSubmenu.items[3].title, "Sign out")
+        XCTAssertEqual(alphaSubmenu.items[3].representedObject as? UUID, id1)
+
+        // Beta submenu items are pinned to ws2.id.
+        XCTAssertEqual(betaSubmenu.items[0].representedObject as? UUID, id2)
+        XCTAssertEqual(betaSubmenu.items[3].representedObject as? UUID, id2)
+    }
+
+    func testStatusIconPrecedence() {
+        func ws(_ status: SyncStatus) -> Workspace {
+            Workspace(
+                id: UUID(),
+                name: "WS",
+                bearer: "b",
+                localFolder: URL(fileURLWithPath: "/tmp/ws"),
+                lastSyncAt: nil,
+                syncStatus: status
+            )
+        }
+
+        // Empty + all-idle → leaf.
+        XCTAssertEqual(app.statusIconName(for: []), "leaf.fill")
+        XCTAssertEqual(app.statusIconName(for: [ws(.idle)]), "leaf.fill")
+        XCTAssertEqual(app.statusIconName(for: [ws(.idle), ws(.idle)]), "leaf.fill")
+
+        // .paused beats .idle.
+        XCTAssertEqual(app.statusIconName(for: [ws(.idle), ws(.paused)]), "pause.fill")
+
+        // .syncing beats .paused + .idle.
+        XCTAssertEqual(
+            app.statusIconName(for: [ws(.paused), ws(.syncing), ws(.idle)]),
+            "arrow.triangle.2.circlepath"
+        )
+
+        // .error beats everything.
+        XCTAssertEqual(
+            app.statusIconName(for: [ws(.syncing), ws(.error("transport"))]),
+            "exclamationmark.triangle.fill"
+        )
+        XCTAssertEqual(
+            app.statusIconName(for: [ws(.paused), ws(.error("x")), ws(.syncing), ws(.idle)]),
+            "exclamationmark.triangle.fill"
+        )
+    }
 }
