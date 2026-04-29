@@ -25,6 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// workspaces. Default no-op; tests inject to capture mutation history
     /// without racing through actor boundaries.
     var workspaceMutationObserver: ([Workspace]) -> Void = { _ in }
+    /// Confirmation gate for menu-driven sign-out. Returns true to proceed,
+    /// false to cancel. Default: modal NSAlert with consequence text. Tests
+    /// inject a stub returning true / false to drive both paths without an
+    /// interactive run-loop. The 401 callback path bypasses this entirely
+    /// (forced sign-out).
+    var confirmSignOut: (Workspace) -> Bool = { workspace in
+        let alert = NSAlert()
+        alert.messageText = "Sign out of \(workspace.name)?"
+        alert.informativeText = "This disconnects from Taproot. Your local files stay on disk. You'll need to re-authenticate to resume sync."
+        alert.addButton(withTitle: "Sign out")
+        alert.addButton(withTitle: "Cancel")
+        // LSUIElement apps render alerts unfocused without an explicit
+        // activation — defeats the point of confirmation.
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -195,12 +211,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Stub for T11.5 menubar UI. Removes the Keychain entry + in-memory record.
+    /// Performs the destructive sign-out work without confirmation. The menu
+    /// path wraps this in `confirmSignOut` (NSAlert); the 401 callback path
+    /// calls it directly because that path is already a forced sign-out.
     /// Stop the poller AND the watcher BEFORE the do-block so a Keychain throw
     /// can't leave a running poller/watcher attached to a workspace we're
     /// trying to delete. Cancel poller first so an in-flight tick can't race
     /// a final pull through a stopped watcher.
-    func signOut(workspaceID: UUID) {
+    func performSignOut(workspaceID: UUID) {
         stopPullPoller(for: workspaceID)
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
@@ -213,6 +231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
         }
+    }
+
+    /// Thin wrapper preserved for existing test surfaces + the 401 callback.
+    /// Equivalent to `performSignOut`.
+    func signOut(workspaceID: UUID) {
+        performSignOut(workspaceID: workspaceID)
     }
 
     // MARK: - T11.5 menu construction
@@ -270,8 +294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "leaf.fill"
     }
 
-    /// Adds the 4 per-workspace action items (Open vault folder, Pause sync,
-    /// Settings…, Sign out) to `menu`. Used by both flat and nested layouts.
+    /// Adds the 4 per-workspace action items (Open vault folder, Pause/Resume
+    /// sync, Settings…, Sign out) plus an optional "Last error" row to `menu`.
+    /// Used by both flat and nested layouts.
     private func appendActionItems(for workspace: Workspace, to menu: NSMenu) {
         let openFolder = NSMenuItem(
             title: "Open vault folder",
@@ -282,8 +307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openFolder.representedObject = workspace.id
         menu.addItem(openFolder)
 
+        let pauseTitle = workspace.syncStatus == .paused ? "Resume sync" : "Pause sync"
         let pauseSync = NSMenuItem(
-            title: "Pause sync",
+            title: pauseTitle,
             action: #selector(menuTogglePauseSync(_:)),
             keyEquivalent: ""
         )
@@ -304,18 +330,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signOut.target = self
         signOut.representedObject = workspace.id
         menu.addItem(signOut)
+
+        if case let .error(msg) = workspace.syncStatus {
+            let errorItem = NSMenuItem(title: "Last error: \(msg)", action: nil, keyEquivalent: "")
+            errorItem.isEnabled = false
+            menu.addItem(errorItem)
+        }
     }
 
     @objc func menuOpenVaultFolder(_ sender: NSMenuItem) {
-        // Wired in Commit 4.
+        guard
+            let id = sender.representedObject as? UUID,
+            let workspace = workspaces.first(where: { $0.id == id })
+        else { return }
+        NSWorkspace.shared.open(workspace.localFolder)
     }
 
     @objc func menuTogglePauseSync(_ sender: NSMenuItem) {
-        // Wired in Commit 4.
+        guard let id = sender.representedObject as? UUID else { return }
+        togglePauseSync(workspaceID: id)
+    }
+
+    /// Pauses (or resumes) sync for one workspace by stopping/starting both
+    /// the FSEvent watcher and the pull poller. `.paused` lives in-memory on
+    /// `Workspace.syncStatus` — relaunch always resumes (no persistence at
+    /// Stage 1; defer to T11.6 settings if/when needed).
+    func togglePauseSync(workspaceID: UUID) {
+        guard let i = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        if workspaces[i].syncStatus == .paused {
+            // Resume.
+            startWatcher(for: workspaces[i])
+            startPullPoller(for: workspaces[i])
+            mutateWorkspaces { wks in
+                if let j = wks.firstIndex(where: { $0.id == workspaceID }) {
+                    wks[j].syncStatus = .idle
+                }
+            }
+        } else {
+            // Pause. Removing the dict entry lets startWatcher's idempotency
+            // guard (`watchers[id] == nil`) pass on the next resume.
+            watchers[workspaceID]?.stop()
+            watchers.removeValue(forKey: workspaceID)
+            stopPullPoller(for: workspaceID)
+            mutateWorkspaces { wks in
+                if let j = wks.firstIndex(where: { $0.id == workspaceID }) {
+                    wks[j].syncStatus = .paused
+                }
+            }
+        }
     }
 
     @objc func menuSignOut(_ sender: NSMenuItem) {
-        // Wired in Commit 4.
+        guard
+            let id = sender.representedObject as? UUID,
+            let workspace = workspaces.first(where: { $0.id == id })
+        else { return }
+        if confirmSignOut(workspace) {
+            performSignOut(workspaceID: id)
+        }
     }
 
     // MARK: - Watcher lifecycle

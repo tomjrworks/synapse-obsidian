@@ -472,6 +472,144 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
     }
 
+    // MARK: - T11.5 commit 4 (sign-out + pause + open-folder)
+
+    func testPerformSignOutMatchesSignOutBehavior() throws {
+        let id = UUID()
+        let url = URL(string: "taproot://auth?bearer=to-clear&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+        XCTAssertEqual(app.workspaces.count, 1)
+
+        app.performSignOut(workspaceID: id)
+
+        XCTAssertNil(try keychain.retrieve(workspaceID: id))
+        XCTAssertTrue(app.workspaces.isEmpty)
+    }
+
+    func testMenuSignOutSkipsWhenConfirmDeclined() throws {
+        let id = UUID()
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=keep&workspace=\(id.uuidString)")!)
+        XCTAssertEqual(app.workspaces.count, 1)
+
+        app.confirmSignOut = { _ in false }
+
+        let item = NSMenuItem(title: "Sign out", action: nil, keyEquivalent: "")
+        item.representedObject = id
+        app.menuSignOut(item)
+
+        XCTAssertEqual(app.workspaces.count, 1, "Cancelled confirm leaves workspace in place")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "keep")
+    }
+
+    func testMenuSignOutInvokesPerformWhenConfirmed() throws {
+        let id = UUID()
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=remove&workspace=\(id.uuidString)")!)
+        XCTAssertEqual(app.workspaces.count, 1)
+
+        app.confirmSignOut = { _ in true }
+
+        let item = NSMenuItem(title: "Sign out", action: nil, keyEquivalent: "")
+        item.representedObject = id
+        app.menuSignOut(item)
+
+        XCTAssertTrue(app.workspaces.isEmpty)
+        XCTAssertNil(try keychain.retrieve(workspaceID: id))
+    }
+
+    func testPauseToggleStopsWatcherAndPoller() throws {
+        let id = UUID()
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "b",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.startAllWatchers()
+        app.startAllPullPollers()
+        XCTAssertNotNil(app.watchers[id])
+        XCTAssertNotNil(app.pullPollers[id])
+
+        app.togglePauseSync(workspaceID: id)
+
+        XCTAssertNil(app.watchers[id])
+        XCTAssertNil(app.pullPollers[id])
+        XCTAssertEqual(app.workspaces[0].syncStatus, .paused)
+    }
+
+    func testPauseMenuItemTitleReflectsStatus() {
+        let id = UUID()
+        let pausedWS = Workspace(
+            id: id,
+            name: "WS",
+            bearer: "b",
+            localFolder: URL(fileURLWithPath: "/tmp/ws"),
+            lastSyncAt: nil,
+            syncStatus: .paused
+        )
+
+        let menu = app.buildMenu(for: [pausedWS])
+
+        // Flat layout: name, Open vault folder, Pause/Resume, Settings…, Sign out, sep, Quit.
+        XCTAssertEqual(menu.items[2].title, "Resume sync")
+    }
+
+    func testBuildMenuShowsLastErrorWhenStatusIsError() {
+        let id = UUID()
+        let erroredWS = Workspace(
+            id: id,
+            name: "WS",
+            bearer: "b",
+            localFolder: URL(fileURLWithPath: "/tmp/ws"),
+            lastSyncAt: nil,
+            syncStatus: .error("transport")
+        )
+
+        let menu = app.buildMenu(for: [erroredWS])
+
+        // Looking for a disabled "Last error: transport" item somewhere in the menu.
+        let errorItem = menu.items.first { $0.title == "Last error: transport" }
+        XCTAssertNotNil(errorItem, "Error status should surface a disabled 'Last error' item")
+        XCTAssertEqual(errorItem?.isEnabled, false)
+    }
+
+    func testResumeRestartsWatcherAndPoller() throws {
+        let id = UUID()
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "b",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.startAllWatchers()
+        app.startAllPullPollers()
+
+        app.togglePauseSync(workspaceID: id)
+        XCTAssertEqual(app.workspaces[0].syncStatus, .paused)
+
+        app.togglePauseSync(workspaceID: id)
+
+        XCTAssertNotNil(app.watchers[id])
+        XCTAssertNotNil(app.pullPollers[id])
+        XCTAssertEqual(app.workspaces[0].syncStatus, .idle)
+        // Cleanup.
+        app.watchers.values.forEach { $0.stop() }
+        app.stopPullPoller(for: id)
+    }
+
     // MARK: - T11.5 menu builder tests
 
     func testBuildMenuShowsNotSignedInForZeroWorkspaces() {
