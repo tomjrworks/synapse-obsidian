@@ -1,20 +1,20 @@
-# Synapse
+# Taproot
 
-**The nervous system between your AI and your notes.**
+**Your notes. _Your AI's memory._**
 
-MCP server that connects any AI to your Obsidian vault. Works with Claude, ChatGPT, Cursor, Windsurf, and any MCP-compatible client. Save articles from your phone, ask questions across your notes, build a compounding knowledge base.
+MCP server that connects any AI client — Claude, ChatGPT, Cursor, Windsurf — to your Obsidian vault. Save anything from anywhere, ask questions across your notes, keep the knowledge base your AI reads from.
 
 ## 30-Second Setup
 
 ### Claude Desktop
 
 1. Open config: **Mac** `~/Library/Application Support/Claude/claude_desktop_config.json` | **Windows** `%APPDATA%\Claude\claude_desktop_config.json`
-2. Add Synapse to the `mcpServers` object:
+2. Add Taproot to the `mcpServers` object:
 
 ```json
 {
   "mcpServers": {
-    "synapse": {
+    "taproot": {
       "command": "npx",
       "args": ["-y", "synapse-obsidian", "/path/to/your/obsidian-vault"]
     }
@@ -22,7 +22,7 @@ MCP server that connects any AI to your Obsidian vault. Works with Claude, ChatG
 }
 ```
 
-3. Restart Claude Desktop. Synapse tools appear automatically.
+3. Restart Claude Desktop. Taproot tools appear automatically.
 
 ### Claude Code
 
@@ -31,7 +31,7 @@ Add to `.claude/.mcp.json` in your home directory:
 ```json
 {
   "mcpServers": {
-    "synapse": {
+    "taproot": {
       "command": "npx",
       "args": ["-y", "synapse-obsidian", "/path/to/your/vault"]
     }
@@ -41,10 +41,10 @@ Add to `.claude/.mcp.json` in your home directory:
 
 ### Claude.ai / ChatGPT / Any remote AI
 
-Run Synapse locally and expose it with a free tunnel:
+Run Taproot locally and expose it with a free tunnel:
 
 ```bash
-# Terminal 1: Start Synapse
+# Terminal 1: Start Taproot
 npx synapse-obsidian /path/to/vault --http --port 3777
 
 # Terminal 2: Expose it (free, no account needed)
@@ -57,13 +57,13 @@ Copy the tunnel URL. Add `https://your-tunnel-url.trycloudflare.com/mcp` as a cu
 
 Once connected, say:
 
-> **"Help me get started with Synapse"**
+> **"Help me get started with Taproot"**
 
-Synapse scans your vault and gives you three options:
+Taproot scans your vault and gives you three options:
 
-- **Use my existing vault** — Detects your folder structure, wikilinks, naming conventions. Nothing moved or overwritten. Synapse adapts to you.
+- **Use my existing vault** — Detects your folder structure, wikilinks, naming conventions. Nothing moved or overwritten. Taproot adapts to you.
 - **Set up a knowledge base** — Creates organized folders: `sources/` for raw content, `notes/` for compiled knowledge, `outputs/` for query results. Best for a focused research topic.
-- **Custom** — You tell Synapse how you want things organized.
+- **Custom** — You tell Taproot how you want things organized.
 
 It also asks what you'll use the vault for (research, business, academic, life OS) so it can tailor the experience.
 
@@ -97,7 +97,7 @@ Finds broken links, orphan pages, missing frontmatter, stale content. Fixes what
 
 | Tool                | What it does                                                   |
 | ------------------- | -------------------------------------------------------------- |
-| `taproot_plant`     | Onboarding — scans vault, presents options, configures Synapse |
+| `taproot_plant`     | Onboarding — scans vault, presents options, configures Taproot |
 | `taproot_till`      | Saves your vault preferences                                   |
 | `taproot_seed`      | Save content from a URL or pasted text                         |
 | `taproot_status`    | Full vault overview with suggested actions                     |
@@ -115,12 +115,12 @@ Finds broken links, orphan pages, missing frontmatter, stale content. Fixes what
 
 ## How It Works
 
-Synapse is an [MCP server](https://modelcontextprotocol.io) — an open protocol for connecting AI to tools and data. It gives your AI read/write access to your vault (and nothing else — sandboxed to the vault directory).
+Taproot is an [MCP server](https://modelcontextprotocol.io) — an open protocol for connecting AI to tools and data. It gives your AI read/write access to your vault (and nothing else — sandboxed to the vault directory).
 
 - **Stdio** (default) — For desktop AI apps (Claude Desktop, etc.)
 - **HTTP** (`--http`) — For browser-based AI (Claude.ai, ChatGPT, etc.) behind Tailscale or another tunnel
 
-Your vault is just a folder of markdown files. Synapse doesn't need Obsidian to be running — it works with any folder.
+Your vault is just a folder of markdown files. Taproot doesn't need Obsidian to be running — it works with any folder.
 
 ## Requirements
 

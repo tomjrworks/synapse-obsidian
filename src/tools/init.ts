@@ -109,13 +109,13 @@ export function generateClaudeMd(opts: {
 - **Never leave a [[wikilink]] pointing to nothing** — always create at least a stub`
     : "- Use standard markdown links for cross-references";
 
-  return `# Taproot — Your AI Brain
+  return `# Taproot — your memory layer
 
 > Created ${today} | Topic: ${opts.topic} | Purpose: ${opts.purpose}
 
 ## What This Vault Is
 
-This is your second brain — a knowledge base that grows smarter with every conversation. You (the AI) are responsible for reading it, writing to it, and keeping it organized. The user directs strategy; you execute.
+This is your memory layer — a knowledge base your AI reads, writes, and keeps organized. You (the AI) are responsible for reading it, writing to it, and keeping it organized. The user directs strategy; you execute.
 
 - Obsidian renders these files — use [[wikilinks]] to connect ideas
 - All content is markdown — portable, future-proof, human-readable

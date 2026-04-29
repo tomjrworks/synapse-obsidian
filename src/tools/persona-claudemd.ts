@@ -223,7 +223,7 @@ Academic citations include \`author\`, \`title\`, \`journal\` or \`book\`, \`yea
 
   "life-os": `## Life-OS
 
-You're using Taproot for personal organization — journaling, goals, reading, relationships, reflections. The vault is your second brain in the original sense.
+You're using Taproot for personal organization — journaling, goals, reading, relationships, reflections. The vault is your memory layer — a structured place your AI reads from and writes to as the user thinks out loud.
 
 ### Folders (added on top of the default skeleton)
 - \`journal/\` — daily entries. \`journal/YYYY-MM-DD.md\`. Optional weekly + monthly retrospectives in \`journal/weekly/\` and \`journal/monthly/\`.
@@ -287,7 +287,7 @@ You run a service business — consulting, agency, freelance, advisory. Notes se
 
 const COMMON_PREAMBLE = `## What This Vault Is
 
-This is your second brain. You (the AI) read it, write to it, and keep it organized. The user directs strategy; you execute.
+This is your memory layer. You (the AI) read it, write to it, and keep it organized. The user directs strategy; you execute.
 
 - All content is markdown — portable, future-proof, human-readable.
 - Obsidian renders these files — use \`[[wikilinks]]\` to connect ideas.
