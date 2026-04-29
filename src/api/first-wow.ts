@@ -4,10 +4,10 @@ import { nukeWorkspace } from "../utils/supabase-mirror.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser } from "./workspace.js";
 
 export function firstWowRouter(backend: StorageBackend): Router {
   const router = Router();
@@ -15,20 +15,13 @@ export function firstWowRouter(backend: StorageBackend): Router {
   router.post(
     "/first-wow",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
       const { remembered_text } = (req.body ?? {}) as {
         remembered_text?: unknown;
       };
       if (typeof remembered_text !== "string" || !remembered_text.trim()) {
         res.status(400).json({ error: "remembered_text_required" });
-        return;
-      }
-
-      const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
         return;
       }
 
@@ -69,14 +62,10 @@ export function firstWowRouter(backend: StorageBackend): Router {
   router.post(
     "/leave",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
+      const { user, membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       // Stage 1 has no team flow yet — every workspace has exactly one
       // member who is the owner. Stage 2 will need an owner-only gate
@@ -84,7 +73,7 @@ export function firstWowRouter(backend: StorageBackend): Router {
       // someone else's mirror). Tracked under T2 follow-ups.
 
       try {
-        const result = await nukeWorkspace(sb, membership.workspaceId, userId);
+        const result = await nukeWorkspace(sb, membership.workspaceId, user.id);
         res.json({
           nuked: true,
           object_count: result.objectCount,

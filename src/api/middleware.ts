@@ -1,9 +1,14 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { supabaseService } from "./supabase.js";
+import { getMembershipForUser, type Membership } from "./workspace.js";
 
 export interface AuthedRequest extends Request {
   user: { id: string; email?: string };
   jwt: string;
+}
+
+export interface AuthedWorkspaceRequest extends AuthedRequest {
+  membership: Membership;
 }
 
 export const requireSupabaseAuth: RequestHandler = async (req, res, next) => {
@@ -29,6 +34,21 @@ export const requireSupabaseAuth: RequestHandler = async (req, res, next) => {
   } catch (err: any) {
     res.status(401).json({ error: "auth_failed", detail: err.message });
   }
+};
+
+// Mount AFTER requireSupabaseAuth. Resolves the caller's membership and
+// attaches it as req.membership; 404s with `no_workspace` if missing.
+// Replaces 11 inline copies of this pattern across the api/ routers.
+export const requireWorkspace: RequestHandler = async (req, res, next) => {
+  const authed = req as AuthedRequest;
+  const sb = supabaseService();
+  const membership = await getMembershipForUser(sb, authed.user.id);
+  if (!membership) {
+    res.status(404).json({ error: "no_workspace" });
+    return;
+  }
+  (req as AuthedWorkspaceRequest).membership = membership;
+  next();
 };
 
 export function asyncHandler(

@@ -2,10 +2,11 @@ import { Router } from "express";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser, patchWorkspaceSettings } from "./workspace.js";
+import { patchWorkspaceSettings } from "./workspace.js";
 
 const ONBOARDING_STEPS = [
   "persona",
@@ -36,6 +37,7 @@ export function onboardingRouter(): Router {
   router.post(
     "/onboarding/step",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
       const { step } = (req.body ?? {}) as { step?: unknown };
 
@@ -50,13 +52,8 @@ export function onboardingRouter(): Router {
         return;
       }
 
+      const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       const { settings, error } = await patchWorkspaceSettings(
         sb,
@@ -78,6 +75,7 @@ export function onboardingRouter(): Router {
   router.post(
     "/persona",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
       const { traits, freetext } = (req.body ?? {}) as {
         traits?: unknown;
@@ -108,13 +106,8 @@ export function onboardingRouter(): Router {
         return;
       }
 
+      const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       const persona = {
         traits: traits as string[],

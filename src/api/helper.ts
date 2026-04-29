@@ -3,10 +3,10 @@ import { randomBytes } from "node:crypto";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser } from "./workspace.js";
 
 const PAIR_TOKEN_TTL_MS = 15 * 60 * 1000;
 const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
@@ -17,14 +17,10 @@ export function helperRouter(): Router {
   router.get(
     "/helper/status",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
+      const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       const { data, error } = await sb
         .from("helper_devices")
@@ -71,14 +67,10 @@ export function helperRouter(): Router {
   router.post(
     "/helper/pair-token",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
+      const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       const token = randomBytes(24).toString("base64url");
       const expiresAt = new Date(Date.now() + PAIR_TOKEN_TTL_MS).toISOString();

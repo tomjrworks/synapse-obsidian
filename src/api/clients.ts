@@ -2,10 +2,11 @@ import { Router } from "express";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser, patchWorkspaceSettings } from "./workspace.js";
+import { patchWorkspaceSettings } from "./workspace.js";
 
 type ClientPath = "url-paste" | "json-config" | "cli-command";
 
@@ -113,14 +114,9 @@ export function clientsRouter(): Router {
   router.get(
     "/clients/setup-info",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
-      const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
+      const { membership } = req as AuthedWorkspaceRequest;
 
       const mcpUrl = publicMcpUrl();
       const entries = CLIENTS.map((c) => ({
@@ -143,6 +139,7 @@ export function clientsRouter(): Router {
   router.post(
     "/clients/:client_id/connected",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
       const clientIdRaw = req.params.client_id;
       const clientId =
@@ -155,13 +152,8 @@ export function clientsRouter(): Router {
         return;
       }
 
+      const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
 
       const current = Array.isArray(membership.settings.connected_clients)
         ? membership.settings.connected_clients

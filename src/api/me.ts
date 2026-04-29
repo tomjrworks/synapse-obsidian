@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser } from "./workspace.js";
 
 export function meRouter(): Router {
   const router = Router();
@@ -13,21 +12,15 @@ export function meRouter(): Router {
   router.get(
     "/me",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
-      const authed = req as AuthedRequest;
-      const sb = supabaseService();
-      const membership = await getMembershipForUser(sb, authed.user.id);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
-
+      const { user, membership } = req as AuthedWorkspaceRequest;
       const settings = membership.settings;
       const persona = settings.persona ?? {};
 
       res.json({
-        user_id: authed.user.id,
-        email: authed.user.email,
+        user_id: user.id,
+        email: user.email,
         workspace_id: membership.workspaceId,
         onboarding_step: settings.onboarding_step ?? null,
         persona_traits: Array.isArray(persona.traits) ? persona.traits : [],

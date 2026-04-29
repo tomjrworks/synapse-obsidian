@@ -4,13 +4,12 @@ import {
   isTraitId,
   TRAIT_INDEX_HEADERS,
 } from "../tools/persona-claudemd.js";
-import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
+  requireWorkspace,
   asyncHandler,
-  type AuthedRequest,
+  type AuthedWorkspaceRequest,
 } from "./middleware.js";
-import { getMembershipForUser } from "./workspace.js";
 
 const UNIVERSAL_SECTIONS = [
   "Decisions",
@@ -57,14 +56,9 @@ export function personaRouter(): Router {
   router.get(
     "/persona/claudemd",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
-      const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
+      const { membership } = req as AuthedWorkspaceRequest;
 
       const persona = membership.settings.persona ?? {};
       const traits: string[] = Array.isArray(persona.traits)
@@ -93,14 +87,9 @@ export function personaRouter(): Router {
   router.get(
     "/persona/index-stub",
     requireSupabaseAuth,
+    requireWorkspace,
     asyncHandler(async (req, res) => {
-      const sb = supabaseService();
-      const userId = (req as AuthedRequest).user.id;
-      const membership = await getMembershipForUser(sb, userId);
-      if (!membership) {
-        res.status(404).json({ error: "no_workspace" });
-        return;
-      }
+      const { membership } = req as AuthedWorkspaceRequest;
 
       const persona = membership.settings.persona ?? {};
       const traits: string[] = Array.isArray(persona.traits)
