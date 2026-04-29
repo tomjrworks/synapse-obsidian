@@ -32,11 +32,11 @@ import {
 // Pick<StorageBackend, "writeFile" | "delete"> instead of typeof
 // defaultGetBackend so the unit smoke can stub a minimal object — production
 // callers pass a SupabaseEncryptedMirrorBackend which is assignable.
-export type BackendResolver = (
+type BackendResolver = (
   workspaceId: string,
 ) => Promise<Pick<StorageBackend, "writeFile" | "delete">>;
 
-export interface SyncRouterOptions {
+interface SyncRouterOptions {
   getBackend?: BackendResolver;
   // Test-only seam. Production callers pass nothing and get
   // `requireOAuthAuth` (validates OAuth bearer + attaches req.workspaceId).
@@ -67,9 +67,9 @@ const pushSchema = z.object({
     .max(500),
 });
 
-export type PushOp = z.infer<typeof pushSchema>["ops"][number];
+type PushOp = z.infer<typeof pushSchema>["ops"][number];
 
-export type PushResultEntry =
+type PushResultEntry =
   | { path: string; ok: true }
   | {
       path: string;
@@ -78,7 +78,7 @@ export type PushResultEntry =
       detail?: string;
     };
 
-export interface PushResponse {
+interface PushResponse {
   results: PushResultEntry[];
 }
 
