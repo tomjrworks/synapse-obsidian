@@ -76,9 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     id: id,
                     name: "Workspace",
                     bearer: bearer,
-                    // §5: resolve symlinks so prefix-comparison in SyncEngine.toOp
+                    // §5: canonicalize so prefix-comparison in SyncEngine.toOp
                     // matches WorkspaceWatcher's already-canonicalized event paths.
-                    localFolder: defaultLocalFolder(for: id).resolvingSymlinksInPath(),
+                    // `canonicalPath` uses realpath() so firmlinks (`/var` →
+                    // `/private/var` on macOS Catalina+) resolve, which
+                    // `resolvingSymlinksInPath()` alone does not.
+                    localFolder: defaultLocalFolder(for: id).canonicalPath,
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
@@ -125,8 +128,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     id: link.workspaceID,
                     name: "Workspace",
                     bearer: link.bearer,
-                    // §5: resolve symlinks (see loadWorkspacesFromKeychain).
-                    localFolder: defaultLocalFolder(for: link.workspaceID).resolvingSymlinksInPath(),
+                    // §5: canonicalize (see loadWorkspacesFromKeychain).
+                    localFolder: defaultLocalFolder(for: link.workspaceID).canonicalPath,
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )

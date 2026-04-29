@@ -141,7 +141,7 @@ actor SyncEngine {
         let folderPath = localFolder.path.hasSuffix("/") ? localFolder.path : localFolder.path + "/"
         let absPath = event.path.path
         guard absPath.hasPrefix(folderPath) else {
-            NSLog("[Taproot] push: dropping event outside watched folder: \(absPath)")
+            NSLog("[Taproot] push: dropping event outside watched folder: \(absPath) (folder=\(folderPath))")
             return nil
         }
         let relative = String(absPath.dropFirst(folderPath.count))

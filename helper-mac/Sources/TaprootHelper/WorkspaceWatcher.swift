@@ -39,10 +39,12 @@ final class WorkspaceWatcher {
         onChange: @MainActor @escaping ([FileChangeEvent]) -> Void
     ) {
         self.workspaceID = workspaceID
-        // Resolve symlinks once: FSEvents canonicalizes its output (/tmp -> /private/tmp,
+        // Canonicalize once: FSEvents canonicalizes its output (/tmp -> /private/tmp,
         // /var -> /private/var). If we don't normalize here, path comparisons inside
-        // event derivation will silently miss matches.
-        self.folder = URL(fileURLWithPath: folder.path).resolvingSymlinksInPath()
+        // event derivation will silently miss matches. `canonicalPath` uses
+        // realpath() so firmlinks (/var on macOS Catalina+) resolve too —
+        // resolvingSymlinksInPath alone misses those.
+        self.folder = URL(fileURLWithPath: folder.path).canonicalPath
         self.latency = latency
         self.fileManager = fileManager
         self.onChange = onChange
@@ -132,7 +134,7 @@ final class WorkspaceWatcher {
                 continue
             }
 
-            let url = URL(fileURLWithPath: pathStr).resolvingSymlinksInPath()
+            let url = URL(fileURLWithPath: pathStr).canonicalPath
 
             // Drop the watched folder root itself.
             if url.path == watcher.folder.path { continue }
