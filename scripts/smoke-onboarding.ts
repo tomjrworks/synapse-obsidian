@@ -14,6 +14,7 @@
  * env loaded with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY + TAPROOT_KEK.
  */
 import { createClient } from "@supabase/supabase-js";
+import { createHash, randomBytes } from "node:crypto";
 import { generateDek, wrapDek } from "../src/api/crypto.js";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -327,6 +328,103 @@ async function http(
     "POST /api/first-wow rejects empty text",
     firstWowBad.status === 400,
     firstWowBad.json,
+  );
+
+  // 11b. B1 cross-flow proof: a /api/first-wow write (Supabase JWT auth, /api
+  //      path) must be readable via /mcp (OAuth bearer auth, MCP path) for
+  //      the same workspace. Pre-B1 this failed because /api/first-wow wrote
+  //      to the cloud server's bootstrap LocalBackend while /mcp resolves the
+  //      workspace-scoped Supabase mirror via getBackend(workspaceId). After
+  //      B1 both writers use getBackend, so the round-trip lands.
+  const wowPath: string = firstWow.json.path;
+  const wowText = "Tom prefers Discord over Telegram for notifications.";
+
+  const reg = await fetch(`${BASE}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_name: "smoke-first-wow-cross-flow",
+      redirect_uris: ["http://localhost/oauth/callback"],
+    }),
+  });
+  const { client_id } = (await reg.json()) as { client_id: string };
+  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeChallenge = createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url");
+  const authForm = new URLSearchParams({
+    client_id,
+    redirect_uri: "http://localhost/oauth/callback",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    state: "first-wow-cross-flow",
+    email: testEmail,
+    password: testPassword,
+  });
+  const authRes = await fetch(`${BASE}/authorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: authForm.toString(),
+    redirect: "manual",
+  });
+  const authCode = new URL(
+    authRes.headers.get("location") ?? "",
+  ).searchParams.get("code");
+  const tokenForm = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: authCode ?? "",
+    redirect_uri: "http://localhost/oauth/callback",
+    client_id,
+    code_verifier: codeVerifier,
+  });
+  const tokenRes = await fetch(`${BASE}/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: tokenForm.toString(),
+  });
+  const { access_token } = (await tokenRes.json()) as { access_token: string };
+  check(
+    "OAuth bearer obtained for same workspace via /authorize + /token",
+    typeof access_token === "string" && access_token.length > 10,
+    { authStatus: authRes.status, tokenStatus: tokenRes.status },
+  );
+
+  const mcpRes = await fetch(`${BASE}/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Authorization: `Bearer ${access_token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "garden_read", arguments: { path: wowPath } },
+    }),
+  });
+  const mcpText = await mcpRes.text();
+  let mcpJson: any = null;
+  if (mcpText.startsWith("event:") || mcpText.includes("\ndata: ")) {
+    const dataLine = mcpText
+      .split("\n")
+      .find((l) => l.startsWith("data: "))
+      ?.slice("data: ".length);
+    if (dataLine) mcpJson = JSON.parse(dataLine);
+  } else {
+    try {
+      mcpJson = JSON.parse(mcpText);
+    } catch {
+      /* keep null */
+    }
+  }
+  const mcpReadback: string = mcpJson?.result?.content?.[0]?.text ?? "";
+  check(
+    "/mcp garden_read on /api/first-wow's path returns the remembered text (B1 round-trip)",
+    mcpRes.status === 200 &&
+      mcpJson?.result?.isError !== true &&
+      mcpReadback.includes(wowText),
+    { mcpStatus: mcpRes.status, mcpJson, wowPath },
   );
 
   // 12. /api/persona/claudemd → text/markdown body

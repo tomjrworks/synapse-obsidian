@@ -15,12 +15,11 @@ printBanner();
 const args = parseArgs();
 
 async function main() {
-  const backend = new LocalBackend(args.vaultPath);
-
   if (args.mode === "http") {
     const { startServer } = await import("./server.js");
-    await startServer(backend, args.port);
+    await startServer(args.port);
   } else {
+    const backend = new LocalBackend(args.vaultPath);
     const server = new McpServer({
       name: "taproot",
       version: "0.4.0",

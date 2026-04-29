@@ -1,5 +1,4 @@
 import { Router, type Express } from "express";
-import type { StorageBackend } from "../utils/storage.js";
 import { authRouter } from "./auth.js";
 import { meRouter } from "./me.js";
 import { onboardingRouter } from "./onboarding.js";
@@ -9,7 +8,7 @@ import { firstWowRouter } from "./first-wow.js";
 import { personaRouter } from "./persona.js";
 import { syncRouter } from "./sync.js";
 
-export function mountApiRoutes(app: Express, backend: StorageBackend): void {
+export function mountApiRoutes(app: Express): void {
   const api = Router();
 
   api.get("/_ping", (_req, res) => {
@@ -21,7 +20,7 @@ export function mountApiRoutes(app: Express, backend: StorageBackend): void {
   api.use("/", onboardingRouter());
   api.use("/", clientsRouter());
   api.use("/", helperRouter());
-  api.use("/", firstWowRouter(backend));
+  api.use("/", firstWowRouter());
   api.use("/", personaRouter());
   api.use("/", syncRouter());
 

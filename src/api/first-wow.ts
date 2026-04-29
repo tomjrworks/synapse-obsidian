@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { StorageBackend } from "../utils/storage.js";
 import { nukeWorkspace } from "../utils/supabase-mirror.js";
+import { getBackend } from "../utils/backend-cache.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -9,7 +9,7 @@ import {
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
 
-export function firstWowRouter(backend: StorageBackend): Router {
+export function firstWowRouter(): Router {
   const router = Router();
 
   router.post(
@@ -30,8 +30,9 @@ export function firstWowRouter(backend: StorageBackend): Router {
       const path = `inbox/first-wow-${ts}.md`;
       const body = `${trimmed}\n`;
 
-      // Stage 1: writes to whichever backend the server was started with.
-      // T6 will swap in a workspace-scoped backend resolved from the JWT.
+      const { membership } = req as AuthedWorkspaceRequest;
+      const backend = await getBackend(membership.workspaceId);
+
       try {
         await backend.writeFile(path, body);
       } catch (err: any) {

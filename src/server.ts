@@ -36,10 +36,7 @@ function createMcpServer(backend: StorageBackend): McpServer {
   return server;
 }
 
-export async function startServer(
-  backend: StorageBackend,
-  port: number,
-): Promise<void> {
+export async function startServer(port: number): Promise<void> {
   const app = express();
 
   // 10MB cap accommodates batched helper push payloads (up to 500 ops at
@@ -92,17 +89,12 @@ export async function startServer(
     `[OAuth] Enabled. Sign in with your Taproot account (taproothq.com).`,
   );
 
-  mountApiRoutes(app, backend);
+  mountApiRoutes(app);
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
 
   app.post("/mcp", async (req, res) => {
     if (await requireAuth(req, res)) return;
     try {
-      // Route to the workspace-scoped encrypted mirror. The startServer
-      // `backend` argument is still used by /api/* (firstWowRouter writes
-      // the first-wow note to the local helper-managed vault); /mcp is
-      // the path that goes through Supabase. Two writers, two paths,
-      // intentional.
       const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId);
       const transport = new StreamableHTTPServerTransport({
