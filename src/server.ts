@@ -59,9 +59,20 @@ export async function startServer(port: number): Promise<void> {
     "code",
   ]);
 
+  // Routes whose request bodies contain user vault content (audit C1, Apr 29).
+  // We log a body=[skipped] sentinel — same timestamp/method/path signal as
+  // every other request, but no plaintext leak to stderr. Exact-match paths
+  // only; /mcp body logging is intentionally unchanged (separate hygiene pass).
+  const BODY_LOG_SKIP_PATHS = new Set<string>([
+    "/api/sync/push",
+    "/api/first-wow",
+  ]);
+
   app.use((req, _res, next) => {
     let body = "";
-    if (req.body) {
+    if (BODY_LOG_SKIP_PATHS.has(req.path)) {
+      body = "[skipped]";
+    } else if (req.body) {
       body = JSON.stringify(req.body, (key, value) =>
         SENSITIVE_BODY_KEYS.has(key) ? "[redacted]" : value,
       ).slice(0, 300);
