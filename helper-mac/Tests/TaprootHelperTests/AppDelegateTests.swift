@@ -574,6 +574,40 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(betaSubmenu.items[3].representedObject as? UUID, id2)
     }
 
+    func testRebuildMenuFiresOnSignOut() throws {
+        let id1 = UUID()
+        let id2 = UUID()
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=b&workspace=\(id2.uuidString)")!)
+        XCTAssertEqual(app.currentMenu?.items.count, 4, "Pre-signOut: nested 4-item menu")
+
+        app.signOut(workspaceID: id2)
+
+        // After sign-out the count drops to 1 → flat 7-item shape.
+        let after = try XCTUnwrap(app.currentMenu)
+        XCTAssertEqual(after.items.count, 7)
+    }
+
+    func testRebuildMenuFiresOnHandleAuthURL() throws {
+        let id1 = UUID()
+        let id2 = UUID()
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
+
+        // After 1 workspace, currentMenu reflects the 7-item flat shape.
+        let afterFirst = try XCTUnwrap(app.currentMenu)
+        XCTAssertEqual(afterFirst.items.count, 7, "Flat layout after first auth")
+
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=b&workspace=\(id2.uuidString)")!)
+
+        // After 2 workspaces, currentMenu reflects the 4-item nested shape.
+        let afterSecond = try XCTUnwrap(app.currentMenu)
+        XCTAssertEqual(afterSecond.items.count, 4, "Nested layout after second auth")
+        XCTAssertNotNil(afterSecond.items[0].submenu)
+        XCTAssertNotNil(afterSecond.items[1].submenu)
+        XCTAssertTrue(afterSecond.items[2].isSeparatorItem)
+        XCTAssertEqual(afterSecond.items[3].title, "Quit")
+    }
+
     func testStatusIconPrecedence() {
         func ws(_ status: SyncStatus) -> Workspace {
             Workspace(

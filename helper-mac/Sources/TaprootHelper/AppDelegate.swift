@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pullPollers: [UUID: Task<Void, Never>] = [:]
     /// Internal access so tests can verify cursor advance + clear.
     var pullCursors: [UUID: PullCursor] = [:]
+    /// Test seam: the most recent NSMenu produced by `rebuildMenu`. `private(set)`
+    /// so tests can read but external code can't mutate it. Always non-nil after
+    /// the first `rebuildMenu` call (which `applicationDidFinishLaunching` runs).
+    private(set) var currentMenu: NSMenu?
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -78,22 +82,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Projects current `workspaces` state onto the menubar icon + dropdown.
-    /// Commit 2 wires `mutateWorkspaces` to call this after every mutation.
-    /// Safe when `statusItem == nil` (tests construct AppDelegate without
-    /// ever realizing the NSStatusItem).
+    /// Routes every `workspaces` mutation through a single helper so the
+    /// menubar always reflects current state. Callers MUST use this instead
+    /// of mutating `workspaces` directly — a forgotten call site is a
+    /// code-review / test catch, not a runtime silent failure.
+    func mutateWorkspaces(_ body: (inout [Workspace]) -> Void) {
+        body(&workspaces)
+        rebuildMenu()
+    }
+
+    /// Projects current `workspaces` state onto the menubar icon + dropdown,
+    /// and updates the `currentMenu` test seam. Called from `mutateWorkspaces`
+    /// after every mutation. Safe when `statusItem == nil` (tests construct
+    /// AppDelegate without ever realizing the NSStatusItem).
     func rebuildMenu() {
+        let menu = buildMenu(for: workspaces)
+        currentMenu = menu
         statusItem?.button?.image = NSImage(
             systemSymbolName: statusIconName(for: workspaces),
             accessibilityDescription: "Taproot"
         )
-        statusItem?.menu = buildMenu(for: workspaces)
+        statusItem?.menu = menu
     }
 
     func loadWorkspacesFromKeychain() {
         do {
             let entries = try services.keychain.retrieveAll()
-            workspaces = entries.map { (id, bearer) in
+            let loaded = entries.map { (id, bearer) in
                 Workspace(
                     id: id,
                     name: "Workspace",
@@ -108,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     syncStatus: .idle
                 )
             }
+            mutateWorkspaces { $0 = loaded }
             // Seed cursors from UserDefaults so the first pull tick after
             // launch resumes from where the previous session left off (or
             // initial-pull if never persisted).
@@ -119,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("[Taproot] Loaded \(workspaces.count) workspace(s) from Keychain")
         } catch {
             NSLog("[Taproot] Keychain retrieveAll failed: \(error)")
-            workspaces = []
+            mutateWorkspaces { $0 = [] }
         }
     }
 
@@ -152,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let link = try DeepLinkParser.parseAuth(url)
             try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
             if let idx = workspaces.firstIndex(where: { $0.id == link.workspaceID }) {
-                workspaces[idx].bearer = link.bearer
+                mutateWorkspaces { $0[idx].bearer = link.bearer }
             } else {
                 let newWorkspace = Workspace(
                     id: link.workspaceID,
@@ -163,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
-                workspaces.append(newWorkspace)
+                mutateWorkspaces { $0.append(newWorkspace) }
                 startWatcher(for: newWorkspace)
                 startPullPoller(for: newWorkspace)
             }
@@ -184,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchers.removeValue(forKey: workspaceID)
         do {
             try services.keychain.delete(workspaceID: workspaceID)
-            workspaces.removeAll { $0.id == workspaceID }
+            mutateWorkspaces { $0.removeAll { $0.id == workspaceID } }
             pullCursors.removeValue(forKey: workspaceID)
             clearCursor(for: workspaceID)
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
