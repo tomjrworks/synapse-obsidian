@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { supabaseService } from "./supabase.js";
 import { getMembershipForUser, type Membership } from "./workspace.js";
+import { requireAuth, type AuthedMcpRequest } from "../oauth.js";
 
 export interface AuthedRequest extends Request {
   user: { id: string; email?: string };
@@ -10,6 +11,12 @@ export interface AuthedRequest extends Request {
 export interface AuthedWorkspaceRequest extends AuthedRequest {
   membership: Membership;
 }
+
+// OAuth-bearer-authenticated request: same shape as the /mcp request type
+// (req.workspaceId attached from oauth_tokens). Helper traffic on /api/sync/*
+// authenticates with the same OAuth bearer it uses for /mcp, so we re-export
+// the type under a route-family-appropriate name.
+export type AuthedOAuthRequest = AuthedMcpRequest;
 
 export const requireSupabaseAuth: RequestHandler = async (req, res, next) => {
   const header = req.header("authorization") || req.header("Authorization");
@@ -58,3 +65,15 @@ export function asyncHandler(
     Promise.resolve(fn(req, res, next)).catch(next);
   };
 }
+
+// Express adapter for `requireAuth` (oauth.ts). `requireAuth` returns
+// Promise<boolean> — true means it already wrote a 401/500. This adapter
+// turns that into standard middleware shape so OAuth-protected /api/* routes
+// can mount it via `router.<verb>("/path", requireOAuthAuth, handler)`.
+//
+// On success, `req.workspaceId` is attached upstream at oauth.ts:619; cast
+// to AuthedOAuthRequest in handlers to read it.
+export const requireOAuthAuth: RequestHandler = async (req, res, next) => {
+  if (await requireAuth(req, res)) return;
+  next();
+};

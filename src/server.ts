@@ -42,7 +42,11 @@ export async function startServer(
 ): Promise<void> {
   const app = express();
 
-  app.use(express.json());
+  // 10MB cap accommodates batched helper push payloads (up to 500 ops at
+  // ~vault-note size). Verified safe globally including /mcp: grep over src/
+  // for "413"/payloadTooLarge/content-length found no /mcp tool that depends
+  // on the default 100KB cap as backpressure (plan T11.3 §11.1).
+  app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
 
   // Add new credential-equivalent keys here; replacer applies at every nesting level.

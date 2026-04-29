@@ -7,6 +7,7 @@ import { clientsRouter } from "./clients.js";
 import { helperRouter } from "./helper.js";
 import { firstWowRouter } from "./first-wow.js";
 import { personaRouter } from "./persona.js";
+import { syncRouter } from "./sync.js";
 
 export function mountApiRoutes(app: Express, backend: StorageBackend): void {
   const api = Router();
@@ -22,6 +23,7 @@ export function mountApiRoutes(app: Express, backend: StorageBackend): void {
   api.use("/", helperRouter());
   api.use("/", firstWowRouter(backend));
   api.use("/", personaRouter());
+  api.use("/", syncRouter());
 
   app.use("/api", api);
 }
