@@ -90,4 +90,36 @@ final class AppDelegateTests: XCTestCase {
         let bearers = freshApp.workspaces.map { $0.bearer }.sorted()
         XCTAssertEqual(bearers, ["bearer-1", "bearer-2"])
     }
+
+    func testStartAllWatchersStartsOnePerLoadedWorkspace() throws {
+        let id1 = UUID()
+        let id2 = UUID()
+        try keychain.store(workspaceID: id1, bearer: "bearer-1")
+        try keychain.store(workspaceID: id2, bearer: "bearer-2")
+
+        let freshApp = AppDelegate(keychain: keychain)
+        freshApp.loadWorkspacesFromKeychain()
+        freshApp.startAllWatchers()
+
+        XCTAssertEqual(freshApp.watchers.count, 2)
+        XCTAssertNotNil(freshApp.watchers[id1])
+        XCTAssertNotNil(freshApp.watchers[id2])
+
+        // Cleanup: stop watchers (defaultLocalFolder paths likely don't exist,
+        // so they're idle no-ops, but stop() is still required for tidy teardown).
+        freshApp.watchers.values.forEach { $0.stop() }
+    }
+
+    func testSignOutStopsAndRemovesWatcher() throws {
+        let id = UUID()
+        let url = URL(string: "taproot://auth?bearer=watch-me&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+        app.startAllWatchers()
+        XCTAssertNotNil(app.watchers[id])
+
+        app.signOut(workspaceID: id)
+
+        XCTAssertNil(app.watchers[id])
+        XCTAssertTrue(app.workspaces.isEmpty)
+    }
 }
