@@ -739,7 +739,7 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [workspace])
 
-        // Shape: [name (disabled), Open vault folder, Pause sync, Settings… (disabled),
+        // Shape: [name (disabled), Open vault folder, Pause sync, Settings…,
         //         Sign out, separator, Quit] = 7 items.
         XCTAssertEqual(menu.items.count, 7)
 
@@ -756,7 +756,8 @@ final class AppDelegateTests: XCTestCase {
 
         let settings = menu.items[3]
         XCTAssertEqual(settings.title, "Settings…")
-        XCTAssertFalse(settings.isEnabled, "Settings… is disabled until T11.6 lands")
+        XCTAssertTrue(settings.isEnabled, "Settings… enabled in T11.6")
+        XCTAssertEqual(settings.action, #selector(AppDelegate.menuOpenSettings(_:)))
 
         let signOut = menu.items[4]
         XCTAssertEqual(signOut.title, "Sign out")
@@ -808,7 +809,7 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(alphaSubmenu.items[1].title, "Pause sync")
         XCTAssertEqual(alphaSubmenu.items[1].representedObject as? UUID, id1)
         XCTAssertEqual(alphaSubmenu.items[2].title, "Settings…")
-        XCTAssertFalse(alphaSubmenu.items[2].isEnabled)
+        XCTAssertTrue(alphaSubmenu.items[2].isEnabled)
         XCTAssertEqual(alphaSubmenu.items[3].title, "Sign out")
         XCTAssertEqual(alphaSubmenu.items[3].representedObject as? UUID, id1)
 
@@ -1028,5 +1029,15 @@ final class AppDelegateTests: XCTestCase {
             SettingsStore(defaults: UserDefaults(suiteName: suite)!).notificationsEnabled,
             "Notifications toggle must persist to the underlying UserDefaults suite"
         )
+    }
+
+    func testMenuOpenSettingsInvokesPresentSettings() {
+        var fired = false
+        app.presentSettings = { fired = true }
+
+        let item = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: "")
+        app.menuOpenSettings(item)
+
+        XCTAssertTrue(fired)
     }
 }

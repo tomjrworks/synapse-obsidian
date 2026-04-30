@@ -410,9 +410,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pauseSync.representedObject = workspace.id
         menu.addItem(pauseSync)
 
-        // TODO T11.6: enable when settings window lands.
-        let settings = NSMenuItem(title: "Settings…", action: nil, keyEquivalent: "")
-        settings.isEnabled = false
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(menuOpenSettings(_:)),
+            keyEquivalent: ""
+        )
+        settings.target = self
+        // No representedObject — settings window is global, not per-workspace.
         menu.addItem(settings)
 
         let signOut = NSMenuItem(
@@ -475,6 +479,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             settingsStore.setPausedOnLaunch(true, for: workspaceID)
         }
+    }
+
+    @objc func menuOpenSettings(_ sender: NSMenuItem) {
+        presentSettings()
     }
 
     @objc func menuSignOut(_ sender: NSMenuItem) {
