@@ -7,7 +7,6 @@ RUN npm ci --production=false --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src/ ./src/
-COPY landing/ ./landing/
 
 RUN npm run build
 

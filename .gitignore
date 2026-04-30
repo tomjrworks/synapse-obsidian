@@ -4,3 +4,6 @@ dist/
 .env
 .DS_Store
 .gstack/
+# Stale SITE-stream landing pages (Synapse + Google Drive era, killed
+# build-audit-3). Lives in ~/Documents/agency/taproothq/. Block re-add.
+landing/
