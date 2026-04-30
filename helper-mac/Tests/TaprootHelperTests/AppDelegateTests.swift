@@ -1325,6 +1325,30 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertNotNil(app.pullPollers[id], "Poller must start on confirmFirstRun")
     }
 
+    /// C1 (build-audit-3): rapid double-fire of confirmFirstRun (e.g. a user
+    /// double-clicking "Get started" before the window dismisses, or two
+    /// presentFirstRun Tasks racing through fetchWorkspaceName) must not
+    /// append the same workspace twice. Other mutation paths (handleAuthURL
+    /// re-auth) already use `firstIndex(where:)` to dedup; confirmFirstRun
+    /// must mirror that guard.
+    func testConfirmFirstRunDedupsOnDoubleConfirm() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
+        app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
+        defer {
+            app.watchers[id]?.stop()
+            app.stopPullPoller(for: id)
+        }
+
+        XCTAssertEqual(app.workspaces.count, 1,
+                       "Double-confirm must not append the same workspace twice")
+        XCTAssertEqual(app.workspaces.filter { $0.id == id }.count, 1)
+    }
+
     func testCancelFirstRunDeletesBearerAndClearsState() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }

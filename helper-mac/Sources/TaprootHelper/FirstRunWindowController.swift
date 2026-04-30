@@ -5,12 +5,18 @@ import AppKit
 /// Change…) is exposed via internal `handle*` / `applyChosenFolder` so unit
 /// tests can drive state transitions without spinning up an NSOpenPanel sheet.
 @MainActor
-final class FirstRunWindowController: NSWindowController {
+final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     let workspaceID: UUID
     private let bearer: String
     private let workspaceName: String
     private let onCancel: (UUID) -> Void
     private let onConfirm: (UUID, String, URL) -> Void
+
+    /// B1: set true by handleCancel/handleGetStarted before closing the window.
+    /// `windowWillClose` reads it to tell "user finished" from "user clicked
+    /// the red X" — the X path bypasses both button selectors and would
+    /// otherwise orphan the bearer that handleAuthURL stashed in Keychain.
+    private var didFinish = false
 
     private(set) var currentURL: URL
     private(set) var isInConflict: Bool = false
@@ -43,6 +49,7 @@ final class FirstRunWindowController: NSWindowController {
         window.title = "Welcome to Taproot"
         window.center()
         super.init(window: window)
+        window.delegate = self
         buildContentView()
     }
 
@@ -50,14 +57,22 @@ final class FirstRunWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     func handleCancel() {
+        didFinish = true
         onCancel(workspaceID)
         window?.close()
     }
 
     func handleGetStarted() {
         guard isGetStartedEnabled else { return }
+        didFinish = true
         onConfirm(workspaceID, bearer, currentURL)
         window?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if !didFinish {
+            onCancel(workspaceID)
+        }
     }
 
     /// One-arg overload: looks up conflict via the `checkConflict` seam.

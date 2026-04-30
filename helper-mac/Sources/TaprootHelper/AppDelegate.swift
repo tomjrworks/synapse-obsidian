@@ -92,10 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// in `wireFirstRunDefaults()`.
     var presentFirstRunFailureAlert: @MainActor (String) -> Void = { _ in }
     /// Test seam (T11.7): opens the website's signin URL when the user picks
-    /// "Connect your Taproot account". Default uses NSWorkspace.shared.open.
-    var openConnectURL: @MainActor (URL) -> Void = { url in
-        NSWorkspace.shared.open(url)
-    }
+    /// "Connect your Taproot account". Default no-op; production impl wired
+    /// in `wireFirstRunDefaults()` (C4: aligns with the other 4 T11.7 seams
+    /// — tests get inert defaults, production gets a single central wiring).
+    var openConnectURL: @MainActor (URL) -> Void = { _ in }
     /// Single shared settings window controller. Lazily created on first
     /// `presentSettings()` invocation; closing the window hides it but
     /// does NOT release the controller (NSWindowController default).
@@ -223,8 +223,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // CFBundleURLTypes only registers `taproot://` inside a .app bundle,
         // so `swift run TaprootHelper` can't receive real URL events. See
         // ~/.claude/projects/-Users-miloman/memory/reference_taproot_smoke_gotchas.md.
-        if let injected = ProcessInfo.processInfo.environment["TAPROOT_DEV_INJECT_DEEPLINK"],
-           let url = URL(string: injected) {
+        //
+        // C2 (build-audit-3): gated to unbundled binaries — production .app
+        // archives always have a bundle identifier, `swift run` does not.
+        // Combined with the taproot:// scheme check, this prevents a
+        // launchctl-injected non-taproot URL from ever reaching handleAuthURL
+        // on a real user's machine even if they have local user-context code
+        // execution. Pattern mirrors `BaseURLResolver.swift:13-22`.
+        if Bundle.main.bundleIdentifier == nil,
+           let injected = ProcessInfo.processInfo.environment["TAPROOT_DEV_INJECT_DEEPLINK"],
+           let url = URL(string: injected),
+           url.scheme == "taproot" {
             Task { @MainActor [weak self] in self?.handleAuthURL(url) }
         }
     }
@@ -281,6 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "OK")
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
+        }
+
+        openConnectURL = { url in
+            NSWorkspace.shared.open(url)
         }
 
         presentFirstRun = { [weak self] id, bearer in
@@ -473,7 +486,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastSyncAt: nil,
             syncStatus: .idle
         )
-        mutateWorkspaces { $0.append(workspace) }
+        // C1: dedup against rapid double-confirm (double-click "Get started"
+        // before the window dismisses, or two presentFirstRun Tasks racing
+        // through fetchWorkspaceName). Mirrors the firstIndex(where:) guard
+        // in handleAuthURL:444. startWatcher/startPullPoller are already
+        // idempotent on workspace.id, so this single guard is sufficient.
+        mutateWorkspaces { wks in
+            if !wks.contains(where: { $0.id == workspaceID }) {
+                wks.append(workspace)
+            }
+        }
         startWatcher(for: workspace)
         startPullPoller(for: workspace)
         NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")

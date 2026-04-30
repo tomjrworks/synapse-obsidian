@@ -123,4 +123,72 @@ final class FirstRunWindowControllerTests: XCTestCase {
         XCTAssertFalse(controller.isInConflict)
         XCTAssertTrue(controller.isGetStartedEnabled)
     }
+
+    /// B1 (build-audit-3): closing the window via the red X (no Cancel/Get-started
+    /// click) must fire `onCancel` so the bearer the AppDelegate already stashed
+    /// in Keychain gets cleared. Otherwise next launch picks up the orphan bearer
+    /// and auto-syncs an unconsented folder.
+    func testWindowCloseViaXFiresOnCancel() throws {
+        let id = UUID()
+        let tmp = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var cancelCount = 0
+        var capturedID: UUID?
+        let controller = FirstRunWindowController(
+            workspaceID: id, bearer: "B", workspaceName: "X",
+            defaultFolderURL: tmp,
+            onCancel: { cancelCount += 1; capturedID = $0 },
+            onConfirm: { _, _, _ in }
+        )
+
+        // Simulate the user clicking the red X — bypasses cancelClicked and
+        // getStartedClicked. Without an NSWindowDelegate, this currently
+        // closes the window with no callback (RED).
+        controller.window?.close()
+
+        XCTAssertEqual(cancelCount, 1, "onCancel must fire exactly once when window closes via X")
+        XCTAssertEqual(capturedID, id)
+    }
+
+    /// B1 didFinish defense: `handleCancel` already calls `onCancel`, then
+    /// closes the window. If the new windowWillClose handler doesn't check a
+    /// `didFinish` flag it will double-fire `onCancel`.
+    func testHandleCancelDoesNotDoubleFireOnCancelWhenWindowCloses() throws {
+        let id = UUID()
+        let tmp = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var cancelCount = 0
+        let controller = FirstRunWindowController(
+            workspaceID: id, bearer: "B", workspaceName: "X",
+            defaultFolderURL: tmp,
+            onCancel: { _ in cancelCount += 1 },
+            onConfirm: { _, _, _ in }
+        )
+
+        controller.handleCancel()
+
+        XCTAssertEqual(cancelCount, 1, "onCancel must fire exactly once across handleCancel + window close")
+    }
+
+    /// B1 didFinish defense: `handleGetStarted` calls `onConfirm` and then
+    /// closes the window. windowWillClose must NOT fire `onCancel` on the
+    /// confirmed path or we'd both confirm and cancel the same workspace.
+    func testHandleGetStartedDoesNotFireOnCancelWhenWindowCloses() throws {
+        let id = UUID()
+        let tmp = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var cancelCount = 0
+        var confirmCount = 0
+        let controller = FirstRunWindowController(
+            workspaceID: id, bearer: "B", workspaceName: "X",
+            defaultFolderURL: tmp,
+            onCancel: { _ in cancelCount += 1 },
+            onConfirm: { _, _, _ in confirmCount += 1 }
+        )
+
+        controller.handleGetStarted()
+
+        XCTAssertEqual(confirmCount, 1, "onConfirm must fire on Get started")
+        XCTAssertEqual(cancelCount, 0, "onCancel must NOT fire when Get started already finished")
+    }
 }
