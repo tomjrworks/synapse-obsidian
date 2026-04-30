@@ -12,6 +12,13 @@ struct SettingsStore {
         set { defaults.set(newValue, forKey: "taproot.settings.notificationsEnabled") }
     }
 
+    /// L1 default is `false` (prompt-first install). Persisted so the
+    /// preference survives helper relaunch.
+    var automaticallyInstallsUpdates: Bool {
+        get { defaults.bool(forKey: "taproot.settings.automaticallyInstallsUpdates") }
+        set { defaults.set(newValue, forKey: "taproot.settings.automaticallyInstallsUpdates") }
+    }
+
     func isPausedOnLaunch(for id: UUID) -> Bool {
         defaults.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
     }

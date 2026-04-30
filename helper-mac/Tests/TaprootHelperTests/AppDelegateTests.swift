@@ -1393,6 +1393,34 @@ final class AppDelegateTests: XCTestCase {
     // (handleAuthURL → firstRun.presentFirstRun, menuConnectAccount →
     // firstRun.openConnectURL) stay below.
 
+    // MARK: - T11.8 commit 4 (UpdateCoordinator ownership)
+
+    func testMakeUpdaterServiceFactoryInjectsForUpdates() {
+        let fake = FakeUpdaterService()
+        app.makeUpdaterService = { fake }
+
+        // Triggers the lazy `updates` initializer; the factory hands back
+        // the fake, so subsequent calls drive `fake`.
+        app.updates.start()
+
+        XCTAssertEqual(fake.startCallCount, 1,
+                       "AppDelegate's makeUpdaterService factory must inject into updates")
+    }
+
+    func testApplicationDidFinishLaunchingStartsUpdates() {
+        let fake = FakeUpdaterService()
+        app.makeUpdaterService = { fake }
+        // Stub presentSettings + first-run no-op so the lifecycle doesn't
+        // touch real UI surfaces beyond what xctest tolerates.
+        app.firstRun.presentFirstRun = { _, _ in }
+
+        app.applicationDidFinishLaunching(Notification(name: .init("test")))
+
+        XCTAssertEqual(fake.startCallCount, 1,
+                       "applicationDidFinishLaunching must call updates.start() exactly once")
+        XCTAssertTrue(fake.isStarted)
+    }
+
     func testConnectAccountMenuItemAppearsWhenWorkspacesEmpty() {
         let menu = app.buildMenu(for: [])
 

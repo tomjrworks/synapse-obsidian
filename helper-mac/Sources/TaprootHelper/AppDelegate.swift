@@ -75,6 +75,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// before first access if they need a different shape; closure seams
     /// (`firstRun.presentFirstRun = ...`) can be overridden after.
     lazy var firstRun: FirstRunCoordinator = makeFirstRunCoordinator()
+    /// Auto-update flow: extracted in T11.8 commit 4. Same lazy + factory
+    /// pattern as `firstRun`. Tests override `makeUpdaterService` BEFORE
+    /// first `updates` access to inject a `FakeUpdaterService`.
+    lazy var updates: UpdateCoordinator = UpdateCoordinator(
+        updater: makeUpdaterService(),
+        settingsStore: settingsStore
+    )
+    /// Factory for the underlying UpdaterService; default returns the
+    /// production `SparkleUpdaterService`. Override in tests before first
+    /// `updates` access.
+    var makeUpdaterService: @MainActor () -> UpdaterService = {
+        SparkleUpdaterService()
+    }
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -210,6 +223,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startAllWatchers()
         startAllPullPollers()
+
+        // Start the auto-updater AFTER watchers + pollers so a launch-via-
+        // deep-link (firstRun window opening, watchers spinning up) settles
+        // before the first scheduled update check fires. The relaunch veto
+        // gates Sparkle while the first-run window is up; commit 6 layers
+        // SyncEngine.pushInFlight on top.
+        updates.isBusy = { [weak self] in
+            self?.firstRun.isFirstRunWindowOpen ?? false
+        }
+        updates.start()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()

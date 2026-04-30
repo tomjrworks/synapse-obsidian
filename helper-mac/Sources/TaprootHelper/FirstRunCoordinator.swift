@@ -46,6 +46,14 @@ final class FirstRunCoordinator {
     /// windows on dealloc).
     private var firstRunWindowController: NSWindowController?
 
+    /// Sync gate used by UpdateCoordinator's relaunch postpone hook to
+    /// hold Sparkle while the first-run window is on screen. Visibility
+    /// flips to false when the user clicks Get-started or Cancel (both
+    /// paths call `window?.close()`).
+    var isFirstRunWindowOpen: Bool {
+        firstRunWindowController?.window?.isVisible == true
+    }
+
     init(
         services: Services,
         onCancelFirstRun: @escaping (UUID) -> Void,
