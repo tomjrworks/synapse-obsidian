@@ -1040,4 +1040,35 @@ final class AppDelegateTests: XCTestCase {
 
         XCTAssertTrue(fired)
     }
+
+    func testRevealInFinderClosureSeamCanBeInjected() {
+        var captured: URL?
+        app.revealInFinder = { captured = $0 }
+
+        let url = URL(fileURLWithPath: "/tmp/test")
+        app.revealInFinder(url)
+
+        XCTAssertEqual(captured, url)
+    }
+
+    func testOpenSyncLogClosureSeamCanBeInjected() {
+        var fired = false
+        app.openSyncLog = { fired = true }
+
+        app.openSyncLog()
+
+        XCTAssertTrue(fired)
+    }
+
+    func testResolveVersionLabelReadsBundleShortVersion() {
+        let v = AppDelegate.resolveVersionLabel(bundleLookup: { key in
+            key == "CFBundleShortVersionString" ? "1.2.3" : nil
+        })
+        XCTAssertEqual(v, "1.2.3")
+    }
+
+    func testResolveVersionLabelFallsBackToDev() {
+        let v = AppDelegate.resolveVersionLabel(bundleLookup: { _ in nil })
+        XCTAssertEqual(v, "dev")
+    }
 }
