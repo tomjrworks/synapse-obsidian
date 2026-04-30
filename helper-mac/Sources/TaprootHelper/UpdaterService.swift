@@ -34,7 +34,19 @@ protocol UpdaterService: AnyObject {
 /// `start()` explicitly — controls sequencing relative to first-run.
 @MainActor
 final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate {
-    private let controller: SPUStandardUpdaterController
+    /// Lazy so `self` is fully constructed by the time the controller is
+    /// built — `updaterDelegate: self` requires that. Sparkle's delegate
+    /// reference is `weak`, so no retain cycle.
+    /// userDriverDelegate stays nil — Sparkle's standard UI is fine for
+    /// Stage 1 (L4 lock). startingUpdater=false hands the launch decision
+    /// to AppDelegate.
+    private lazy var controller: SPUStandardUpdaterController = {
+        SPUStandardUpdaterController(
+            startingUpdater: false,
+            updaterDelegate: self,
+            userDriverDelegate: nil
+        )
+    }()
 
     private(set) var isStarted: Bool = false
     var shouldRelaunchVeto: @MainActor () -> Bool = { false }
@@ -44,20 +56,18 @@ final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate 
         set { controller.updater.automaticallyDownloadsUpdates = newValue }
     }
 
-    override init() {
-        // userDriverDelegate stays nil — Sparkle's standard UI is fine for
-        // Stage 1 (L4 lock). startingUpdater=false hands the launch decision
-        // to AppDelegate.
-        // Note: super.init() needs to land before `self` is reachable, so
-        // we construct the controller with a placeholder delegate, then
-        // re-set after super.init().
-        self.controller = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
-        super.init()
-    }
+    /// Stored install handler from Sparkle's postpone hook. Re-fired by the
+    /// poll once `shouldRelaunchVeto()` clears, or by the 60s fall-through.
+    private var pendingInstallHandler: (() -> Void)?
+    /// Wall-clock start of the current postpone window — used to enforce
+    /// the V4 60s fall-through cap.
+    private var postponeStartTime: Date?
+    private var postponePoller: Timer?
+
+    /// Hard ceiling on relaunch postponement so a stuck push / orphaned
+    /// firstRun window can't pin the update forever.
+    private static let postponeFallThroughSeconds: TimeInterval = 60.0
+    private static let postponePollInterval: TimeInterval = 2.0
 
     func start() {
         guard !isStarted else { return }
@@ -67,5 +77,59 @@ final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate 
 
     func checkForUpdates() {
         controller.checkForUpdates(nil)
+    }
+
+    // MARK: SPUUpdaterDelegate
+
+    /// V4: stores Sparkle's install handler when busy and re-fires it on
+    /// a 2s poll once the gate clears. Returning `true` tells Sparkle to
+    /// wait. 60s fall-through cap prevents indefinite pinning.
+    nonisolated func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        // Hop to MainActor — Sparkle calls this on the main thread but
+        // the protocol method itself isn't isolated.
+        MainActor.assumeIsolated {
+            guard self.shouldRelaunchVeto() else {
+                return false
+            }
+            self.pendingInstallHandler = installHandler
+            self.postponeStartTime = Date()
+            self.startPostponePoll()
+            return true
+        }
+    }
+
+    private func startPostponePoll() {
+        postponePoller?.invalidate()
+        postponePoller = Timer.scheduledTimer(
+            withTimeInterval: Self.postponePollInterval,
+            repeats: true
+        ) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                if let start = self.postponeStartTime,
+                   Date().timeIntervalSince(start) >= Self.postponeFallThroughSeconds {
+                    NSLog("[Taproot] update relaunch: 60s fall-through; allowing relaunch despite veto")
+                    self.firePending()
+                    timer.invalidate()
+                    return
+                }
+                if !self.shouldRelaunchVeto() {
+                    self.firePending()
+                    timer.invalidate()
+                }
+            }
+        }
+    }
+
+    private func firePending() {
+        let handler = pendingInstallHandler
+        pendingInstallHandler = nil
+        postponeStartTime = nil
+        postponePoller = nil
+        handler?()
     }
 }

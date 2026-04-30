@@ -216,10 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start the auto-updater AFTER watchers + pollers so a launch-via-
         // deep-link (firstRun window opening, watchers spinning up) settles
         // before the first scheduled update check fires. The relaunch veto
-        // gates Sparkle while the first-run window is up; commit 6 layers
-        // SyncEngine.pushInFlight on top.
-        updates.isBusy = { [weak self] in
-            self?.firstRun.isFirstRunWindowOpen ?? false
+        // postpones Sparkle while either the first-run window is up OR a
+        // push is in flight (V3 atomic counter on SyncEngine).
+        updates.isBusy = { [weak self, syncEngine] in
+            (syncEngine.pushInFlight > 0) || (self?.firstRun.isFirstRunWindowOpen ?? false)
         }
         updates.start()
 

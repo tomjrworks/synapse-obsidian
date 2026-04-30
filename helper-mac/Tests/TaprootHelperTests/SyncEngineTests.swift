@@ -635,3 +635,111 @@ private final class ActorBox<T>: @unchecked Sendable {
     func set(_ v: T) { lock.lock(); value = v; lock.unlock() }
     func get() -> T? { lock.lock(); defer { lock.unlock() }; return value }
 }
+
+// MARK: - T11.8 commit 6 — pushInFlight counter
+
+extension SyncEngineTests {
+    func testPushInFlightStartsAtZero() {
+        let engine = SyncEngine(httpClient: FakeHTTPClient(), baseURL: baseURL)
+        XCTAssertEqual(engine.pushInFlight, 0)
+    }
+
+    func testPushInFlightCounterIncrementsDuringSend() async throws {
+        let fake = FakeHTTPClient()
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let url = try makeFile(name: "a.md", contents: "hi")
+        let snap = makeSnapshot()
+        let event = FileChangeEvent(path: url, kind: .created, mtime: nil)
+
+        // Capture the counter at the moment the fake receives the request —
+        // i.e. inside the increment + before the defer-decrement fires.
+        let captured = ActorBox<Int32>()
+        await fake.setOnSend { [engine] in
+            captured.set(engine.pushInFlight)
+        }
+
+        await engine.push(workspace: snap, events: [event])
+
+        XCTAssertEqual(captured.get(), 1,
+                       "Counter must read 1 during the HTTP send (post-increment, pre-defer)")
+        XCTAssertEqual(engine.pushInFlight, 0,
+                       "defer must restore counter to 0 after push completes")
+    }
+
+    func testPushInFlightDecrementsOnTransportFailure() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.failure(URLError(.notConnectedToInternet)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let url = try makeFile(name: "a.md", contents: "hi")
+        let snap = makeSnapshot()
+        let event = FileChangeEvent(path: url, kind: .created, mtime: nil)
+
+        await engine.push(workspace: snap, events: [event])
+
+        XCTAssertEqual(engine.pushInFlight, 0,
+                       "Counter must restore to 0 even when the HTTP send throws")
+    }
+
+    func testPushInFlightDecrementsOn401() async throws {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 401, body: Data())))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let url = try makeFile(name: "a.md", contents: "hi")
+        let snap = makeSnapshot()
+        let event = FileChangeEvent(path: url, kind: .created, mtime: nil)
+
+        await engine.push(workspace: snap, events: [event])
+
+        XCTAssertEqual(engine.pushInFlight, 0,
+                       "401 path also exits via defer; counter must drain")
+    }
+
+    func testPushInFlightDoesNotIncrementOnEarlyReturn() async {
+        let engine = SyncEngine(httpClient: FakeHTTPClient(), baseURL: baseURL)
+        let snap = makeSnapshot()
+
+        // No events → push() returns before the counter gates.
+        await engine.push(workspace: snap, events: [])
+
+        XCTAssertEqual(engine.pushInFlight, 0,
+                       "Empty-events early-return must not bump the counter")
+    }
+
+    func testConcurrentPushesAccumulateInFlight() async throws {
+        let fake = FakeHTTPClient()
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let url1 = try makeFile(name: "a.md", contents: "hi-a")
+        let url2 = try makeFile(name: "b.md", contents: "hi-b")
+
+        let observed = ActorBox<Int32>()
+        var maxObserved: Int32 = 0
+        let observedLock = NSLock()
+        await fake.setOnSend { [engine] in
+            let snap = engine.pushInFlight
+            observed.set(snap)
+            observedLock.lock()
+            if snap > maxObserved { maxObserved = snap }
+            observedLock.unlock()
+        }
+
+        async let p1: Void = engine.push(
+            workspace: makeSnapshot(),
+            events: [FileChangeEvent(path: url1, kind: .created, mtime: nil)]
+        )
+        async let p2: Void = engine.push(
+            workspace: makeSnapshot(),
+            events: [FileChangeEvent(path: url2, kind: .created, mtime: nil)]
+        )
+        _ = await (p1, p2)
+
+        // Two pushes against an actor serialize through the actor's
+        // mailbox. Each one's HTTP send happens in turn — but the counter
+        // increment is non-actor-isolated (lock-based), so even serialized
+        // sends see >=1 during their own window. Lock the post-condition:
+        // counter drains to 0 once both finish.
+        XCTAssertEqual(engine.pushInFlight, 0,
+                       "All in-flight counts must drain after concurrent pushes complete")
+        XCTAssertGreaterThanOrEqual(maxObserved, 1,
+                                    "At least one onSend snapshot must observe counter >= 1")
+    }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import os.lock
 
 // MARK: - Wire types
 
@@ -114,6 +115,20 @@ actor SyncEngine {
     private let baseURL: URL
     private var onUnauthorized: @MainActor (UUID) -> Void = { _ in }
 
+    /// V3 + F2: swift-atomics is not transitive (Sparkle declares no deps),
+    /// so a stdlib `OSAllocatedUnfairLock`-protected `Int32` provides the
+    /// sync read Sparkle's relaunch postpone hook needs across the actor
+    /// boundary. The lock is `nonisolated` so reads from MainActor / any
+    /// thread don't require an `await`.
+    private nonisolated let pushInFlightLock = OSAllocatedUnfairLock<Int32>(initialState: 0)
+
+    /// Count of in-flight pushes. Readable from any thread / MainActor
+    /// without `await`. Sparkle's `shouldPostponeRelaunchForUpdate` polls
+    /// this synchronously every 2s during a pending update.
+    nonisolated var pushInFlight: Int32 {
+        pushInFlightLock.withLock { $0 }
+    }
+
     init(httpClient: HTTPClient, baseURL: URL) {
         self.httpClient = httpClient
         self.baseURL = baseURL
@@ -148,6 +163,13 @@ actor SyncEngine {
             ],
             body: body
         )
+
+        // pushInFlight bumps span only the network round-trip — not the
+        // early-returns above (no events / encode failed). Defer guarantees
+        // symmetric decrement on every exit path (success, 401, 413,
+        // transport throw).
+        pushInFlightLock.withLock { $0 += 1 }
+        defer { pushInFlightLock.withLock { $0 -= 1 } }
 
         do {
             let response = try await httpClient.send(request)
