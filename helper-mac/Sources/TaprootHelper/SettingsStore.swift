@@ -7,11 +7,6 @@ struct SettingsStore {
         self.defaults = defaults
     }
 
-    var notificationsEnabled: Bool {
-        get { defaults.bool(forKey: "taproot.settings.notificationsEnabled") }
-        set { defaults.set(newValue, forKey: "taproot.settings.notificationsEnabled") }
-    }
-
     /// L1 default is `false` (prompt-first install). Persisted so the
     /// preference survives helper relaunch.
     var automaticallyInstallsUpdates: Bool {

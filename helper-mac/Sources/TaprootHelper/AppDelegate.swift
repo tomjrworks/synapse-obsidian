@@ -51,23 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var revealInFinder: @MainActor (URL) -> Void = { url in
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
-    /// Test seam (T11.6): opens Console.app for sync-log viewing. Default
-    /// uses the macOS 11+ openApplication API to avoid launchApplication's
-    /// deprecation warning under our macOS 13+ floor (Package.swift:6).
-    /// Until a dedicated `~/Library/Logs/Taproot/sync.log` lands, Tom
-    /// filters Console manually by `process == TaprootHelper`.
-    var openSyncLog: @MainActor () -> Void = {
-        let consoleURL = URL(fileURLWithPath: "/System/Applications/Utilities/Console.app")
-        NSWorkspace.shared.openApplication(
-            at: consoleURL,
-            configuration: NSWorkspace.OpenConfiguration(),
-            completionHandler: nil
-        )
-    }
     /// Single shared settings window controller. Lazily created on first
     /// `presentSettings()` invocation; closing the window hides it but
     /// does NOT release the controller (NSWindowController default).
-    private var settingsWindowController: SettingsWindowController?
+    /// `private(set)` so tests can read post-construction state (e.g.,
+    /// drive the Check-for-updates button) without mutating it directly,
+    /// mirroring the `currentMenu` test seam.
+    private(set) var settingsWindowController: SettingsWindowController?
     /// First-run flow: extracted in T11.8 commit 2 per audit-3 A1.
     /// Lazy so `nonisolated init` doesn't construct it on the wrong actor;
     /// `applicationDidFinishLaunching` triggers materialization by calling
@@ -189,12 +179,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let interval = "\(self.pullIntervalMs / 1000)s"
                 let version = AppDelegate.resolveVersionLabel()
                 self.settingsWindowController = SettingsWindowController(
-                    settingsStore: self.settingsStore,
                     vaultFolderURL: url,
                     intervalLabel: interval,
                     versionLabel: version,
                     onRevealVaultFolder: { [weak self] u in self?.revealInFinder(u) },
-                    onOpenSyncLog: { [weak self] in self?.openSyncLog() }
+                    onCheckForUpdates: { [weak self] in self?.updates.checkForUpdates() }
                 )
             }
             NSApp.activate(ignoringOtherApps: true)

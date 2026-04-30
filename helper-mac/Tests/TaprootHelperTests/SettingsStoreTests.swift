@@ -14,15 +14,16 @@ final class SettingsStoreTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
     }
 
-    func testNotificationsEnabledDefaultsFalse() {
+    func testAutomaticallyInstallsUpdatesDefaultsFalse() {
         let store = SettingsStore(defaults: defaults)
-        XCTAssertFalse(store.notificationsEnabled)
+        XCTAssertFalse(store.automaticallyInstallsUpdates,
+                       "L1 default: prompt-first install behavior")
     }
 
-    func testNotificationsEnabledRoundTrips() {
+    func testAutomaticallyInstallsUpdatesRoundTrips() {
         var store = SettingsStore(defaults: defaults)
-        store.notificationsEnabled = true
-        XCTAssertTrue(SettingsStore(defaults: defaults).notificationsEnabled)
+        store.automaticallyInstallsUpdates = true
+        XCTAssertTrue(SettingsStore(defaults: defaults).automaticallyInstallsUpdates)
     }
 
     func testIsPausedOnLaunchDefaultsFalseForUnknownWorkspace() {

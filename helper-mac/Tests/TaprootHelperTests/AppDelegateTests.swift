@@ -1083,19 +1083,6 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertTrue(fired, "Tests must be able to inject a stub for the settings-window seam")
     }
 
-    func testNotificationsToggleRoundTripsViaSettingsStore() {
-        let suite = "test-\(UUID().uuidString)"
-        defer { UserDefaults().removePersistentDomain(forName: suite) }
-
-        var store = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
-        store.notificationsEnabled = true
-
-        XCTAssertTrue(
-            SettingsStore(defaults: UserDefaults(suiteName: suite)!).notificationsEnabled,
-            "Notifications toggle must persist to the underlying UserDefaults suite"
-        )
-    }
-
     func testMenuOpenSettingsInvokesPresentSettings() {
         var fired = false
         app.presentSettings = { fired = true }
@@ -1116,13 +1103,44 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(captured, url)
     }
 
-    func testOpenSyncLogClosureSeamCanBeInjected() {
-        var fired = false
-        app.openSyncLog = { fired = true }
+    func testSettingsCheckForUpdatesProxiesToUpdates() {
+        // Drive the wired presentSettings path: applicationDidFinishLaunching
+        // is what assigns the production presentSettings closure that wires
+        // the SettingsWindowController with onCheckForUpdates → updates.checkForUpdates.
+        // Stub the rest of the lifecycle so it stays atomic.
+        let fake = FakeUpdaterService()
+        app.makeUpdaterService = { fake }
+        app.firstRun.presentFirstRun = { _, _ in }
+        app.applicationDidFinishLaunching(Notification(name: .init("test")))
 
-        app.openSyncLog()
+        // Open the Settings window and click the Check-for-updates button.
+        // SettingsWindowController exposes the button's selector as
+        // `checkUpdatesClicked`; we drive it via the wired callback chain
+        // by performing the button's action against its target.
+        app.presentSettings()
+        let updatesButton = findButton(
+            in: app.settingsWindowController?.window?.contentView,
+            titled: "Check for updates…"
+        )
+        XCTAssertNotNil(updatesButton, "Settings window must surface a Check-for-updates button")
 
-        XCTAssertTrue(fired)
+        if let button = updatesButton, let action = button.action, let target = button.target as? NSObject {
+            target.perform(action, with: button)
+        }
+
+        XCTAssertEqual(fake.checkForUpdatesCallCount, 1,
+                       "Settings → Check-for-updates must proxy to updates.checkForUpdates()")
+    }
+
+    /// Recursive search for a button by title across NSStackView / NSGridView
+    /// hierarchies. Used by testSettingsCheckForUpdatesProxiesToUpdates.
+    private func findButton(in view: NSView?, titled title: String) -> NSButton? {
+        guard let view else { return nil }
+        if let button = view as? NSButton, button.title == title { return button }
+        for sub in view.subviews {
+            if let hit = findButton(in: sub, titled: title) { return hit }
+        }
+        return nil
     }
 
     func testResolveVersionLabelReadsBundleShortVersion() {

@@ -1,39 +1,36 @@
 import AppKit
 
-/// Stage 1 T11.6 settings window. Five-row form: vault folder, sync interval,
-/// notifications toggle, version + Sparkle placeholder, view sync log.
+/// Stage 1 settings window. Three-row form for T11.8: vault folder,
+/// sync interval, version + Check-for-updates.
 ///
-/// Tested transitively via the `presentSettings` / `revealInFinder` /
-/// `openSyncLog` closure seams on `AppDelegate`. The window controller itself
-/// is not unit-tested — AppKit lifecycle is flaky in headless XCTest, and the
-/// per-row behavior is locked at the AppDelegate-level seams (mirrors how
-/// `NSStatusItem` is not directly tested; `buildMenu` is tested as a pure
-/// function instead).
+/// Tested transitively via the `presentSettings` / `revealInFinder`
+/// closure seams on `AppDelegate`, plus the Coordinator-level wiring on
+/// `UpdateCoordinator`. The window controller itself is not unit-tested —
+/// AppKit lifecycle is flaky in headless XCTest, and the per-row behavior
+/// is locked at the higher seams (mirrors how `NSStatusItem` is not
+/// directly tested; `buildMenu` is tested as a pure function instead).
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    private var settingsStore: SettingsStore
     private let vaultFolderURL: URL?
     private let intervalLabel: String
     private let versionLabel: String
     private let onRevealVaultFolder: (URL) -> Void
-    private let onOpenSyncLog: () -> Void
+    private let onCheckForUpdates: () -> Void
 
     init(
-        settingsStore: SettingsStore,
         vaultFolderURL: URL?,
         intervalLabel: String,
         versionLabel: String,
         onRevealVaultFolder: @escaping (URL) -> Void,
-        onOpenSyncLog: @escaping () -> Void
+        onCheckForUpdates: @escaping () -> Void
     ) {
-        self.settingsStore = settingsStore
         self.vaultFolderURL = vaultFolderURL
         self.intervalLabel = intervalLabel
         self.versionLabel = versionLabel
         self.onRevealVaultFolder = onRevealVaultFolder
-        self.onOpenSyncLog = onOpenSyncLog
+        self.onCheckForUpdates = onCheckForUpdates
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 280),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -76,33 +73,18 @@ final class SettingsWindowController: NSWindowController {
             NSTextField(labelWithString: intervalLabel),
         ])
 
-        // Row 3: Notifications toggle (persisted only — no real delivery yet)
-        let toggle = NSButton(
-            checkboxWithTitle: "",
-            target: self,
-            action: #selector(notificationsToggleChanged(_:))
-        )
-        toggle.state = settingsStore.notificationsEnabled ? .on : .off
-        grid.addRow(with: [NSTextField(labelWithString: "Notifications:"), toggle])
-
-        // Row 4: Version + disabled Sparkle placeholder
+        // Row 3: Version + Check-for-updates (Sparkle's standard window)
         let versionField = NSTextField(labelWithString: versionLabel)
-        let updatesButton = NSButton(title: "Check for updates…", target: nil, action: nil)
-        updatesButton.bezelStyle = .rounded
-        updatesButton.isEnabled = false // TODO T11.8: wire Sparkle
-        let row4 = NSStackView(views: [versionField, updatesButton])
-        row4.orientation = .horizontal
-        row4.spacing = 8
-        grid.addRow(with: [NSTextField(labelWithString: "Version:"), row4])
-
-        // Row 5: View sync log → Console.app
-        let logButton = NSButton(
-            title: "View sync log",
+        let updatesButton = NSButton(
+            title: "Check for updates…",
             target: self,
-            action: #selector(openLogClicked(_:))
+            action: #selector(checkUpdatesClicked(_:))
         )
-        logButton.bezelStyle = .rounded
-        grid.addRow(with: [NSTextField(labelWithString: ""), logButton])
+        updatesButton.bezelStyle = .rounded
+        let row3 = NSStackView(views: [versionField, updatesButton])
+        row3.orientation = .horizontal
+        row3.spacing = 8
+        grid.addRow(with: [NSTextField(labelWithString: "Version:"), row3])
 
         // Right-align the label column for a clean form look.
         if let labelColumn = grid.column(at: 0) as NSGridColumn? {
@@ -121,16 +103,12 @@ final class SettingsWindowController: NSWindowController {
         window?.contentView = container
     }
 
-    @objc private func notificationsToggleChanged(_ sender: NSButton) {
-        settingsStore.notificationsEnabled = (sender.state == .on)
-    }
-
     @objc private func revealClicked(_ sender: NSButton) {
         guard let url = vaultFolderURL else { return }
         onRevealVaultFolder(url)
     }
 
-    @objc private func openLogClicked(_ sender: NSButton) {
-        onOpenSyncLog()
+    @objc private func checkUpdatesClicked(_ sender: NSButton) {
+        onCheckForUpdates()
     }
 }
