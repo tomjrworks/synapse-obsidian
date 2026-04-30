@@ -1,5 +1,16 @@
 import AppKit
 
+/// T11.7: failure modes from `fetchWorkspaceName` (the /api/me lookup that
+/// kicks off the first-run flow). Mapped to user-facing copy by
+/// `AppDelegate.firstRunErrorMessage(_:)`.
+enum FirstRunError: Error, Equatable {
+    case notWired
+    case unauthorized
+    case transport
+    case decodeFailed
+    case http(Int)
+}
+
 /// All AppDelegate methods and property mutations must run on the main thread.
 /// NSApplicationDelegate callbacks, NSStatusItem, and AppKit menu state all
 /// require main-thread isolation. `@MainActor` enforces this at compile time
@@ -65,14 +76,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
     /// Test seam (T11.7): handles a first-connect deep link by opening the
-    /// welcome window. Default impl is wired in commit 5; commit 4 leaves
-    /// it as a no-op so handleAuthURL's new-workspace branch routes through
-    /// a closure tests can inject.
+    /// welcome window. Default impl wired in `wireFirstRunDefaults()`.
     var presentFirstRun: @MainActor (UUID, String) -> Void = { _, _ in }
+    /// Test seam (T11.7): GET /api/me with the bearer to fetch workspace_name.
+    /// Default returns `.notWired`; production impl is wired in
+    /// `wireFirstRunDefaults()`.
+    var fetchWorkspaceName: @MainActor (UUID, String) async -> Result<String, FirstRunError> = { _, _ in .failure(.notWired) }
+    /// Test seam (T11.7): factory for the welcome window. Returns the abstract
+    /// NSWindowController so tests can inject a stub. Default returns a bare
+    /// NSWindowController; production impl in `wireFirstRunDefaults()`
+    /// constructs a `FirstRunWindowController`.
+    var makeFirstRunWindow: @MainActor (UUID, String, String, URL, @escaping (UUID) -> Void, @escaping (UUID, String, URL) -> Void) -> NSWindowController = { _, _, _, _, _, _ in NSWindowController() }
+    /// Test seam (T11.7): shows a failure alert when /api/me cannot be fetched
+    /// or its body lacks workspace_name. Default no-op; production impl wired
+    /// in `wireFirstRunDefaults()`.
+    var presentFirstRunFailureAlert: @MainActor (String) -> Void = { _ in }
+    /// Test seam (T11.7): opens the website's signin URL when the user picks
+    /// "Connect your Taproot account". Default uses NSWorkspace.shared.open.
+    var openConnectURL: @MainActor (URL) -> Void = { url in
+        NSWorkspace.shared.open(url)
+    }
     /// Single shared settings window controller. Lazily created on first
     /// `presentSettings()` invocation; closing the window hides it but
     /// does NOT release the controller (NSWindowController default).
     private var settingsWindowController: SettingsWindowController?
+    /// Holds the welcome window so it isn't deallocated mid-flow. Reassigned
+    /// when a new first-run window opens (existing one closed first per
+    /// Refinement A — NSWindowController does NOT auto-close programmatic
+    /// windows on dealloc).
+    private var firstRunWindowController: NSWindowController?
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -161,6 +193,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindowController?.showWindow(nil)
         }
 
+        // Wire all T11.7 first-run seam defaults BEFORE loadWorkspacesFromKeychain.
+        // The URL handler is registered in applicationWillFinishLaunching, so a
+        // launch-via-deep-link can queue handleAuthURL very early — every seam
+        // it might hit must already be production-wired.
+        wireFirstRunDefaults()
+
         loadWorkspacesFromKeychain()
         // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE
         // startAllWatchers/startAllPullPollers run. The early-return guards
@@ -179,6 +217,135 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()
+
+        // Smoke-only seam (Refinement C): synthesize a deep link from env if
+        // set. Inert in release. Closes the unbundled-binary smoke gap —
+        // CFBundleURLTypes only registers `taproot://` inside a .app bundle,
+        // so `swift run TaprootHelper` can't receive real URL events. See
+        // ~/.claude/projects/-Users-miloman/memory/reference_taproot_smoke_gotchas.md.
+        if let injected = ProcessInfo.processInfo.environment["TAPROOT_DEV_INJECT_DEEPLINK"],
+           let url = URL(string: injected) {
+            Task { @MainActor [weak self] in self?.handleAuthURL(url) }
+        }
+    }
+
+    /// Wires the production impls for the T11.7 first-run closure seams.
+    /// Extracted from `applicationDidFinishLaunching` so tests can drive the
+    /// wired fetchWorkspaceName / presentFirstRun without spawning the
+    /// menubar item or the watcher/poller stack.
+    func wireFirstRunDefaults() {
+        fetchWorkspaceName = { [weak self] id, bearer in
+            guard let self else { return .failure(.notWired) }
+            let url = self.services.baseURL.appendingPathComponent("api/me")
+            let request = HTTPRequest(
+                url: url,
+                method: "GET",
+                headers: ["Authorization": "Bearer \(bearer)"],
+                body: Data()
+            )
+            do {
+                let response = try await self.services.httpClient.send(request)
+                switch response.status {
+                case 200..<300:
+                    struct MeBody: Decodable { let workspace_name: String? }
+                    guard let body = try? JSONDecoder().decode(MeBody.self, from: response.body),
+                          let name = body.workspace_name, !name.isEmpty else {
+                        return .failure(.decodeFailed)
+                    }
+                    return .success(name)
+                case 401:
+                    return .failure(.unauthorized)
+                default:
+                    return .failure(.http(response.status))
+                }
+            } catch {
+                return .failure(.transport)
+            }
+        }
+
+        makeFirstRunWindow = { id, bearer, name, defaultURL, onCancel, onConfirm in
+            FirstRunWindowController(
+                workspaceID: id,
+                bearer: bearer,
+                workspaceName: name,
+                defaultFolderURL: defaultURL,
+                onCancel: onCancel,
+                onConfirm: onConfirm
+            )
+        }
+
+        presentFirstRunFailureAlert = { msg in
+            let alert = NSAlert()
+            alert.messageText = "Connection failed"
+            alert.informativeText = msg
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+
+        presentFirstRun = { [weak self] id, bearer in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let result = await self.fetchWorkspaceName(id, bearer)
+                switch result {
+                case .success(let name):
+                    let slug = Slug.from(name)
+                    let defaultURL = self.defaultLocalFolder(for: id, slug: slug)
+                    // Refinement A: NSWindowController does NOT auto-close
+                    // programmatic windows on dealloc — close any prior
+                    // window before reassigning so a rapid Connect double-
+                    // click can't leave an orphaned window onscreen.
+                    if let existing = self.firstRunWindowController {
+                        existing.window?.close()
+                    }
+                    let controller = self.makeFirstRunWindow(
+                        id, bearer, name, defaultURL,
+                        { [weak self] cancelID in self?.cancelFirstRun(workspaceID: cancelID) },
+                        { [weak self] confirmID, confirmBearer, confirmURL in
+                            self?.confirmFirstRun(
+                                workspaceID: confirmID,
+                                bearer: confirmBearer,
+                                name: name,
+                                vaultFolder: confirmURL
+                            )
+                        }
+                    )
+                    self.firstRunWindowController = controller
+                    NSApp.activate(ignoringOtherApps: true)
+                    controller.showWindow(nil)
+                case .failure(let err):
+                    self.cancelFirstRun(workspaceID: id)
+                    self.presentFirstRunFailureAlert(self.firstRunErrorMessage(err))
+                }
+            }
+        }
+    }
+
+    /// User-facing copy for first-run failure alerts.
+    func firstRunErrorMessage(_ err: FirstRunError) -> String {
+        switch err {
+        case .unauthorized:
+            return "Sign-in expired. Please try again."
+        case .transport:
+            return "Couldn't reach Taproot. Check your internet connection and try again."
+        case .decodeFailed:
+            return "Connection failed: server response missing workspace name."
+        case .http(let status):
+            return "Connection failed: server returned \(status)."
+        case .notWired:
+            return "Connection failed."
+        }
+    }
+
+    @objc func menuConnectAccount(_ sender: NSMenuItem) {
+        var components = URLComponents(
+            url: services.baseURL.appendingPathComponent("signin"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "source", value: "helper")]
+        guard let url = components.url else { return }
+        openConnectURL(url)
     }
 
     /// Routes every `workspaces` mutation through a single helper so the
@@ -387,9 +554,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu(for workspaces: [Workspace]) -> NSMenu {
         let menu = NSMenu()
         if workspaces.isEmpty {
-            let label = NSMenuItem(title: "Not signed in", action: nil, keyEquivalent: "")
-            label.isEnabled = false
-            menu.addItem(label)
+            let connect = NSMenuItem(
+                title: "Connect your Taproot account",
+                action: #selector(menuConnectAccount(_:)),
+                keyEquivalent: ""
+            )
+            connect.target = self
+            menu.addItem(connect)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
             return menu

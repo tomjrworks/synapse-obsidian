@@ -11,6 +11,11 @@ final class AppDelegateTests: XCTestCase {
     private var fake: FakeHTTPClient!
 
     override func setUpWithError() throws {
+        // Force NSApp init for test paths that touch NSApp.activate /
+        // NSApplication.shared (e.g., the T11.7 wired presentFirstRun
+        // chain). Production gets NSApp via main.swift's
+        // NSApplication.shared.run(); xctest doesn't run that.
+        _ = NSApplication.shared
         keychain = KeychainStore(service: testService)
         try keychain.deleteAllForService()
         fake = FakeHTTPClient()
@@ -775,20 +780,6 @@ final class AppDelegateTests: XCTestCase {
 
     // MARK: - T11.5 menu builder tests
 
-    func testBuildMenuShowsNotSignedInForZeroWorkspaces() {
-        let menu = app.buildMenu(for: [])
-
-        XCTAssertEqual(menu.items.count, 3, "Zero-workspace menu shape: [Not signed in, separator, Quit]")
-
-        let label = menu.items[0]
-        XCTAssertEqual(label.title, "Not signed in")
-        XCTAssertFalse(label.isEnabled, "'Not signed in' is a disabled label, not a clickable action")
-
-        XCTAssertTrue(menu.items[1].isSeparatorItem)
-
-        XCTAssertEqual(menu.items[2].title, "Quit")
-    }
-
     func testBuildMenuFlatLayoutForSingleWorkspace() throws {
         let id = UUID()
         let workspace = Workspace(
@@ -1362,5 +1353,169 @@ final class AppDelegateTests: XCTestCase {
                       "Watcher must not start before confirmFirstRun")
         XCTAssertTrue(app.pullPollers.isEmpty,
                       "Poller must not start before confirmFirstRun")
+    }
+
+    // MARK: - T11.7 fetchWorkspaceName + presentFirstRun wiring (commit 5)
+
+    private func meBodyJSON(workspaceName: String?, workspaceID: UUID) -> Data {
+        var dict: [String: Any] = [
+            "user_id": "u",
+            "email": "e",
+            "workspace_id": workspaceID.uuidString,
+        ]
+        if let name = workspaceName {
+            dict["workspace_name"] = name
+        }
+        return try! JSONSerialization.data(withJSONObject: dict)
+    }
+
+    func testFetchWorkspaceNameSendsAuthenticatedGetToApiMe() async throws {
+        let id = UUID()
+        await fake.setStubbedResponse(
+            .success(HTTPResponse(status: 200, body: meBodyJSON(workspaceName: "My Vault", workspaceID: id)))
+        )
+        app.wireFirstRunDefaults()
+
+        let result = await app.fetchWorkspaceName(id, "B")
+
+        switch result {
+        case .success(let name):
+            XCTAssertEqual(name, "My Vault")
+        case .failure(let err):
+            XCTFail("Expected success, got \(err)")
+        }
+        let lastRequest = await fake.lastRequest
+        let req = try XCTUnwrap(lastRequest)
+        XCTAssertTrue(
+            req.url.absoluteString.hasSuffix("/api/me"),
+            "Expected URL to end with /api/me, got \(req.url.absoluteString)"
+        )
+        XCTAssertEqual(req.method, "GET")
+        XCTAssertEqual(req.headers["Authorization"], "Bearer B")
+    }
+
+    func testFetchWorkspaceNameMaps401ToUnauthorized() async {
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 401, body: Data())))
+        app.wireFirstRunDefaults()
+
+        let result = await app.fetchWorkspaceName(UUID(), "B")
+
+        if case .failure(let err) = result {
+            XCTAssertEqual(err, .unauthorized)
+        } else {
+            XCTFail("Expected .failure(.unauthorized)")
+        }
+    }
+
+    func testFetchWorkspaceNameMapsMissingFieldToDecodeFailed() async {
+        let id = UUID()
+        await fake.setStubbedResponse(
+            .success(HTTPResponse(status: 200, body: meBodyJSON(workspaceName: nil, workspaceID: id)))
+        )
+        app.wireFirstRunDefaults()
+
+        let result = await app.fetchWorkspaceName(id, "B")
+
+        if case .failure(let err) = result {
+            XCTAssertEqual(err, .decodeFailed)
+        } else {
+            XCTFail("Expected .failure(.decodeFailed)")
+        }
+    }
+
+    func testFetchWorkspaceNameTransportErrorMapsToTransport() async {
+        await fake.setStubbedResponse(.failure(URLError(.notConnectedToInternet)))
+        app.wireFirstRunDefaults()
+
+        let result = await app.fetchWorkspaceName(UUID(), "B")
+
+        if case .failure(let err) = result {
+            XCTAssertEqual(err, .transport)
+        } else {
+            XCTFail("Expected .failure(.transport)")
+        }
+    }
+
+    func testPresentFirstRunFetchesNameThenConstructsWindow() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        await fake.setStubbedResponse(
+            .success(HTTPResponse(status: 200, body: meBodyJSON(workspaceName: "My Vault", workspaceID: id)))
+        )
+        app.wireFirstRunDefaults()
+
+        var capturedName: String?
+        var capturedDefaultURL: URL?
+        let exp = expectation(description: "makeFirstRunWindow fired")
+        app.makeFirstRunWindow = { _, _, name, defaultURL, _, _ in
+            capturedName = name
+            capturedDefaultURL = defaultURL
+            exp.fulfill()
+            return NSWindowController()
+        }
+
+        app.presentFirstRun(id, "B")
+        await fulfillment(of: [exp], timeout: 2.0)
+
+        XCTAssertEqual(capturedName, "My Vault")
+        XCTAssertTrue(
+            capturedDefaultURL?.path.hasSuffix("Taproot/my-vault") == true,
+            "expected default folder slug, got \(capturedDefaultURL?.path ?? "nil")"
+        )
+    }
+
+    func testPresentFirstRunOnFetchFailureCleansUpAndShowsAlert() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "B")
+        app.settingsStore.setWorkspaceName("Stale", for: id)
+
+        app.wireFirstRunDefaults()
+        // Override fetchWorkspaceName AFTER wiring (closure body looks up via
+        // self.fetchWorkspaceName at call time, so override sticks).
+        app.fetchWorkspaceName = { _, _ in .failure(.unauthorized) }
+
+        var capturedMsg: String?
+        let exp = expectation(description: "alert shown")
+        app.presentFirstRunFailureAlert = { msg in
+            capturedMsg = msg
+            exp.fulfill()
+        }
+
+        app.presentFirstRun(id, "B")
+        await fulfillment(of: [exp], timeout: 2.0)
+
+        XCTAssertEqual(capturedMsg, "Sign-in expired. Please try again.")
+        XCTAssertNil(try keychain.retrieve(workspaceID: id))
+        XCTAssertNil(app.settingsStore.workspaceName(for: id))
+    }
+
+    func testConnectAccountMenuItemAppearsWhenWorkspacesEmpty() {
+        let menu = app.buildMenu(for: [])
+
+        XCTAssertEqual(menu.items.count, 3, "Empty menu shape: [Connect, separator, Quit]")
+        let connect = menu.items[0]
+        XCTAssertEqual(connect.title, "Connect your Taproot account")
+        XCTAssertTrue(connect.isEnabled)
+        XCTAssertEqual(connect.action, #selector(AppDelegate.menuConnectAccount(_:)))
+        XCTAssertTrue(menu.items[1].isSeparatorItem)
+        XCTAssertEqual(menu.items[2].title, "Quit")
+    }
+
+    func testMenuConnectAccountOpensSignInURL() async {
+        var capturedURL: URL?
+        let exp = expectation(description: "openConnectURL fired")
+        app.openConnectURL = { url in
+            capturedURL = url
+            exp.fulfill()
+        }
+
+        app.menuConnectAccount(NSMenuItem())
+        await fulfillment(of: [exp], timeout: 1.0)
+
+        XCTAssertTrue(
+            capturedURL?.absoluteString.hasSuffix("/signin?source=helper") == true,
+            "expected /signin?source=helper, got \(capturedURL?.absoluteString ?? "nil")"
+        )
     }
 }
