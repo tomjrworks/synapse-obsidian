@@ -48,13 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Polling interval in ms. `TAPROOT_PULL_INTERVAL_MS` env-var seam matches
     /// the existing `TAPROOT_BASE_URL` / `TAPROOT_LOCAL_FOLDER_BASE` test
     /// pattern. Read at instance construction; tests set the env before init.
-    private let pullIntervalMs: UInt64 = {
+    /// Internal access (T11.6): SettingsWindowController reads it for the
+    /// "Sync interval:" row.
+    let pullIntervalMs: UInt64 = {
         if let raw = ProcessInfo.processInfo.environment["TAPROOT_PULL_INTERVAL_MS"],
            let n = UInt64(raw), n > 0 {
             return n
         }
         return 30_000
     }()
+
+    /// T11.6 settings persistence (notifications toggle, pause-on-launch flag).
+    /// Lazily constructed against `taprootDefaults()` so the env-var seam
+    /// matches the existing cursor persistence path.
+    lazy var settingsStore: SettingsStore = SettingsStore(defaults: taprootDefaults())
 
     /// D5 cap: max pages drained per tick. Bounds the watcher-pause window to
     /// roughly 5000 files / 10s on initial pull of a large workspace.
@@ -88,6 +95,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         loadWorkspacesFromKeychain()
+        // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE
+        // startAllWatchers/startAllPullPollers run. The early-return guards
+        // in those methods then no-op for `.paused` workspaces.
+        resumePausedFromUserDefaults()
         // Wire SyncEngine's 401 callback to AppDelegate.signOut. `[weak self]`
         // because the engine outlives a notional teardown, and we don't want
         // its callback to keep AppDelegate alive past app shutdown.
@@ -227,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mutateWorkspaces { $0.removeAll { $0.id == workspaceID } }
             pullCursors.removeValue(forKey: workspaceID)
             clearCursor(for: workspaceID)
+            settingsStore.clearPausedOnLaunch(for: workspaceID)
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
@@ -237,6 +249,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Equivalent to `performSignOut`.
     func signOut(workspaceID: UUID) {
         performSignOut(workspaceID: workspaceID)
+    }
+
+    /// Reads pause-on-launch state from UserDefaults and marks any flagged
+    /// workspaces `.paused` BEFORE `startAllWatchers`/`startAllPullPollers`
+    /// run at launch. The early-return guards in `startWatcher` and
+    /// `startPullPoller` then no-op for `.paused` workspaces, preserving
+    /// the per-loaded-workspace start contract.
+    func resumePausedFromUserDefaults() {
+        let pausedIDs = workspaces
+            .filter { settingsStore.isPausedOnLaunch(for: $0.id) }
+            .map { $0.id }
+        guard !pausedIDs.isEmpty else { return }
+        mutateWorkspaces { wks in
+            for id in pausedIDs {
+                if let i = wks.firstIndex(where: { $0.id == id }) {
+                    wks[i].syncStatus = .paused
+                }
+            }
+        }
     }
 
     // MARK: - T11.5 menu construction
@@ -358,14 +389,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func togglePauseSync(workspaceID: UUID) {
         guard let i = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         if workspaces[i].syncStatus == .paused {
-            // Resume.
-            startWatcher(for: workspaces[i])
-            startPullPoller(for: workspaces[i])
+            // Resume. Flip syncStatus to .idle BEFORE starting so the
+            // T11.6 `.paused` early-return guard in `startWatcher` /
+            // `startPullPoller` doesn't fire on the resumed workspace.
             mutateWorkspaces { wks in
                 if let j = wks.firstIndex(where: { $0.id == workspaceID }) {
                     wks[j].syncStatus = .idle
                 }
             }
+            startWatcher(for: workspaces[i])
+            startPullPoller(for: workspaces[i])
+            settingsStore.clearPausedOnLaunch(for: workspaceID)
         } else {
             // Pause. Removing the dict entry lets startWatcher's idempotency
             // guard (`watchers[id] == nil`) pass on the next resume.
@@ -377,6 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     wks[j].syncStatus = .paused
                 }
             }
+            settingsStore.setPausedOnLaunch(true, for: workspaceID)
         }
     }
 
@@ -396,6 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Early-returns if a watcher already exists for the workspace ID.
     func startWatcher(for workspace: Workspace) {
         guard watchers[workspace.id] == nil else { return }
+        // T11.6: paused workspaces resumed from UserDefaults at launch must
+        // not start a watcher. Resume path flips `.paused` → `.idle` BEFORE
+        // calling `startWatcher` (see `togglePauseSync`), so this guard
+        // only fires for the on-launch case.
+        guard workspace.syncStatus != .paused else { return }
         let id = workspace.id
         let watcher = WorkspaceWatcher(
             workspaceID: id,
@@ -457,6 +497,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// every `pullIntervalMs` until cancelled.
     func startPullPoller(for workspace: Workspace) {
         guard pullPollers[workspace.id] == nil else { return }
+        // T11.6: same .paused on-launch guard as `startWatcher`.
+        guard workspace.syncStatus != .paused else { return }
         let id = workspace.id
         let interval = pullIntervalMs
         pullPollers[id] = Task { [weak self] in
@@ -570,11 +612,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Cursor persistence (UserDefaults)
 
     /// Test seam matching `TAPROOT_BASE_URL` / `TAPROOT_KEYCHAIN_SERVICE` /
-    /// `TAPROOT_LOCAL_FOLDER_BASE`: when set, cursor persistence routes
-    /// through `UserDefaults(suiteName:)` so the E2E smoke can read the
-    /// shipped cursor via `defaults read <suite> ...` without polluting the
-    /// global domain. Inert in production unless set.
-    private func cursorDefaults() -> UserDefaults {
+    /// `TAPROOT_LOCAL_FOLDER_BASE`: when set, both cursor + settings
+    /// persistence route through `UserDefaults(suiteName:)` so the E2E
+    /// smoke can read shipped state via `defaults read <suite> ...` without
+    /// polluting the global domain. Inert in production unless set.
+    private func taprootDefaults() -> UserDefaults {
         if let suite = ProcessInfo.processInfo.environment["TAPROOT_USERDEFAULTS_SUITE"],
            !suite.isEmpty,
            let suited = UserDefaults(suiteName: suite) {
@@ -582,6 +624,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return .standard
     }
+
+    private func cursorDefaults() -> UserDefaults { taprootDefaults() }
 
     private func persistCursor(_ cursor: PullCursor, for id: UUID) {
         let defaults = cursorDefaults()

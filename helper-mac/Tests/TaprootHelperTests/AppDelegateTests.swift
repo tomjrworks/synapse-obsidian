@@ -238,6 +238,10 @@ final class AppDelegateTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "taproot.lastSyncId.\(id.uuidString)")
     }
 
+    private func cleanSettingsDefaults(for id: UUID) {
+        UserDefaults.standard.removeObject(forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
+    }
+
     func testStartPullPollerRunsTickAndAdvancesCursor() async throws {
         let id = UUID()
         defer { cleanCursorDefaults(for: id) }
@@ -520,6 +524,7 @@ final class AppDelegateTests: XCTestCase {
         let id = UUID()
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
+        defer { cleanSettingsDefaults(for: id) }
 
         app.workspaces = [
             Workspace(
@@ -583,6 +588,7 @@ final class AppDelegateTests: XCTestCase {
         let id = UUID()
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
+        defer { cleanSettingsDefaults(for: id) }
 
         app.workspaces = [
             Workspace(
@@ -608,6 +614,100 @@ final class AppDelegateTests: XCTestCase {
         // Cleanup.
         app.watchers.values.forEach { $0.stop() }
         app.stopPullPoller(for: id)
+    }
+
+    func testTogglePauseWritesPausedOnLaunchKey() throws {
+        let id = UUID()
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        defer { cleanSettingsDefaults(for: id) }
+
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "b",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.startAllWatchers()
+        app.startAllPullPollers()
+
+        app.togglePauseSync(workspaceID: id)
+
+        XCTAssertTrue(
+            UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"),
+            "Pausing must persist a per-workspace flag so a relaunch resumes paused"
+        )
+    }
+
+    func testToggleResumeClearsPausedOnLaunchKey() throws {
+        let id = UUID()
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        defer { cleanSettingsDefaults(for: id) }
+
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "WS",
+                bearer: "b",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.startAllWatchers()
+        app.startAllPullPollers()
+
+        app.togglePauseSync(workspaceID: id) // pause
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
+
+        app.togglePauseSync(workspaceID: id) // resume
+
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"),
+            "Resume must remove the paused-on-launch flag, not leave a `false` value"
+        )
+        // Cleanup.
+        app.watchers.values.forEach { $0.stop() }
+        app.stopPullPoller(for: id)
+    }
+
+    func testSignOutClearsPausedOnLaunchKey() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=clear-me&workspace=\(id.uuidString)")!)
+
+        app.togglePauseSync(workspaceID: id)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
+
+        app.signOut(workspaceID: id)
+
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"),
+            "Sign-out must clear paused-on-launch so re-auth starts unpaused"
+        )
+    }
+
+    func testApplicationDidFinishLaunchingResumesPausedWorkspaceAsPaused() throws {
+        let id = UUID()
+        try keychain.store(workspaceID: id, bearer: "bearer-paused")
+        UserDefaults.standard.set(true, forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
+        defer { cleanSettingsDefaults(for: id) }
+
+        // Fresh delegate sharing the same keychain (simulates app relaunch).
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+        freshApp.resumePausedFromUserDefaults()
+        freshApp.startAllWatchers()
+        freshApp.startAllPullPollers()
+
+        XCTAssertEqual(freshApp.workspaces.first?.syncStatus, .paused)
+        XCTAssertNil(freshApp.watchers[id], "Paused workspace must not start a watcher on launch")
+        XCTAssertNil(freshApp.pullPollers[id], "Paused workspace must not start a poller on launch")
     }
 
     // MARK: - T11.5 menu builder tests
