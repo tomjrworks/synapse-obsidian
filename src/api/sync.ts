@@ -75,8 +75,6 @@ const pushSchema = z.object({
     .max(500),
 });
 
-type PushOp = z.infer<typeof pushSchema>["ops"][number];
-
 type PushResultEntry =
   | { path: string; ok: true }
   | {
