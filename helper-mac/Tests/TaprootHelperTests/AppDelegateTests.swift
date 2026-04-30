@@ -1184,8 +1184,11 @@ final class AppDelegateTests: XCTestCase {
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
         let folder = URL(fileURLWithPath: "/tmp/xyz")
+        // N10: SettingsStore.setVaultFolder stores `url.path`; pre-seed the
+        // raw filesystem path the same way so vaultFolder's
+        // URL(fileURLWithPath:) read round-trips correctly.
         UserDefaults.standard.set(
-            folder.absoluteString,
+            folder.path,
             forKey: "taproot.vaultFolder.\(id.uuidString)"
         )
 
@@ -1315,8 +1318,12 @@ final class AppDelegateTests: XCTestCase {
         }
 
         XCTAssertEqual(app.settingsStore.workspaceName(for: id), "MyVault")
-        XCTAssertEqual(app.settingsStore.vaultFolder(for: id)?.absoluteString,
-                       folder.absoluteString)
+        // N10: compare paths rather than absoluteStrings — for an existing
+        // directory, URL(fileURLWithPath:) appends a trailing slash that the
+        // input URL (built via appendingPathComponent) doesn't have. Path
+        // comparison is the canonical filesystem-identity check.
+        XCTAssertEqual(app.settingsStore.vaultFolder(for: id)?.path,
+                       folder.path)
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces.first?.name, "MyVault")
         XCTAssertEqual(app.workspaces.first?.localFolder.path, folder.canonicalPath.path)

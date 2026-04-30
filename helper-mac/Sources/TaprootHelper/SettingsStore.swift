@@ -44,11 +44,17 @@ struct SettingsStore {
         guard let stored = defaults.string(forKey: "taproot.vaultFolder.\(id.uuidString)") else {
             return nil
         }
-        return URL(string: stored)
+        // N10: read via URL(fileURLWithPath:) so a corrupted or injected
+        // UserDefaults value (e.g., http://) is coerced into a file URL with
+        // a junk path rather than ever returning a non-file URL to the
+        // AppDelegate (which would feed it into FSEventStream / NSWorkspace).
+        return URL(fileURLWithPath: stored)
     }
 
     func setVaultFolder(_ url: URL, for id: UUID) {
-        defaults.set(url.absoluteString, forKey: "taproot.vaultFolder.\(id.uuidString)")
+        // Pair with vaultFolder's URL(fileURLWithPath:) read by storing the
+        // raw filesystem path. Round-trip preserves the file:// URL.
+        defaults.set(url.path, forKey: "taproot.vaultFolder.\(id.uuidString)")
     }
 
     func clearVaultFolder(for id: UUID) {

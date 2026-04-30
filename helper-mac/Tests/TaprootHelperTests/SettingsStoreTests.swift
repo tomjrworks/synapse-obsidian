@@ -95,6 +95,22 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(store.vaultFolder(for: UUID()))
     }
 
+    /// N10 (build-audit-3): vaultFolder reads via URL(fileURLWithPath:) so a
+    /// corrupted or injected UserDefaults value (e.g., an http URL) is
+    /// coerced into a file URL with a junk path rather than ever returning a
+    /// non-file URL to the AppDelegate.
+    func testVaultFolderCoercesNonFileSchemeToFileURL() throws {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        defaults.set("http://evil.example/x", forKey: "taproot.vaultFolder.\(id.uuidString)")
+
+        let url = try XCTUnwrap(store.vaultFolder(for: id))
+
+        XCTAssertTrue(url.isFileURL,
+                      "vaultFolder must always return a file URL, got \(url.absoluteString)")
+        XCTAssertNotEqual(url.scheme, "http")
+    }
+
     func testClearVaultFolderRemovesKey() {
         let store = SettingsStore(defaults: defaults)
         let id = UUID()

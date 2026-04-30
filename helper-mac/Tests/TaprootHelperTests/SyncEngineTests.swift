@@ -137,6 +137,26 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(count, 0, "Outside-folder events must produce no HTTP send")
     }
 
+    /// N3 (build-audit-3): symmetric with pull's safeJoin invariant. FSEvents
+    /// canonicalizes in practice so this case is unlikely, but a defense-in-depth
+    /// guard catches any future code path that might feed non-canonical events
+    /// (with `..` segments) into toOp.
+    func testPushRefusesParentTraversalInRelativePath() async throws {
+        let fake = FakeHTTPClient()
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        // Structurally inside the workspace prefix, but a `..` segment after
+        // relativize would let it escape. URL.appendingPathComponent does not
+        // standardize, so the literal `..` survives into toOp.
+        let traversal = snapshot.localFolder.appendingPathComponent("a/../../etc/passwd")
+        let event = FileChangeEvent(path: traversal, kind: .modified, mtime: nil)
+
+        await engine.push(workspace: snapshot, events: [event])
+
+        let count = await fake.sendCount
+        XCTAssertEqual(count, 0, "Events with `..` in relativized path must be rejected")
+    }
+
     /// Locks the §5 invariant: when the caller has resolved symlinks on the
     /// snapshot folder (per AppDelegate's two construction sites), watcher
     /// events with canonical paths get accepted. Regression guard against

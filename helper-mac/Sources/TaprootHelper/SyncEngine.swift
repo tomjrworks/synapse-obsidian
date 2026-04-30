@@ -325,6 +325,15 @@ actor SyncEngine {
         let relative = String(absPath.dropFirst(folderPath.count))
         guard !relative.isEmpty else { return nil }
 
+        // N3: defense-in-depth — defer to pull's safeJoin invariant. FSEvents
+        // canonicalizes paths so a `..` traversal is unlikely in practice, but
+        // symmetric validation closes the gap if a future code path ever feeds
+        // non-canonical events into toOp.
+        guard SyncEngine.safeJoin(folder: localFolder, relative: relative) != nil else {
+            NSLog("[Taproot] push: refusing path-escape after relativize: \(relative)")
+            return nil
+        }
+
         let mtimeStr = event.mtime.map { ISO8601DateFormatter().string(from: $0) }
 
         switch event.kind {
