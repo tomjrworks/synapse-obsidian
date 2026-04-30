@@ -29,7 +29,11 @@ export async function getMembershipForUser(
   const ws = (data as any).workspaces;
   return {
     workspaceId: ws.id,
-    name: ws.name as string,
+    // N13: schema declares workspaces.name NOT NULL, but the cast trusts a
+    // SQL-level invariant against runtime drift (a partial migration could
+    // ship a null). Default to "Workspace" so /api/me never returns a null
+    // workspace_name to the helper-mac decoder.
+    name: (ws.name ?? "Workspace") as string,
     settings: (ws.settings ?? {}) as WorkspaceSettings,
   };
 }

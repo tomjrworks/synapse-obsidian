@@ -6,6 +6,23 @@ import {
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
 
+/**
+ * Wire shape returned by `GET /api/me`. Mirrors the helper-mac
+ * `MeBody` decoder at AppDelegate.swift:250 (which only consumes
+ * `workspace_name` today, but the rest of the surface is part of
+ * the contract for the cloud signin handshake + future helpers).
+ */
+export interface MeResponse {
+  user_id: string;
+  email?: string;
+  workspace_id: string;
+  workspace_name: string;
+  onboarding_step: string | null;
+  persona_traits: string[];
+  persona_freetext: string | null;
+  connected_clients: string[];
+}
+
 export function meRouter(): Router {
   const router = Router();
 
@@ -18,7 +35,7 @@ export function meRouter(): Router {
       const settings = membership.settings;
       const persona = settings.persona ?? {};
 
-      res.json({
+      const body: MeResponse = {
         user_id: user.id,
         email: user.email,
         workspace_id: membership.workspaceId,
@@ -30,7 +47,8 @@ export function meRouter(): Router {
         connected_clients: Array.isArray(settings.connected_clients)
           ? settings.connected_clients
           : [],
-      });
+      };
+      res.json(body);
     }),
   );
 
