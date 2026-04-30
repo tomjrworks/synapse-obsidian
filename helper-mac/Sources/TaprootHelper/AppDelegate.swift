@@ -1,16 +1,5 @@
 import AppKit
 
-/// T11.7: failure modes from `fetchWorkspaceName` (the /api/me lookup that
-/// kicks off the first-run flow). Mapped to user-facing copy by
-/// `AppDelegate.firstRunErrorMessage(_:)`.
-enum FirstRunError: Error, Equatable {
-    case notWired
-    case unauthorized
-    case transport
-    case decodeFailed
-    case http(Int)
-}
-
 /// All AppDelegate methods and property mutations must run on the main thread.
 /// NSApplicationDelegate callbacks, NSStatusItem, and AppKit menu state all
 /// require main-thread isolation. `@MainActor` enforces this at compile time
@@ -75,36 +64,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             completionHandler: nil
         )
     }
-    /// Test seam (T11.7): handles a first-connect deep link by opening the
-    /// welcome window. Default impl wired in `wireFirstRunDefaults()`.
-    var presentFirstRun: @MainActor (UUID, String) -> Void = { _, _ in }
-    /// Test seam (T11.7): GET /api/me with the bearer to fetch workspace_name.
-    /// Default returns `.notWired`; production impl is wired in
-    /// `wireFirstRunDefaults()`.
-    var fetchWorkspaceName: @MainActor (UUID, String) async -> Result<String, FirstRunError> = { _, _ in .failure(.notWired) }
-    /// Test seam (T11.7): factory for the welcome window. Returns the abstract
-    /// NSWindowController so tests can inject a stub. Default returns a bare
-    /// NSWindowController; production impl in `wireFirstRunDefaults()`
-    /// constructs a `FirstRunWindowController`.
-    var makeFirstRunWindow: @MainActor (UUID, String, String, URL, @escaping (UUID) -> Void, @escaping (UUID, String, URL) -> Void) -> NSWindowController = { _, _, _, _, _, _ in NSWindowController() }
-    /// Test seam (T11.7): shows a failure alert when /api/me cannot be fetched
-    /// or its body lacks workspace_name. Default no-op; production impl wired
-    /// in `wireFirstRunDefaults()`.
-    var presentFirstRunFailureAlert: @MainActor (String) -> Void = { _ in }
-    /// Test seam (T11.7): opens the website's signin URL when the user picks
-    /// "Connect your Taproot account". Default no-op; production impl wired
-    /// in `wireFirstRunDefaults()` (C4: aligns with the other 4 T11.7 seams
-    /// — tests get inert defaults, production gets a single central wiring).
-    var openConnectURL: @MainActor (URL) -> Void = { _ in }
     /// Single shared settings window controller. Lazily created on first
     /// `presentSettings()` invocation; closing the window hides it but
     /// does NOT release the controller (NSWindowController default).
     private var settingsWindowController: SettingsWindowController?
-    /// Holds the welcome window so it isn't deallocated mid-flow. Reassigned
-    /// when a new first-run window opens (existing one closed first per
-    /// Refinement A — NSWindowController does NOT auto-close programmatic
-    /// windows on dealloc).
-    private var firstRunWindowController: NSWindowController?
+    /// First-run flow: extracted in T11.8 commit 2 per audit-3 A1.
+    /// Lazy so `nonisolated init` doesn't construct it on the wrong actor;
+    /// `applicationDidFinishLaunching` triggers materialization by calling
+    /// `firstRun.wireDefaults()`. Tests reassign `firstRun = customCoord`
+    /// before first access if they need a different shape; closure seams
+    /// (`firstRun.presentFirstRun = ...`) can be overridden after.
+    lazy var firstRun: FirstRunCoordinator = makeFirstRunCoordinator()
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -138,6 +108,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.services = services
         self.syncEngine = SyncEngine(httpClient: services.httpClient, baseURL: services.baseURL)
         super.init()
+    }
+
+    /// Constructs the production FirstRunCoordinator with bridges back to
+    /// AppDelegate's lifecycle methods. Called by the lazy `firstRun`
+    /// initializer on first access. Tests bypass this by reassigning
+    /// `app.firstRun = customCoord` before first use.
+    private func makeFirstRunCoordinator() -> FirstRunCoordinator {
+        FirstRunCoordinator(
+            services: services,
+            onCancelFirstRun: { [weak self] id in
+                self?.cancelFirstRun(workspaceID: id)
+            },
+            onConfirmFirstRun: { [weak self] id, bearer, name, url in
+                self?.confirmFirstRun(
+                    workspaceID: id,
+                    bearer: bearer,
+                    name: name,
+                    vaultFolder: url
+                )
+            },
+            defaultLocalFolderProvider: { [weak self] id, slug in
+                self?.defaultLocalFolder(for: id, slug: slug)
+                    ?? URL(fileURLWithPath: "/")
+            }
+        )
     }
 
     /// Resolves the version label for the Settings window's "Version:" row.
@@ -193,11 +188,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindowController?.showWindow(nil)
         }
 
-        // Wire all T11.7 first-run seam defaults BEFORE loadWorkspacesFromKeychain.
-        // The URL handler is registered in applicationWillFinishLaunching, so a
-        // launch-via-deep-link can queue handleAuthURL very early — every seam
-        // it might hit must already be production-wired.
-        wireFirstRunDefaults()
+        // Wire the first-run production defaults BEFORE
+        // loadWorkspacesFromKeychain. The URL handler is registered in
+        // applicationWillFinishLaunching, so a launch-via-deep-link can queue
+        // handleAuthURL very early — every seam it might hit must already be
+        // production-wired.
+        firstRun.wireDefaults()
 
         loadWorkspacesFromKeychain()
         // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE
@@ -238,119 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Wires the production impls for the T11.7 first-run closure seams.
-    /// Extracted from `applicationDidFinishLaunching` so tests can drive the
-    /// wired fetchWorkspaceName / presentFirstRun without spawning the
-    /// menubar item or the watcher/poller stack.
-    func wireFirstRunDefaults() {
-        fetchWorkspaceName = { [weak self] id, bearer in
-            guard let self else { return .failure(.notWired) }
-            let url = self.services.baseURL.appendingPathComponent("api/me")
-            let request = HTTPRequest(
-                url: url,
-                method: "GET",
-                headers: ["Authorization": "Bearer \(bearer)"],
-                body: Data()
-            )
-            do {
-                let response = try await self.services.httpClient.send(request)
-                switch response.status {
-                case 200..<300:
-                    struct MeBody: Decodable { let workspace_name: String? }
-                    guard let body = try? JSONDecoder().decode(MeBody.self, from: response.body),
-                          let name = body.workspace_name, !name.isEmpty else {
-                        return .failure(.decodeFailed)
-                    }
-                    return .success(name)
-                case 401:
-                    return .failure(.unauthorized)
-                default:
-                    return .failure(.http(response.status))
-                }
-            } catch {
-                return .failure(.transport)
-            }
-        }
-
-        makeFirstRunWindow = { id, bearer, name, defaultURL, onCancel, onConfirm in
-            FirstRunWindowController(
-                workspaceID: id,
-                bearer: bearer,
-                workspaceName: name,
-                defaultFolderURL: defaultURL,
-                onCancel: onCancel,
-                onConfirm: onConfirm
-            )
-        }
-
-        presentFirstRunFailureAlert = { msg in
-            let alert = NSAlert()
-            alert.messageText = "Connection failed"
-            alert.informativeText = msg
-            alert.addButton(withTitle: "OK")
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-        }
-
-        openConnectURL = { url in
-            NSWorkspace.shared.open(url)
-        }
-
-        presentFirstRun = { [weak self] id, bearer in
-            guard let self else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let result = await self.fetchWorkspaceName(id, bearer)
-                switch result {
-                case .success(let name):
-                    let slug = Slug.from(name)
-                    let defaultURL = self.defaultLocalFolder(for: id, slug: slug)
-                    // Refinement A: NSWindowController does NOT auto-close
-                    // programmatic windows on dealloc — close any prior
-                    // window before reassigning so a rapid Connect double-
-                    // click can't leave an orphaned window onscreen.
-                    if let existing = self.firstRunWindowController {
-                        existing.window?.close()
-                    }
-                    let controller = self.makeFirstRunWindow(
-                        id, bearer, name, defaultURL,
-                        { [weak self] cancelID in self?.cancelFirstRun(workspaceID: cancelID) },
-                        { [weak self] confirmID, confirmBearer, confirmURL in
-                            self?.confirmFirstRun(
-                                workspaceID: confirmID,
-                                bearer: confirmBearer,
-                                name: name,
-                                vaultFolder: confirmURL
-                            )
-                        }
-                    )
-                    self.firstRunWindowController = controller
-                    NSApp.activate(ignoringOtherApps: true)
-                    controller.showWindow(nil)
-                case .failure(let err):
-                    self.cancelFirstRun(workspaceID: id)
-                    self.presentFirstRunFailureAlert(self.firstRunErrorMessage(err))
-                }
-            }
-        }
-    }
-
-    /// User-facing copy for first-run failure alerts.
-    func firstRunErrorMessage(_ err: FirstRunError) -> String {
-        switch err {
-        case .unauthorized:
-            return "Sign-in expired. Please try again."
-        case .transport:
-            return "Couldn't reach Taproot. Check your internet connection and try again."
-        case .decodeFailed:
-            return "Connection failed: server response missing workspace name."
-        case .http(let status):
-            return "Connection failed: server returned \(status)."
-        case .notWired:
-            return "Connection failed."
-        }
-    }
-
     @objc func menuConnectAccount(_ sender: NSMenuItem) {
         var components = URLComponents(
             url: services.baseURL.appendingPathComponent("signin"),
@@ -358,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )!
         components.queryItems = [URLQueryItem(name: "source", value: "helper")]
         guard let url = components.url else { return }
-        openConnectURL(url)
+        firstRun.openConnectURL(url)
     }
 
     /// Routes every `workspaces` mutation through a single helper so the
@@ -464,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // appended to `workspaces[]` yet — that happens in
                 // confirmFirstRun once the user accepts a folder.
                 NSLog("[Taproot] New workspace \(link.workspaceID.uuidString) — opening first-run window")
-                presentFirstRun(link.workspaceID, link.bearer)
+                firstRun.presentFirstRun(link.workspaceID, link.bearer)
             }
         } catch {
             NSLog("[Taproot] Deep-link handling failed: \(error)")
