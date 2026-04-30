@@ -50,4 +50,60 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(store.isPausedOnLaunch(for: id))
         XCTAssertNil(defaults.object(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
     }
+
+    func testWorkspaceNameRoundTrips() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+
+        store.setWorkspaceName("Toms Vault", for: id)
+
+        XCTAssertEqual(SettingsStore(defaults: defaults).workspaceName(for: id), "Toms Vault")
+    }
+
+    func testWorkspaceNameDefaultsNilForUnknown() {
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertNil(store.workspaceName(for: UUID()))
+    }
+
+    func testClearWorkspaceNameRemovesKey() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        store.setWorkspaceName("X", for: id)
+        XCTAssertEqual(store.workspaceName(for: id), "X")
+
+        store.clearWorkspaceName(for: id)
+
+        XCTAssertNil(store.workspaceName(for: id))
+        XCTAssertNil(defaults.object(forKey: "taproot.workspaceName.\(id.uuidString)"))
+    }
+
+    func testVaultFolderRoundTrips() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        let url = URL(fileURLWithPath: "/tmp/x")
+
+        store.setVaultFolder(url, for: id)
+
+        XCTAssertEqual(
+            SettingsStore(defaults: defaults).vaultFolder(for: id)?.absoluteString,
+            url.absoluteString
+        )
+    }
+
+    func testVaultFolderDefaultsNilForUnknown() {
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertNil(store.vaultFolder(for: UUID()))
+    }
+
+    func testClearVaultFolderRemovesKey() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        store.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
+        XCTAssertNotNil(store.vaultFolder(for: id))
+
+        store.clearVaultFolder(for: id)
+
+        XCTAssertNil(store.vaultFolder(for: id))
+        XCTAssertNil(defaults.object(forKey: "taproot.vaultFolder.\(id.uuidString)"))
+    }
 }

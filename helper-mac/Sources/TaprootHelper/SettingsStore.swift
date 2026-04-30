@@ -27,4 +27,31 @@ struct SettingsStore {
     func clearPausedOnLaunch(for id: UUID) {
         setPausedOnLaunch(false, for: id)
     }
+
+    func workspaceName(for id: UUID) -> String? {
+        defaults.string(forKey: "taproot.workspaceName.\(id.uuidString)")
+    }
+
+    func setWorkspaceName(_ name: String, for id: UUID) {
+        defaults.set(name, forKey: "taproot.workspaceName.\(id.uuidString)")
+    }
+
+    func clearWorkspaceName(for id: UUID) {
+        defaults.removeObject(forKey: "taproot.workspaceName.\(id.uuidString)")
+    }
+
+    func vaultFolder(for id: UUID) -> URL? {
+        guard let stored = defaults.string(forKey: "taproot.vaultFolder.\(id.uuidString)") else {
+            return nil
+        }
+        return URL(string: stored)
+    }
+
+    func setVaultFolder(_ url: URL, for id: UUID) {
+        defaults.set(url.absoluteString, forKey: "taproot.vaultFolder.\(id.uuidString)")
+    }
+
+    func clearVaultFolder(for id: UUID) {
+        defaults.removeObject(forKey: "taproot.vaultFolder.\(id.uuidString)")
+    }
 }

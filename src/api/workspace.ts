@@ -9,6 +9,7 @@ export type WorkspaceSettings = {
 
 export type Membership = {
   workspaceId: string;
+  name: string;
   settings: WorkspaceSettings;
 };
 
@@ -18,7 +19,7 @@ export async function getMembershipForUser(
 ): Promise<Membership | null> {
   const { data, error } = await sb
     .from("workspace_members")
-    .select("workspace_id, joined_at, workspaces!inner(id, settings)")
+    .select("workspace_id, joined_at, workspaces!inner(id, name, settings)")
     .eq("user_id", userId)
     .order("joined_at", { ascending: true })
     .limit(1)
@@ -28,6 +29,7 @@ export async function getMembershipForUser(
   const ws = (data as any).workspaces;
   return {
     workspaceId: ws.id,
+    name: ws.name as string,
     settings: (ws.settings ?? {}) as WorkspaceSettings,
   };
 }

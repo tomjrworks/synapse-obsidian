@@ -22,6 +22,7 @@ export function meRouter(): Router {
         user_id: user.id,
         email: user.email,
         workspace_id: membership.workspaceId,
+        workspace_name: membership.name,
         onboarding_step: settings.onboarding_step ?? null,
         persona_traits: Array.isArray(persona.traits) ? persona.traits : [],
         persona_freetext:
