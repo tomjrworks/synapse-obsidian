@@ -1071,4 +1071,22 @@ final class AppDelegateTests: XCTestCase {
         let v = AppDelegate.resolveVersionLabel(bundleLookup: { _ in nil })
         XCTAssertEqual(v, "dev")
     }
+
+    func testDefaultLocalFolderUsesSlugWhenProvided() {
+        let id = UUID()
+        let url = app.defaultLocalFolder(for: id, slug: "toms-vault")
+        XCTAssertTrue(
+            url.path.hasSuffix("Taproot/toms-vault"),
+            "expected suffix Taproot/toms-vault, got \(url.path)"
+        )
+    }
+
+    func testDefaultLocalFolderFallsBackToUUIDWhenSlugNil() {
+        let id = UUID()
+        let url = app.defaultLocalFolder(for: id, slug: nil)
+        XCTAssertTrue(
+            url.path.hasSuffix("Taproot/\(id.uuidString)"),
+            "expected suffix Taproot/<uuid>, got \(url.path)"
+        )
+    }
 }

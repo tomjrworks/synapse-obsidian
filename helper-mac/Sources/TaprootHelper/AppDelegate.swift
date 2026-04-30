@@ -234,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func defaultLocalFolder(for workspaceID: UUID) -> URL {
+    func defaultLocalFolder(for workspaceID: UUID, slug: String? = nil) -> URL {
         // `TAPROOT_LOCAL_FOLDER_BASE` is a smoke-test seam (T11.3 §7); inert in
         // production unless set, in which case the base directory is rooted
         // wherever the smoke driver chose. Always logged at launch via the
@@ -243,7 +243,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .flatMap { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        return base.appendingPathComponent("Taproot/\(workspaceID.uuidString)")
+        let leaf = slug ?? workspaceID.uuidString
+        return base.appendingPathComponent("Taproot/\(leaf)")
     }
 
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
