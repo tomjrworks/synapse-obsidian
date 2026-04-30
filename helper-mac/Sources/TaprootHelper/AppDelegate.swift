@@ -64,6 +64,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             completionHandler: nil
         )
     }
+    /// Test seam (T11.7): handles a first-connect deep link by opening the
+    /// welcome window. Default impl is wired in commit 5; commit 4 leaves
+    /// it as a no-op so handleAuthURL's new-workspace branch routes through
+    /// a closure tests can inject.
+    var presentFirstRun: @MainActor (UUID, String) -> Void = { _, _ in }
     /// Single shared settings window controller. Lazily created on first
     /// `presentSettings()` invocation; closing the window hides it but
     /// does NOT release the controller (NSWindowController default).
@@ -260,33 +265,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handleAuthURL(url)
     }
 
-    /// Parses an auth deep link, persists the bearer to Keychain, and upserts the
-    /// in-memory workspace. Extracted from `handleGetURLEvent` so tests can drive
-    /// it directly without synthesizing AppleEvents.
+    /// Parses an auth deep link, persists the bearer to Keychain, and either
+    /// upserts the bearer on an existing workspace (re-auth) or hands off to
+    /// the first-run flow for a never-seen workspace. Extracted from
+    /// `handleGetURLEvent` so tests can drive it directly without
+    /// synthesizing AppleEvents.
     func handleAuthURL(_ url: URL) {
         do {
             let link = try DeepLinkParser.parseAuth(url)
             try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
             if let idx = workspaces.firstIndex(where: { $0.id == link.workspaceID }) {
+                // Re-auth: existing workspace, bearer rotation only. No
+                // welcome window — name + folder are already settled.
                 mutateWorkspaces { $0[idx].bearer = link.bearer }
+                NSLog("[Taproot] Updated bearer for existing workspace \(link.workspaceID.uuidString)")
             } else {
-                let newWorkspace = Workspace(
-                    id: link.workspaceID,
-                    name: "Workspace",
-                    bearer: link.bearer,
-                    // §5: canonicalize (see loadWorkspacesFromKeychain).
-                    localFolder: defaultLocalFolder(for: link.workspaceID).canonicalPath,
-                    lastSyncAt: nil,
-                    syncStatus: .idle
-                )
-                mutateWorkspaces { $0.append(newWorkspace) }
-                startWatcher(for: newWorkspace)
-                startPullPoller(for: newWorkspace)
+                // First connect: hand off to first-run UX. Workspace is NOT
+                // appended to `workspaces[]` yet — that happens in
+                // confirmFirstRun once the user accepts a folder.
+                NSLog("[Taproot] New workspace \(link.workspaceID.uuidString) — opening first-run window")
+                presentFirstRun(link.workspaceID, link.bearer)
             }
-            NSLog("[Taproot] Stored bearer for workspace \(link.workspaceID.uuidString)")
         } catch {
             NSLog("[Taproot] Deep-link handling failed: \(error)")
         }
+    }
+
+    /// Persists workspace name + vault folder, appends the workspace to the
+    /// in-memory list, and starts the watcher + pull poller. Called from the
+    /// FirstRunWindowController's Get started callback (commit 5+).
+    func confirmFirstRun(workspaceID: UUID, bearer: String, name: String, vaultFolder: URL) {
+        settingsStore.setWorkspaceName(name, for: workspaceID)
+        settingsStore.setVaultFolder(vaultFolder, for: workspaceID)
+        let canonical = vaultFolder.canonicalPath
+        let workspace = Workspace(
+            id: workspaceID,
+            name: name,
+            bearer: bearer,
+            localFolder: canonical,
+            lastSyncAt: nil,
+            syncStatus: .idle
+        )
+        mutateWorkspaces { $0.append(workspace) }
+        startWatcher(for: workspace)
+        startPullPoller(for: workspace)
+        NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")
+    }
+
+    /// Aborts a first-run flow before the workspace was appended. Deletes the
+    /// Keychain bearer (handleAuthURL stored it pre-window) and clears any
+    /// SettingsStore entries that may have been written. Distinct from
+    /// `performSignOut` because the workspace was never added to the
+    /// in-memory list, so no `mutateWorkspaces` removal is needed.
+    func cancelFirstRun(workspaceID: UUID) {
+        do {
+            try services.keychain.delete(workspaceID: workspaceID)
+        } catch {
+            NSLog("[Taproot] cancelFirstRun: keychain delete failed: \(error)")
+        }
+        settingsStore.clearWorkspaceName(for: workspaceID)
+        settingsStore.clearVaultFolder(for: workspaceID)
+        NSLog("[Taproot] First-run cancelled for \(workspaceID.uuidString)")
     }
 
     /// Performs the destructive sign-out work without confirmation. The menu

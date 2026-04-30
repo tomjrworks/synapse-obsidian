@@ -45,6 +45,10 @@ final class AppDelegateTests: XCTestCase {
 
     func testHandleAuthURLAddsNewWorkspace() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         let url = URL(string: "taproot://auth?bearer=integration-test&workspace=\(id.uuidString)")!
 
         app.handleAuthURL(url)
@@ -57,9 +61,15 @@ final class AppDelegateTests: XCTestCase {
 
     func testHandleAuthURLOverwritesExistingWorkspace() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         let firstURL = URL(string: "taproot://auth?bearer=first&workspace=\(id.uuidString)")!
         let secondURL = URL(string: "taproot://auth?bearer=second&workspace=\(id.uuidString)")!
 
+        // First call routes through presentFirstRun → confirmFirstRun → workspace appended.
+        // Second call finds the workspace in `app.workspaces` and takes the upsert path.
         app.handleAuthURL(firstURL)
         app.handleAuthURL(secondURL)
 
@@ -78,6 +88,10 @@ final class AppDelegateTests: XCTestCase {
 
     func testSignOutClearsKeychainAndRemovesWorkspace() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         let url = URL(string: "taproot://auth?bearer=to-clear&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
         XCTAssertEqual(app.workspaces.count, 1)
@@ -91,6 +105,11 @@ final class AppDelegateTests: XCTestCase {
     func testSignOutOnlyAffectsTargetWorkspace() throws {
         let id1 = UUID()
         let id2 = UUID()
+        defer { cleanSettingsDefaults(for: id1) }
+        defer { cleanSettingsDefaults(for: id2) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=keep&workspace=\(id1.uuidString)")!)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=remove&workspace=\(id2.uuidString)")!)
 
@@ -138,8 +157,14 @@ final class AppDelegateTests: XCTestCase {
 
     func testSignOutStopsAndRemovesWatcher() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         let url = URL(string: "taproot://auth?bearer=watch-me&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
+        // confirmFirstRun already started a watcher; startAllWatchers is a no-op
+        // for IDs already in the dict (idempotent guard).
         app.startAllWatchers()
         XCTAssertNotNil(app.watchers[id])
 
@@ -242,6 +267,18 @@ final class AppDelegateTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
         UserDefaults.standard.removeObject(forKey: "taproot.workspaceName.\(id.uuidString)")
         UserDefaults.standard.removeObject(forKey: "taproot.vaultFolder.\(id.uuidString)")
+    }
+
+    /// T11.7 fixup: routes the new-workspace branch of handleAuthURL through
+    /// confirmFirstRun synchronously so tests that pre-T11.7 assumed direct
+    /// mutation keep working. Stops the poller right after confirm so the
+    /// 100ms-delayed initial pull tick doesn't race the test's own HTTP
+    /// expectations.
+    private func wireFirstRunForTest(_ app: AppDelegate, folder: URL) {
+        app.presentFirstRun = { id, bearer in
+            app.confirmFirstRun(workspaceID: id, bearer: bearer, name: "Workspace", vaultFolder: folder)
+            app.stopPullPoller(for: id)
+        }
     }
 
     func testStartPullPollerRunsTickAndAdvancesCursor() async throws {
@@ -421,6 +458,7 @@ final class AppDelegateTests: XCTestCase {
     /// is no-op on an empty match.
     func testSignOutAfterPushInFlightDoesNotDoubleDelete() async throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
@@ -438,12 +476,15 @@ final class AppDelegateTests: XCTestCase {
             testApp?.signOut(workspaceID: id)
         }
 
+        // T11.7 fixup: route handleAuthURL's new-workspace branch through
+        // confirmFirstRun pointing at this test's actual file-write folder
+        // (no need to override workspaces[0].localFolder afterwards).
+        wireFirstRunForTest(testApp, folder: folder)
+
         // Seed workspace + Keychain + watcher.
         let url = URL(string: "taproot://auth?bearer=in-flight&workspace=\(id.uuidString)")!
         testApp.handleAuthURL(url)
         XCTAssertEqual(testApp.workspaces.count, 1)
-        // Override the auto-assigned defaultLocalFolder with our tmp folder.
-        testApp.workspaces[0].localFolder = folder
         testApp.startAllWatchers()
         XCTAssertNotNil(testApp.watchers[id])
 
@@ -451,7 +492,12 @@ final class AppDelegateTests: XCTestCase {
         let sendExp = expectation(description: "push hits server")
         await localFake.setOnSend { sendExp.fulfill() }
 
-        let filePath = folder.appendingPathComponent("note.md")
+        // Write at the workspace's canonical localFolder (not the original
+        // `folder` URL). confirmFirstRun canonicalizes via realpath, so
+        // /var/folders/... becomes /private/var/folders/... — toOp's prefix
+        // check would otherwise reject the event path.
+        let canonicalFolder = testApp.workspaces[0].localFolder
+        let filePath = canonicalFolder.appendingPathComponent("note.md")
         try Data("x".utf8).write(to: filePath)
 
         // Kick the push (engine will receive 401 → fire onUnauthorized → call
@@ -482,6 +528,10 @@ final class AppDelegateTests: XCTestCase {
 
     func testPerformSignOutMatchesSignOutBehavior() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         let url = URL(string: "taproot://auth?bearer=to-clear&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
         XCTAssertEqual(app.workspaces.count, 1)
@@ -494,6 +544,10 @@ final class AppDelegateTests: XCTestCase {
 
     func testMenuSignOutSkipsWhenConfirmDeclined() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=keep&workspace=\(id.uuidString)")!)
         XCTAssertEqual(app.workspaces.count, 1)
 
@@ -509,6 +563,10 @@ final class AppDelegateTests: XCTestCase {
 
     func testMenuSignOutInvokesPerformWhenConfirmed() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=remove&workspace=\(id.uuidString)")!)
         XCTAssertEqual(app.workspaces.count, 1)
 
@@ -681,6 +739,9 @@ final class AppDelegateTests: XCTestCase {
     func testSignOutClearsPausedOnLaunchKey() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=clear-me&workspace=\(id.uuidString)")!)
 
         app.togglePauseSync(workspaceID: id)
@@ -941,6 +1002,11 @@ final class AppDelegateTests: XCTestCase {
     func testRebuildMenuFiresOnSignOut() throws {
         let id1 = UUID()
         let id2 = UUID()
+        defer { cleanSettingsDefaults(for: id1) }
+        defer { cleanSettingsDefaults(for: id2) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=b&workspace=\(id2.uuidString)")!)
         XCTAssertEqual(app.currentMenu?.items.count, 4, "Pre-signOut: nested 4-item menu")
@@ -955,6 +1021,11 @@ final class AppDelegateTests: XCTestCase {
     func testRebuildMenuFiresOnHandleAuthURL() throws {
         let id1 = UUID()
         let id2 = UUID()
+        defer { cleanSettingsDefaults(for: id1) }
+        defer { cleanSettingsDefaults(for: id2) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
         app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
 
         // After 1 workspace, currentMenu reflects the 7-item flat shape.
@@ -1183,5 +1254,113 @@ final class AppDelegateTests: XCTestCase {
             UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
             "Sign-out must clear vault folder so reconnect starts clean"
         )
+    }
+
+    // MARK: - T11.7 first-run routing (commit 4)
+
+    func testHandleAuthURLForNewWorkspaceCallsPresentFirstRunSeam() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        var capturedID: UUID?
+        var capturedBearer: String?
+        let exp = expectation(description: "presentFirstRun fired")
+        app.presentFirstRun = { id, bearer in
+            capturedID = id
+            capturedBearer = bearer
+            exp.fulfill()
+        }
+
+        let url = URL(string: "taproot://auth?bearer=B&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertEqual(capturedID, id)
+        XCTAssertEqual(capturedBearer, "B")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "B",
+                       "Bearer must land in Keychain immediately on first-connect")
+        XCTAssertTrue(
+            app.workspaces.isEmpty,
+            "Workspace must NOT be appended until confirmFirstRun runs"
+        )
+    }
+
+    func testHandleAuthURLForExistingWorkspaceUpdatesBearerWithoutFirstRun() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        // Pre-seed an existing workspace so handleAuthURL takes the upsert path.
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "Existing",
+                bearer: "old",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.presentFirstRun = { _, _ in
+            XCTFail("Re-auth must NOT show the welcome window")
+        }
+
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=new&workspace=\(id.uuidString)")!)
+
+        XCTAssertEqual(app.workspaces.count, 1)
+        XCTAssertEqual(app.workspaces[0].bearer, "new")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "new")
+    }
+
+    func testConfirmFirstRunPersistsAndStartsWatcherPlusPoller() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
+        defer {
+            app.watchers[id]?.stop()
+            app.stopPullPoller(for: id)
+        }
+
+        XCTAssertEqual(app.settingsStore.workspaceName(for: id), "MyVault")
+        XCTAssertEqual(app.settingsStore.vaultFolder(for: id)?.absoluteString,
+                       folder.absoluteString)
+        XCTAssertEqual(app.workspaces.count, 1)
+        XCTAssertEqual(app.workspaces.first?.name, "MyVault")
+        XCTAssertEqual(app.workspaces.first?.localFolder.path, folder.canonicalPath.path)
+        XCTAssertEqual(app.workspaces.first?.bearer, "B")
+        XCTAssertNotNil(app.watchers[id], "Watcher must start on confirmFirstRun")
+        XCTAssertNotNil(app.pullPollers[id], "Poller must start on confirmFirstRun")
+    }
+
+    func testCancelFirstRunDeletesBearerAndClearsState() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "B")
+        app.settingsStore.setWorkspaceName("X", for: id)
+        app.settingsStore.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
+
+        app.cancelFirstRun(workspaceID: id)
+
+        XCTAssertNil(try keychain.retrieve(workspaceID: id))
+        XCTAssertNil(app.settingsStore.workspaceName(for: id))
+        XCTAssertNil(app.settingsStore.vaultFolder(for: id))
+        XCTAssertTrue(app.workspaces.isEmpty,
+                      "Workspace was never appended, no removal needed")
+    }
+
+    func testHandleAuthURLDoesNotStartWatcherOrPollerOnFirstConnect() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        // No-op seam: skip the welcome-window flow entirely.
+        app.presentFirstRun = { _, _ in }
+
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=B&workspace=\(id.uuidString)")!)
+
+        XCTAssertTrue(app.watchers.isEmpty,
+                      "Watcher must not start before confirmFirstRun")
+        XCTAssertTrue(app.pullPollers.isEmpty,
+                      "Poller must not start before confirmFirstRun")
     }
 }
