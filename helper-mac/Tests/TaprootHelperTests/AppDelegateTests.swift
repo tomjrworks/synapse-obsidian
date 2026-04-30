@@ -240,6 +240,8 @@ final class AppDelegateTests: XCTestCase {
 
     private func cleanSettingsDefaults(for id: UUID) {
         UserDefaults.standard.removeObject(forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "taproot.workspaceName.\(id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "taproot.vaultFolder.\(id.uuidString)")
     }
 
     func testStartPullPollerRunsTickAndAdvancesCursor() async throws {
@@ -1087,6 +1089,99 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertTrue(
             url.path.hasSuffix("Taproot/\(id.uuidString)"),
             "expected suffix Taproot/<uuid>, got \(url.path)"
+        )
+    }
+
+    // MARK: - T11.7 read-side wiring (commit 3)
+
+    func testLoadWorkspacesFromKeychainReadsNameFromSettingsStore() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+        UserDefaults.standard.set("My Vault", forKey: "taproot.workspaceName.\(id.uuidString)")
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        XCTAssertEqual(freshApp.workspaces.first?.name, "My Vault")
+    }
+
+    func testLoadWorkspacesFromKeychainFallsBackToWorkspaceWhenNameMissing() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        XCTAssertEqual(freshApp.workspaces.first?.name, "Workspace")
+    }
+
+    func testLoadWorkspacesFromKeychainReadsFolderFromSettingsStore() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+        let folder = URL(fileURLWithPath: "/tmp/xyz")
+        UserDefaults.standard.set(
+            folder.absoluteString,
+            forKey: "taproot.vaultFolder.\(id.uuidString)"
+        )
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        // canonicalPath resolves /tmp -> /private/tmp via realpath() on macOS.
+        XCTAssertEqual(
+            freshApp.workspaces.first?.localFolder.path,
+            folder.canonicalPath.path
+        )
+    }
+
+    func testLoadWorkspacesFromKeychainFallsBackToDefaultFolderWhenNotPersisted() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        guard let path = freshApp.workspaces.first?.localFolder.path else {
+            XCTFail("expected loaded workspace")
+            return
+        }
+        XCTAssertTrue(
+            path.hasSuffix("Taproot/\(id.uuidString)"),
+            "expected default folder suffix, got \(path)"
+        )
+    }
+
+    func testSignOutClearsWorkspaceNameKey() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+        app.settingsStore.setWorkspaceName("X", for: id)
+        XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.workspaceName.\(id.uuidString)"))
+
+        app.signOut(workspaceID: id)
+
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: "taproot.workspaceName.\(id.uuidString)"),
+            "Sign-out must clear workspace name so reconnect starts clean"
+        )
+    }
+
+    func testSignOutClearsVaultFolderKey() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+        app.settingsStore.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
+        XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.vaultFolder.\(id.uuidString)"))
+
+        app.signOut(workspaceID: id)
+
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
+            "Sign-out must clear vault folder so reconnect starts clean"
         )
     }
 }

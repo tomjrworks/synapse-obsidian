@@ -203,17 +203,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func loadWorkspacesFromKeychain() {
         do {
             let entries = try services.keychain.retrieveAll()
-            let loaded = entries.map { (id, bearer) in
-                Workspace(
+            let loaded = entries.map { (id, bearer) -> Workspace in
+                let storedName = settingsStore.workspaceName(for: id)
+                let nameValue = storedName ?? "Workspace"
+                let folderValue = settingsStore.vaultFolder(for: id)
+                    ?? defaultLocalFolder(for: id, slug: storedName.flatMap(Slug.from))
+                return Workspace(
                     id: id,
-                    name: "Workspace",
+                    name: nameValue,
                     bearer: bearer,
                     // §5: canonicalize so prefix-comparison in SyncEngine.toOp
                     // matches WorkspaceWatcher's already-canonicalized event paths.
                     // `canonicalPath` uses realpath() so firmlinks (`/var` →
                     // `/private/var` on macOS Catalina+) resolve, which
                     // `resolvingSymlinksInPath()` alone does not.
-                    localFolder: defaultLocalFolder(for: id).canonicalPath,
+                    localFolder: folderValue.canonicalPath,
                     lastSyncAt: nil,
                     syncStatus: .idle
                 )
@@ -302,6 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pullCursors.removeValue(forKey: workspaceID)
             clearCursor(for: workspaceID)
             settingsStore.clearPausedOnLaunch(for: workspaceID)
+            settingsStore.clearWorkspaceName(for: workspaceID)
+            settingsStore.clearVaultFolder(for: workspaceID)
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
