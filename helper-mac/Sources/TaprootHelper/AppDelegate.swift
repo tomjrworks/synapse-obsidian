@@ -41,6 +41,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertFirstButtonReturn
     }
+    /// Test seam (T11.6): opens the Settings window. Default impl is wired
+    /// in `applicationDidFinishLaunching` because it captures `[weak self]`
+    /// and accesses MainActor state (settingsWindowController, NSApp), and
+    /// the nonisolated init can't host that closure. Tests inject a stub
+    /// before invocation.
+    var presentSettings: @MainActor () -> Void = { }
+    /// Test seam (T11.6): reveals a path in Finder. Default uses NSWorkspace.
+    var revealInFinder: @MainActor (URL) -> Void = { url in
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+    /// Test seam (T11.6): opens Console.app for sync-log viewing. Default
+    /// uses the macOS 11+ openApplication API to avoid launchApplication's
+    /// deprecation warning under our macOS 13+ floor (Package.swift:6).
+    /// Until a dedicated `~/Library/Logs/Taproot/sync.log` lands, Tom
+    /// filters Console manually by `process == TaprootHelper`.
+    var openSyncLog: @MainActor () -> Void = {
+        let consoleURL = URL(fileURLWithPath: "/System/Applications/Utilities/Console.app")
+        NSWorkspace.shared.openApplication(
+            at: consoleURL,
+            configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil
+        )
+    }
+    /// Single shared settings window controller. Lazily created on first
+    /// `presentSettings()` invocation; closing the window hides it but
+    /// does NOT release the controller (NSWindowController default).
+    private var settingsWindowController: SettingsWindowController?
     private let services: Services
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
@@ -76,6 +103,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
+    /// Resolves the version label for the Settings window's "Version:" row.
+    /// Bundle lookup is parameterized so tests can drive both the present
+    /// and the missing-key branches without depending on Info.plist
+    /// build-time embedding. Mirrors the test-seam pattern at
+    /// `BaseURLResolver.swift:9-11`.
+    static func resolveVersionLabel(
+        bundleLookup: (String) -> Any? = { Bundle.main.object(forInfoDictionaryKey: $0) }
+    ) -> String {
+        (bundleLookup("CFBundleShortVersionString") as? String) ?? "dev"
+    }
+
     func applicationWillFinishLaunching(_: Notification) {
         // Register the AppleEvent URL handler before AppKit posts kAEGetURL.
         // If the helper is launched *via* a taproot:// URL, the event arrives
@@ -93,6 +131,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // binary. LSUIElement in Info.plist only takes effect inside a .app bundle;
         // setActivationPolicy(.accessory) is the runtime equivalent.
         NSApp.setActivationPolicy(.accessory)
+
+        // Wire the default `presentSettings` impl now that we have @MainActor
+        // context (init is nonisolated for main.swift compatibility). Tests
+        // inject their own stub before invocation, overwriting this default.
+        // LSUIElement gotcha matching `confirmSignOut`: activate BEFORE
+        // showWindow or the panel opens behind other apps.
+        presentSettings = { [weak self] in
+            guard let self else { return }
+            if self.settingsWindowController == nil {
+                let url = self.workspaces.first?.localFolder
+                let interval = "\(self.pullIntervalMs / 1000)s"
+                let version = AppDelegate.resolveVersionLabel()
+                self.settingsWindowController = SettingsWindowController(
+                    settingsStore: self.settingsStore,
+                    vaultFolderURL: url,
+                    intervalLabel: interval,
+                    versionLabel: version,
+                    onRevealVaultFolder: { [weak self] u in self?.revealInFinder(u) },
+                    onOpenSyncLog: { [weak self] in self?.openSyncLog() }
+                )
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            self.settingsWindowController?.showWindow(nil)
+        }
 
         loadWorkspacesFromKeychain()
         // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE

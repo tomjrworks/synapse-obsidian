@@ -1005,4 +1005,28 @@ final class AppDelegateTests: XCTestCase {
             "exclamationmark.triangle.fill"
         )
     }
+
+    // MARK: - T11.6 settings tests
+
+    func testPresentSettingsClosureSeamCanBeInjected() {
+        var fired = false
+        app.presentSettings = { fired = true }
+
+        app.presentSettings()
+
+        XCTAssertTrue(fired, "Tests must be able to inject a stub for the settings-window seam")
+    }
+
+    func testNotificationsToggleRoundTripsViaSettingsStore() {
+        let suite = "test-\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+        var store = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        store.notificationsEnabled = true
+
+        XCTAssertTrue(
+            SettingsStore(defaults: UserDefaults(suiteName: suite)!).notificationsEnabled,
+            "Notifications toggle must persist to the underlying UserDefaults suite"
+        )
+    }
 }
