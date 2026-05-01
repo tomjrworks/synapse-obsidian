@@ -15,6 +15,7 @@ import {
   requireAuth,
   type AuthedMcpRequest,
 } from "./oauth.js";
+import { registerSigninRoutes } from "./signin.js";
 import { mountApiRoutes } from "./api/routes.js";
 import { getBackend } from "./utils/backend-cache.js";
 
@@ -99,6 +100,8 @@ export async function startServer(port: number): Promise<void> {
   console.error(
     `[OAuth] Enabled. Sign in with your Taproot account (taproothq.com).`,
   );
+  registerSigninRoutes(app, baseUrl);
+  console.error(`[Signin] Direct signin enabled at /signin`);
 
   mountApiRoutes(app);
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
