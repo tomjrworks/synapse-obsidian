@@ -1,4 +1,9 @@
-import { randomUUID, randomBytes, createHash } from "node:crypto";
+import {
+  randomUUID,
+  randomBytes,
+  createHash,
+  timingSafeEqual,
+} from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { supabaseService } from "./api/supabase.js";
 import { getMembershipForUser } from "./api/workspace.js";
@@ -46,9 +51,20 @@ function tokenHashByteaParam(token: string): string {
   return `\\x${tokenHashHex(token)}`;
 }
 
+// XSS defense for HTML interpolation. Encode `&` first or chains break
+// (e.g. `<` would become `&amp;lt;`). /security-audit C1 (2026-04-30).
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function authFailedHtml(title: string, message: string): string {
   return `<!DOCTYPE html>
-<html><head><title>Taproot — ${title}</title>
+<html><head><title>Taproot — ${escapeHtml(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -59,7 +75,7 @@ function authFailedHtml(title: string, message: string): string {
   a { display: inline-block; padding: 12px 24px; background: #1A5C32; color: #F2F0EB; border-radius: 6px; text-decoration: none; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
   a:hover { background: #16472a; }
 </style>
-</head><body><div class="card"><h1>${title}</h1><p>${message}</p><a href="javascript:history.back()">Try Again</a></div></body></html>`;
+</head><body><div class="card"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><a href="javascript:history.back()">Try Again</a></div></body></html>`;
 }
 
 /**
@@ -96,10 +112,30 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
   // logo_uri for custom connectors. See [[2026-04-26-taproot-tool-fixes-execution-plan]] Task 11.
   app.post("/register", (req, res) => {
     const { client_name, redirect_uris } = req.body || {};
+
+    // /security-audit C1 defense-in-depth (2026-04-30): cap client_name
+    // length and reject non-printable / control chars before storing in
+    // pendingClients. The /authorize HTML escape is the actual fix; this
+    // bounds the attack surface so a giant or weird payload can't be
+    // staged for later exploit even if the escape regresses.
+    if (
+      typeof client_name !== "string" ||
+      client_name.length === 0 ||
+      client_name.length > 200 ||
+      /[\x00-\x1f\x7f]/.test(client_name)
+    ) {
+      res.status(400).json({
+        error: "invalid_client_metadata",
+        error_description:
+          "client_name must be a non-empty printable string ≤ 200 chars",
+      });
+      return;
+    }
+
     const clientId = randomUUID();
 
     pendingClients.set(clientId, {
-      name: client_name || "Unknown",
+      name: client_name,
       redirectUris: redirect_uris || [],
     });
 
@@ -136,6 +172,30 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     const client = pendingClients.get(client_id);
     if (!client) {
       res.status(400).send("Unknown client_id");
+      return;
+    }
+
+    // /security-audit C4 (2026-04-30): redirect_uri must be on the
+    // allowlist registered at /register. Exact match — no prefix or
+    // wildcard. Closes authorization-code interception via attacker-
+    // controlled redirect_uri on a legit client_id.
+    if (
+      typeof redirect_uri !== "string" ||
+      !client.redirectUris.includes(redirect_uri)
+    ) {
+      res.status(400).send("redirect_uri not registered for this client");
+      return;
+    }
+
+    // /security-audit C2 (2026-04-30): PKCE is mandatory for public
+    // clients. Reject missing code_challenge or any non-S256 method.
+    // Discovery already advertises ["S256"] only.
+    if (typeof code_challenge !== "string" || !code_challenge) {
+      res.status(400).send("Missing code_challenge (PKCE required)");
+      return;
+    }
+    if (code_challenge_method !== "S256") {
+      res.status(400).send("Unsupported code_challenge_method (S256 required)");
       return;
     }
 
@@ -246,7 +306,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     <div class="logo"><span class="logo-dot"></span> Taproot</div>
     <div class="by">by Main Loop Systems</div>
     <div class="request">
-      <p><span class="app-name">${client.name}</span> is requesting access to your vault.</p>
+      <p><span class="app-name">${escapeHtml(client.name)}</span> is requesting access to your vault.</p>
     </div>
     <div class="permissions">
       <p>This will allow</p>
@@ -257,11 +317,11 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       </ul>
     </div>
     <form method="POST" action="/authorize">
-      <input type="hidden" name="client_id" value="${client_id}">
-      <input type="hidden" name="redirect_uri" value="${redirect_uri}">
-      <input type="hidden" name="code_challenge" value="${code_challenge}">
-      <input type="hidden" name="code_challenge_method" value="${code_challenge_method || "S256"}">
-      <input type="hidden" name="state" value="${state || ""}">
+      <input type="hidden" name="client_id" value="${escapeHtml(client_id)}">
+      <input type="hidden" name="redirect_uri" value="${escapeHtml(redirect_uri)}">
+      <input type="hidden" name="code_challenge" value="${escapeHtml(code_challenge)}">
+      <input type="hidden" name="code_challenge_method" value="${escapeHtml(code_challenge_method)}">
+      <input type="hidden" name="state" value="${escapeHtml(state || "")}">
       <input type="email" name="email" placeholder="Email" autofocus required>
       <input type="password" name="password" placeholder="Password" required>
       <button type="submit">Approve Access</button>
@@ -358,9 +418,13 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     // Persist the client to oauth_clients now that we know the workspace.
     // UPSERT keyed on the unique client_id text — `last_authorized_at`
     // doubles as a "last seen" signal for future dashboard surfacing.
+    // /security-audit C1+C4 (2026-04-30): pending.name is guaranteed by
+    // /register's validation gate; pending.redirectUris is allowlisted by
+    // GET /authorize. Drop the legacy ?? "Unknown" / ?? [redirect_uri]
+    // fallbacks — they were masking missing validation.
     const pending = pendingClients.get(client_id);
-    const clientName = pending?.name ?? "Unknown";
-    const redirectUris = pending?.redirectUris ?? [redirect_uri];
+    const clientName = pending?.name ?? "";
+    const redirectUris = pending?.redirectUris ?? [];
     try {
       const sb = supabaseService();
       const { error: upsertErr } = await sb.from("oauth_clients").upsert(
@@ -408,7 +472,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       clientId: client_id,
       redirectUri: redirect_uri,
       codeChallenge: code_challenge,
-      codeChallengeMethod: code_challenge_method || "S256",
+      codeChallengeMethod: code_challenge_method,
       expiresAt: Date.now() + 300000, // 5 minutes
       userId,
       workspaceId: membership.workspaceId,
@@ -467,18 +531,33 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
-    // Validate PKCE
-    if (code_verifier) {
-      const expectedChallenge = createHash("sha256")
-        .update(code_verifier)
-        .digest("base64url");
-      if (expectedChallenge !== authCode.codeChallenge) {
-        res.status(400).json({
-          error: "invalid_grant",
-          error_description: "PKCE verification failed",
-        });
-        return;
-      }
+    // /security-audit C2 (2026-04-30): PKCE is REQUIRED for public
+    // clients (token_endpoint_auth_methods_supported: ["none"]). The
+    // legacy `if (code_verifier)` guard let an attacker who obtained an
+    // auth code via any side-channel mint a 30-day bearer by simply
+    // omitting code_verifier. RFC 7636 mandates the verifier check.
+    if (typeof code_verifier !== "string" || !code_verifier) {
+      res.status(400).json({
+        error: "invalid_grant",
+        error_description: "code_verifier required",
+      });
+      return;
+    }
+    const expectedChallenge = createHash("sha256")
+      .update(code_verifier)
+      .digest("base64url");
+    const expectedBuf = Buffer.from(expectedChallenge);
+    const actualBuf = Buffer.from(authCode.codeChallenge);
+    // timingSafeEqual throws on length mismatch; bail explicitly first.
+    if (
+      expectedBuf.length !== actualBuf.length ||
+      !timingSafeEqual(expectedBuf, actualBuf)
+    ) {
+      res.status(400).json({
+        error: "invalid_grant",
+        error_description: "PKCE verification failed",
+      });
+      return;
     }
 
     // Mint access token and persist to oauth_tokens. Token is sha256-hashed

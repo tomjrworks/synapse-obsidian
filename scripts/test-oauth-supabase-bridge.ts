@@ -209,10 +209,50 @@ try {
   );
 
   if (code) {
+    // /security-audit C2 (2026-04-30): /token must reject when code_verifier
+    // is omitted. Pre-fix, the `if (code_verifier)` guard let an attacker
+    // who obtained an auth code mint a bearer by simply omitting the
+    // verifier. RFC 7636 mandates the check for public clients.
+    console.log("\n→ Negative: /token without code_verifier (PKCE bypass)");
+    const c2NoVerifier = await fetch(`${BASE}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: baseFields.redirect_uri,
+        client_id: clientId,
+      }).toString(),
+    });
+    const c2Json = await c2NoVerifier.json();
+    check(
+      "POST /token without code_verifier → 400 invalid_grant",
+      c2NoVerifier.status === 400 && c2Json?.error === "invalid_grant",
+      { status: c2NoVerifier.status, json: c2Json },
+    );
+
+    // The negative attempt consumed the auth code (one-time-use, deleted
+    // before PKCE check). Re-issue a fresh one for the positive flow.
+    const ok2 = await postAuthorize({
+      ...baseFields,
+      email: testEmail,
+      password: TEST_USER_PASSWORD,
+    });
+    const freshCode =
+      ok2.location && new URL(ok2.location).searchParams.get("code");
+    check(
+      "fresh /authorize for positive-path token exchange",
+      typeof freshCode === "string" && freshCode.length > 0,
+      ok2.location,
+    );
+    if (!freshCode) {
+      throw new Error("could not re-issue auth code for positive test");
+    }
+
     console.log("\n→ Token exchange → bearer carries workspace binding");
     const tokenForm = new URLSearchParams({
       grant_type: "authorization_code",
-      code,
+      code: freshCode,
       redirect_uri: baseFields.redirect_uri,
       client_id: clientId,
       code_verifier: codeVerifier,

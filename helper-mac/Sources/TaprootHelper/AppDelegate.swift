@@ -41,6 +41,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertFirstButtonReturn
     }
+    /// Confirmation gate for `taproot://` re-auth on an EXISTING workspace.
+    /// Returns true to rotate the bearer, false to abort. Default: modal NSAlert
+    /// with consequence text. Tests inject a stub returning true / false to
+    /// drive both paths without an interactive run-loop. The first-connect
+    /// branch of handleAuthURL bypasses this entirely (no existing bearer to
+    /// protect).
+    ///
+    /// Rationale: a malicious webpage opening
+    /// `taproot://auth?bearer=<attacker>&workspace=<victim-uuid>` would
+    /// otherwise silently rotate the helper's stored bearer to the attacker,
+    /// causing subsequent push ticks to mirror the victim's vault into the
+    /// attacker's encrypted workspace. /security-audit C3 (2026-04-30).
+    var confirmReauth: (Workspace) -> Bool = { workspace in
+        let alert = NSAlert()
+        alert.messageText = "Re-authorize \(workspace.name)?"
+        alert.informativeText = "This replaces your existing connection to Taproot for this workspace. Only proceed if you started this re-auth from taproothq.com."
+        alert.addButton(withTitle: "Replace connection")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
     /// Test seam (T11.6): opens the Settings window. Default impl is wired
     /// in `applicationDidFinishLaunching` because it captures `[weak self]`
     /// and accesses MainActor state (settingsWindowController, NSApp), and
@@ -348,16 +369,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func handleAuthURL(_ url: URL) {
         do {
             let link = try DeepLinkParser.parseAuth(url)
-            try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
             if let idx = workspaces.firstIndex(where: { $0.id == link.workspaceID }) {
-                // Re-auth: existing workspace, bearer rotation only. No
-                // welcome window — name + folder are already settled.
+                // Re-auth: existing workspace, bearer rotation only.
+                // /security-audit C3 (2026-04-30): require user confirmation
+                // BEFORE writing Keychain or rotating the in-memory bearer.
+                // A malicious webpage opening
+                // `taproot://auth?bearer=<attacker>&workspace=<victim-uuid>`
+                // must not silently swap the helper's bearer. Cancel-path
+                // leaves Keychain + workspaces[] untouched.
+                let existing = workspaces[idx]
+                guard confirmReauth(existing) else {
+                    NSLog("[Taproot] Re-auth cancelled by user for workspace \(link.workspaceID.uuidString)")
+                    return
+                }
+                try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
                 mutateWorkspaces { $0[idx].bearer = link.bearer }
                 NSLog("[Taproot] Updated bearer for existing workspace \(link.workspaceID.uuidString)")
             } else {
                 // First connect: hand off to first-run UX. Workspace is NOT
                 // appended to `workspaces[]` yet — that happens in
                 // confirmFirstRun once the user accepts a folder.
+                // presentFirstRun expects the bearer in Keychain so the
+                // welcome window can fetch the workspace name with it.
+                try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
                 NSLog("[Taproot] New workspace \(link.workspaceID.uuidString) — opening first-run window")
                 firstRun.presentFirstRun(link.workspaceID, link.bearer)
             }

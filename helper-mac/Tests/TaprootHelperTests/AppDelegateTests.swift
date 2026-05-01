@@ -1316,12 +1316,86 @@ final class AppDelegateTests: XCTestCase {
         app.firstRun.presentFirstRun = { _, _ in
             XCTFail("Re-auth must NOT show the welcome window")
         }
+        // /security-audit C3 (2026-04-30): re-auth gate confirms user
+        // intent before bearer rotation. Stub returns true to keep this
+        // test asserting the rotation behaviour.
+        app.confirmReauth = { _ in true }
 
         app.handleAuthURL(URL(string: "taproot://auth?bearer=new&workspace=\(id.uuidString)")!)
 
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces[0].bearer, "new")
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), "new")
+    }
+
+    /// /security-audit C3 (2026-04-30): re-auth on an existing workspace must
+    /// invoke the confirmation gate with the current Workspace before any
+    /// Keychain write or in-memory bearer rotation. Closes the
+    /// `taproot://auth?bearer=<attacker>&workspace=<victim-uuid>` exfiltration
+    /// path documented in [[daily/2026-04-30-taproot-security-audit]] §C3.
+    func testHandleAuthURLAsksConfirmReauthOnExistingWorkspaceMatch() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try keychain.store(workspaceID: id, bearer: "old")
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "MyVault",
+                bearer: "old",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.firstRun.presentFirstRun = { _, _ in
+            XCTFail("Re-auth must NOT show the welcome window")
+        }
+        var capturedWorkspace: Workspace?
+        app.confirmReauth = { ws in
+            capturedWorkspace = ws
+            return true
+        }
+
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=new&workspace=\(id.uuidString)")!)
+
+        XCTAssertEqual(capturedWorkspace?.id, id, "confirmReauth must receive the existing Workspace")
+        XCTAssertEqual(capturedWorkspace?.name, "MyVault")
+        XCTAssertEqual(capturedWorkspace?.bearer, "old", "confirmReauth must see the OLD bearer (rotation hasn't happened yet)")
+        XCTAssertEqual(app.workspaces[0].bearer, "new")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "new")
+    }
+
+    /// /security-audit C3 (2026-04-30): if the user cancels the re-auth
+    /// alert, neither the Keychain bearer nor the in-memory workspace
+    /// bearer must change. Confirms the attacker-driven `taproot://` URL
+    /// is fully neutralized when the user declines.
+    func testHandleAuthURLCancelReauthLeavesKeychainAndStateUnchanged() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try keychain.store(workspaceID: id, bearer: "legit-bearer")
+        app.workspaces = [
+            Workspace(
+                id: id,
+                name: "MyVault",
+                bearer: "legit-bearer",
+                localFolder: folder,
+                lastSyncAt: nil,
+                syncStatus: .idle
+            )
+        ]
+        app.firstRun.presentFirstRun = { _, _ in
+            XCTFail("Re-auth must NOT show the welcome window")
+        }
+        app.confirmReauth = { _ in false }
+
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=attacker&workspace=\(id.uuidString)")!)
+
+        XCTAssertEqual(app.workspaces[0].bearer, "legit-bearer", "Cancel must not rotate in-memory bearer")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "legit-bearer", "Cancel must not write attacker bearer to Keychain")
     }
 
     func testConfirmFirstRunPersistsAndStartsWatcherPlusPoller() throws {
