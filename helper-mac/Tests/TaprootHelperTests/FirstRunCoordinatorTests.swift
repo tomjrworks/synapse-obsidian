@@ -231,6 +231,67 @@ final class FirstRunCoordinatorTests: XCTestCase {
         XCTAssertEqual(cancelCalls, [id])
     }
 
+    // MARK: - isFirstRunWindowOpen lifecycle (build-audit-4 C1)
+
+    /// Build-audit-4 C1: a freshly constructed coordinator must NOT report
+    /// an open first-run window. Otherwise `UpdateCoordinator.isBusy` would
+    /// treat helper startup as "busy" and pin Sparkle's relaunch for 60s
+    /// on every launch.
+    func testIsFirstRunWindowOpenFalseBeforeFirstPresent() {
+        XCTAssertFalse(
+            firstRun.isFirstRunWindowOpen,
+            "A coordinator that has never opened a window must not advertise one as open"
+        )
+    }
+
+    /// Build-audit-4 C1: full open → close lifecycle. After
+    /// `presentFirstRun` flows the window through `makeFirstRunWindow` →
+    /// `showWindow(nil)`, the flag must report `true`. After
+    /// `window.close()`, the flag must report `false`. This is the contract
+    /// Sparkle's relaunch postpone hook depends on (plan §"Commit 6", V4
+    /// design): a regression that orphans the `firstRunWindowController`
+    /// ivar (e.g. a future cancel path that skips `window?.close()`)
+    /// would silently pin Sparkle for 60s on every scheduled check while
+    /// the window lingered.
+    func testIsFirstRunWindowOpenFlipsThroughLifecycle() async throws {
+        let id = UUID()
+        await fake.setStubbedResponse(
+            .success(HTTPResponse(status: 200, body: meBodyJSON(workspaceName: "Vault", workspaceID: id)))
+        )
+        firstRun.wireDefaults()
+
+        // Real NSWindow so `isVisible` reflects the showWindow → close
+        // lifecycle. Stub NSWindowController so we sidestep
+        // FirstRunWindowController's xib + view-loading machinery.
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let stubController = NSWindowController(window: window)
+        let factoryFired = expectation(description: "makeFirstRunWindow fired")
+        firstRun.makeFirstRunWindow = { _, _, _, _, _, _ in
+            factoryFired.fulfill()
+            return stubController
+        }
+
+        firstRun.presentFirstRun(id, "B")
+        await fulfillment(of: [factoryFired], timeout: 2.0)
+
+        XCTAssertTrue(
+            firstRun.isFirstRunWindowOpen,
+            "After presentFirstRun shows the window, isFirstRunWindowOpen must report true"
+        )
+
+        window.close()
+
+        XCTAssertFalse(
+            firstRun.isFirstRunWindowOpen,
+            "After window.close(), isFirstRunWindowOpen must report false so Sparkle's veto clears"
+        )
+    }
+
     // MARK: - error message copy
 
     func testFirstRunErrorMessageCopy() {

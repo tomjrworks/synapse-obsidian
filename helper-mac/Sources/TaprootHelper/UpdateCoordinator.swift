@@ -39,6 +39,13 @@ final class UpdateCoordinator {
         updater.checkForUpdates()
     }
 
+    /// End-to-end auto-install plumbing — SettingsStore round-trip + Sparkle
+    /// proxy. UI is intentionally deferred: Stage 1 ships with the manual
+    /// "Check for updates" button only, and the manual smoke (T11.8.8) drives
+    /// auto-install via `defaults write SUAutomaticallyUpdate -bool YES` so
+    /// we exercise the silent-install relaunch-gate path before adding a
+    /// user-facing checkbox. A future Settings revision can wire this
+    /// accessor without touching the updater layer.
     var automaticallyInstallsUpdates: Bool {
         get { settingsStore.automaticallyInstallsUpdates }
         set {
