@@ -20,9 +20,14 @@ protocol UpdaterService: AnyObject {
     /// Surfaces Sparkle's standard "Check for updates" window — the same
     /// path the Settings → Check-for-updates button triggers.
     func checkForUpdates()
-    /// User preference: install updates without a confirmation dialog.
-    /// L1 default is `false` (prompt-first); persisted via SettingsStore.
-    var automaticallyInstallsUpdates: Bool { get set }
+    /// Mirrors Sparkle's `SPUUpdater.automaticallyDownloadsUpdates`. When
+    /// `true`, Sparkle silently downloads updates in the background, then
+    /// surfaces its standard "Update available" prompt — the user always
+    /// sees the prompt because that's `SPUStandardUpdaterController`'s
+    /// standard UI driver behavior. To suppress all dialogs would require
+    /// a custom `SPUUserDriver`, deliberately not in Stage 1 per the
+    /// 2026-05-01 UX call. L1 default is `false`; persisted via SettingsStore.
+    var automaticallyDownloadsUpdates: Bool { get set }
     /// Synchronous predicate that gates Sparkle's relaunch. `true` →
     /// postpone (in-flight push or first-run window open); `false` →
     /// allow. Polled every 2s by the relaunch hook in commit 6.
@@ -58,7 +63,7 @@ final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate 
     var shouldRelaunchVeto: @MainActor () -> Bool = { false }
     var diagnosticSnapshot: @MainActor () -> String = { "" }
 
-    var automaticallyInstallsUpdates: Bool {
+    var automaticallyDownloadsUpdates: Bool {
         get { controller.updater.automaticallyDownloadsUpdates }
         set { controller.updater.automaticallyDownloadsUpdates = newValue }
     }

@@ -10,5 +10,5 @@ defaults delete com.taproot.helper SUSkippedVersion      2>/dev/null || true
 # SUAutomaticallyUpdate above gets overwritten by UpdateCoordinator.start()
 # at every launch from this key. The smoke proved removing only the SU*
 # keys leaves stale state if 8a was exercised.
-defaults delete com.taproot.helper "taproot.settings.automaticallyInstallsUpdates" 2>/dev/null || true
+defaults delete com.taproot.helper "taproot.settings.automaticallyDownloadsUpdates" 2>/dev/null || true
 echo "Smoke overrides cleaned. Helper will use Info.plist defaults next launch."

@@ -49,14 +49,14 @@ final class UpdaterServiceTests: XCTestCase {
                        "Veto must return false when no longer busy → Sparkle relaunches")
     }
 
-    func testFakeUpdaterServiceAutomaticallyInstallsRoundTrip() {
+    func testFakeUpdaterServiceAutomaticallyDownloadsRoundTrip() {
         let fake = FakeUpdaterService()
-        XCTAssertFalse(fake.automaticallyInstallsUpdates,
+        XCTAssertFalse(fake.automaticallyDownloadsUpdates,
                        "L1 default: prompt-first install behavior")
 
-        fake.automaticallyInstallsUpdates = true
+        fake.automaticallyDownloadsUpdates = true
 
-        XCTAssertTrue(fake.automaticallyInstallsUpdates)
+        XCTAssertTrue(fake.automaticallyDownloadsUpdates)
     }
 
     /// Live SparkleUpdaterService construction smoke. Verifies our wrapper

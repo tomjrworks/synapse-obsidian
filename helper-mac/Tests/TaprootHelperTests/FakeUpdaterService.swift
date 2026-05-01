@@ -9,7 +9,7 @@ final class FakeUpdaterService: UpdaterService {
     private(set) var isStarted: Bool = false
     private(set) var startCallCount: Int = 0
     private(set) var checkForUpdatesCallCount: Int = 0
-    var automaticallyInstallsUpdates: Bool = false
+    var automaticallyDownloadsUpdates: Bool = false
     var shouldRelaunchVeto: @MainActor () -> Bool = { false }
     var diagnosticSnapshot: @MainActor () -> String = { "" }
 

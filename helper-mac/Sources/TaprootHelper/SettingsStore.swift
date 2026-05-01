@@ -7,11 +7,13 @@ struct SettingsStore {
         self.defaults = defaults
     }
 
-    /// L1 default is `false` (prompt-first install). Persisted so the
-    /// preference survives helper relaunch.
-    var automaticallyInstallsUpdates: Bool {
-        get { defaults.bool(forKey: "taproot.settings.automaticallyInstallsUpdates") }
-        set { defaults.set(newValue, forKey: "taproot.settings.automaticallyInstallsUpdates") }
+    /// Mirrors Sparkle's `automaticallyDownloadsUpdates`. L1 default is
+    /// `false` (Sparkle's standard UI behavior — user sees the Install
+    /// prompt before download). Persisted so the preference survives
+    /// helper relaunch.
+    var automaticallyDownloadsUpdates: Bool {
+        get { defaults.bool(forKey: "taproot.settings.automaticallyDownloadsUpdates") }
+        set { defaults.set(newValue, forKey: "taproot.settings.automaticallyDownloadsUpdates") }
     }
 
     func isPausedOnLaunch(for id: UUID) -> Bool {

@@ -38,36 +38,36 @@ final class UpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(fake.checkForUpdatesCallCount, 2)
     }
 
-    func testAutomaticallyInstallsUpdatesPersistsToSettingsStore() {
-        XCTAssertFalse(coord.automaticallyInstallsUpdates,
+    func testAutomaticallyDownloadsUpdatesPersistsToSettingsStore() {
+        XCTAssertFalse(coord.automaticallyDownloadsUpdates,
                        "L1 default: prompt-first install behavior")
 
-        coord.automaticallyInstallsUpdates = true
+        coord.automaticallyDownloadsUpdates = true
 
-        XCTAssertTrue(coord.automaticallyInstallsUpdates)
-        XCTAssertTrue(fake.automaticallyInstallsUpdates,
+        XCTAssertTrue(coord.automaticallyDownloadsUpdates)
+        XCTAssertTrue(fake.automaticallyDownloadsUpdates,
                       "Setter must propagate to the underlying updater immediately")
 
         // Round-trip via fresh SettingsStore → asserts the value lives
         // in UserDefaults, not just in the Coordinator's struct copy.
         let fresh = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
-        XCTAssertTrue(fresh.automaticallyInstallsUpdates)
+        XCTAssertTrue(fresh.automaticallyDownloadsUpdates)
     }
 
-    func testStartPushesPersistedAutoInstallToUpdater() {
+    func testStartPushesPersistedAutoDownloadToUpdater() {
         // Pre-set the SettingsStore's persisted value, then construct a
         // fresh Coordinator. start() must propagate the persisted value
         // into the updater so a relaunch with autoInstall=true respects
         // the user's prior choice.
-        defaults.set(true, forKey: "taproot.settings.automaticallyInstallsUpdates")
+        defaults.set(true, forKey: "taproot.settings.automaticallyDownloadsUpdates")
         let store = SettingsStore(defaults: defaults)
         let freshCoord = UpdateCoordinator(updater: fake, settingsStore: store)
 
-        XCTAssertFalse(fake.automaticallyInstallsUpdates, "Pre: updater untouched")
+        XCTAssertFalse(fake.automaticallyDownloadsUpdates, "Pre: updater untouched")
 
         freshCoord.start()
 
-        XCTAssertTrue(fake.automaticallyInstallsUpdates,
+        XCTAssertTrue(fake.automaticallyDownloadsUpdates,
                       "start() must push persisted preference to the updater")
     }
 

@@ -34,7 +34,7 @@ final class UpdateCoordinator {
     /// Idempotent against the underlying updater (FakeUpdaterService bumps
     /// a counter; SparkleUpdaterService guards with `isStarted`).
     func start() {
-        updater.automaticallyInstallsUpdates = settingsStore.automaticallyInstallsUpdates
+        updater.automaticallyDownloadsUpdates = settingsStore.automaticallyDownloadsUpdates
         updater.shouldRelaunchVeto = { [weak self] in self?.isBusy() ?? false }
         updater.diagnosticSnapshot = { [weak self] in self?.diagnosticSnapshot() ?? "" }
         updater.start()
@@ -46,18 +46,17 @@ final class UpdateCoordinator {
         updater.checkForUpdates()
     }
 
-    /// End-to-end auto-install plumbing — SettingsStore round-trip + Sparkle
+    /// End-to-end auto-download plumbing — SettingsStore round-trip + Sparkle
     /// proxy. UI is intentionally deferred: Stage 1 ships with the manual
-    /// "Check for updates" button only, and the manual smoke (T11.8.8) drives
-    /// auto-install via `defaults write SUAutomaticallyUpdate -bool YES` so
-    /// we exercise the silent-install relaunch-gate path before adding a
-    /// user-facing checkbox. A future Settings revision can wire this
+    /// "Check for updates" button only; auto-download is exercised by
+    /// `defaults write taproot.settings.automaticallyDownloadsUpdates -bool YES`
+    /// per `T11.8-SMOKE.md` step 8a. A future Settings revision can wire this
     /// accessor without touching the updater layer.
-    var automaticallyInstallsUpdates: Bool {
-        get { settingsStore.automaticallyInstallsUpdates }
+    var automaticallyDownloadsUpdates: Bool {
+        get { settingsStore.automaticallyDownloadsUpdates }
         set {
-            settingsStore.automaticallyInstallsUpdates = newValue
-            updater.automaticallyInstallsUpdates = newValue
+            settingsStore.automaticallyDownloadsUpdates = newValue
+            updater.automaticallyDownloadsUpdates = newValue
         }
     }
 }
