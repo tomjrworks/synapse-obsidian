@@ -13,8 +13,10 @@
 #   sign-and-publish.sh 0.1.1 2 /tmp/TaprootHelper-0.1.1.zip --prod
 #   sign-and-publish.sh 0.1.1 2 ./out/TaprootHelper-0.1.1.zip --release-notes '<p>Bugfix release.</p>'
 #
-# Output: helper-mac/scripts/release/out/appcast-<short-version>.xml plus the
-# wrangler r2 + pages commands printed to stdout.
+# Output: helper-mac/scripts/release/out/appcast.xml plus the wrangler r2 +
+# pages commands printed to stdout. Single-version mode — multi-version
+# appcast merging is not currently needed (Sparkle reads the single feed
+# and the <item> block changes per release).
 
 set -euo pipefail
 
@@ -67,7 +69,7 @@ HELPER_MAC_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SIGN_UPDATE="$HELPER_MAC_ROOT/.build/artifacts/sparkle/Sparkle/bin/sign_update"
 TEMPLATE="$SCRIPT_DIR/appcast-template.xml"
 OUT_DIR="$SCRIPT_DIR/out"
-OUT_FILE="$OUT_DIR/appcast-$SHORT_VERSION.xml"
+OUT_FILE="$OUT_DIR/appcast.xml"
 
 if [[ ! -x "$SIGN_UPDATE" ]]; then
     echo "error: sign_update not found or not executable at $SIGN_UPDATE" >&2
@@ -111,8 +113,9 @@ echo "Wrote: $OUT_FILE"
 echo
 echo "Next — run these by hand (this script does NOT execute them):"
 echo
-echo "  # 1. Upload the signed zip to R2"
-echo "  wrangler r2 object put taproot-releases/releases/v$SHORT_VERSION/TaprootHelper-$SHORT_VERSION.zip --file=$ZIP_PATH --content-type=application/octet-stream"
+echo "  # 1. Upload the signed zip to R2 (--remote required: without it,"
+echo "  #    wrangler writes to the local miniflare simulator only.)"
+echo "  wrangler r2 object put taproot-releases/releases/v$SHORT_VERSION/TaprootHelper-$SHORT_VERSION.zip --file=$ZIP_PATH --content-type=application/octet-stream --remote"
 echo
 if [[ $IS_PROD -eq 1 ]]; then
     echo "  # 2. Deploy the appcast to PROD (updates.taproothq.com)"
