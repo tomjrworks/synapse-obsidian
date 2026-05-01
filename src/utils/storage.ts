@@ -221,7 +221,12 @@ export class LocalBackend implements StorageBackend {
 
   private resolveSafe(filePath: string): string {
     const resolved = path.resolve(this.vaultPath, filePath);
-    if (!resolved.startsWith(this.vaultPath)) {
+    const rel = path.relative(this.vaultPath, resolved);
+    if (
+      rel === ".." ||
+      rel.startsWith(".." + path.sep) ||
+      path.isAbsolute(rel)
+    ) {
       throw new Error(
         `Path traversal detected: ${filePath} resolves outside vault`,
       );

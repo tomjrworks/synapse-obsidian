@@ -58,6 +58,9 @@
     "gray-matter": "^4.0.3",
     "zod": "^3.25.0"
   },
+  "overrides": {
+    "hono": "^4.12.14"
+  },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",

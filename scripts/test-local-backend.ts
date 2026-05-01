@@ -17,7 +17,7 @@ import {
 } from "../src/utils/storage.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 let pass = 0;
 let fail = 0;
@@ -261,6 +261,65 @@ try {
     traversalErr instanceof Error &&
       /Path traversal/.test(traversalErr.message),
     traversalErr instanceof Error ? traversalErr.message : traversalErr,
+  );
+
+  // C1 regression — sibling-prefix attack: `path.resolve(vault, "../<basename>-evil/x")`
+  // produces a sibling dir whose absolute path string-prefixes the vault path,
+  // bypassing the old `startsWith(vaultPath)` boundary check.
+  let siblingErr: unknown = null;
+  try {
+    await backend.writeFile("../" + basename(vault) + "-evil/x.md", "nope");
+  } catch (e) {
+    siblingErr = e;
+  }
+  check(
+    "writeFile sibling-prefix attack throws (C1 regression)",
+    siblingErr instanceof Error && /Path traversal/.test(siblingErr.message),
+    siblingErr instanceof Error ? siblingErr.message : siblingErr,
+  );
+
+  let absErr: unknown = null;
+  try {
+    await backend.writeFile("/etc/passwd-taproot-test", "nope");
+  } catch (e) {
+    absErr = e;
+  }
+  check(
+    "writeFile('/etc/...') throws (absolute-path injection)",
+    absErr instanceof Error && /Path traversal/.test(absErr.message),
+    absErr instanceof Error ? absErr.message : absErr,
+  );
+
+  let multiErr: unknown = null;
+  try {
+    await backend.writeFile("../../escape.md", "nope");
+  } catch (e) {
+    multiErr = e;
+  }
+  check(
+    "writeFile('../../escape.md') throws (multi-segment traversal)",
+    multiErr instanceof Error && /Path traversal/.test(multiErr.message),
+    multiErr instanceof Error ? multiErr.message : multiErr,
+  );
+
+  let nestedEscErr: unknown = null;
+  try {
+    await backend.writeFile("a/b/../../../escape.md", "nope");
+  } catch (e) {
+    nestedEscErr = e;
+  }
+  check(
+    "writeFile('a/b/../../../escape.md') throws (nested .. escape)",
+    nestedEscErr instanceof Error &&
+      /Path traversal/.test(nestedEscErr.message),
+    nestedEscErr instanceof Error ? nestedEscErr.message : nestedEscErr,
+  );
+
+  // Valid inner-.. that resolves back inside the vault — must NOT throw.
+  await backend.writeFile("valid/inner/../inner-ok.md", "ok\n");
+  check(
+    "writeFile('valid/inner/../inner-ok.md') passes (inner .. that stays inside)",
+    await backend.exists("valid/inner-ok.md"),
   );
 
   console.log(`\n${pass} pass, ${fail} fail`);

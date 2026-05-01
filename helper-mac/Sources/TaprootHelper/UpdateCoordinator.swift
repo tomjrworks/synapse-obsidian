@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns the auto-update lifecycle: persists the user's
-/// auto-install preference, wires Sparkle's relaunch veto, and
+/// auto-download preference, wires Sparkle's relaunch veto, and
 /// proxies Settings → Check-for-updates clicks.
 ///
 /// `isBusy` is a synchronous predicate set by AppDelegate. The wiring lands
@@ -29,7 +29,7 @@ final class UpdateCoordinator {
         self.settingsStore = settingsStore
     }
 
-    /// Pushes the persisted auto-install preference to the updater, wires
+    /// Pushes the persisted auto-download preference to the updater, wires
     /// the relaunch veto, then asks Sparkle to start scheduled checks.
     /// Idempotent against the underlying updater (FakeUpdaterService bumps
     /// a counter; SparkleUpdaterService guards with `isStarted`).

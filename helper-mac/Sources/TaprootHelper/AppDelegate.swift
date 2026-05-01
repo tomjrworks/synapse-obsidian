@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return 30_000
     }()
 
-    /// T11.6 settings persistence (pause-on-launch flag, T11.8 auto-install
+    /// T11.6 settings persistence (pause-on-launch flag, T11.8 auto-download
     /// flag). Lazily constructed against `taprootDefaults()` so the env-var
     /// seam matches the existing cursor persistence path.
     lazy var settingsStore: SettingsStore = SettingsStore(defaults: taprootDefaults())
