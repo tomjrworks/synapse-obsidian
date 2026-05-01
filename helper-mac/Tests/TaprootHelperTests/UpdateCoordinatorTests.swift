@@ -87,6 +87,26 @@ final class UpdateCoordinatorTests: XCTestCase {
                        "Veto must allow Sparkle's relaunch when not busy")
     }
 
+    func testStartWiresDiagnosticSnapshotIntoUpdater() {
+        // Mirror of the relaunch-veto wiring: the coordinator must thread
+        // its diagnosticSnapshot closure into the updater at start() so
+        // the 60s fall-through NSLog can read AppDelegate's pushInFlight
+        // + firstRunWindowOpen state. Without start(), the updater holds
+        // the empty default. /security-audit C2 (audit option 3).
+        coord.diagnosticSnapshot = { "isBusy=true; pushInFlight=2; firstRunWindowOpen=false" }
+
+        XCTAssertEqual(fake.diagnosticSnapshot(), "",
+                       "Pre: updater holds empty default before start()")
+
+        coord.start()
+
+        XCTAssertEqual(
+            fake.diagnosticSnapshot(),
+            "isBusy=true; pushInFlight=2; firstRunWindowOpen=false",
+            "start() must wire coordinator.diagnosticSnapshot through to the updater"
+        )
+    }
+
     func testIsBusyChangesAfterStartAreObservedByVeto() {
         // The veto closure captures self weakly and re-evaluates isBusy on
         // every call — so flipping isBusy AFTER start() is honored. Lock

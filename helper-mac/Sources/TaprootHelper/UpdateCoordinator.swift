@@ -18,6 +18,12 @@ final class UpdateCoordinator {
     /// freshly constructed Coordinator does not trap relaunch.
     var isBusy: @MainActor () -> Bool = { false }
 
+    /// Diagnostic state captured at the 60s fall-through NSLog. AppDelegate
+    /// wires this alongside `isBusy` with a snapshot of pushInFlight +
+    /// firstRunWindowOpen. Empty default so a freshly-constructed Coordinator
+    /// (or any test that doesn't inject) emits the unaugmented log line.
+    var diagnosticSnapshot: @MainActor () -> String = { "" }
+
     init(updater: UpdaterService, settingsStore: SettingsStore) {
         self.updater = updater
         self.settingsStore = settingsStore
@@ -30,6 +36,7 @@ final class UpdateCoordinator {
     func start() {
         updater.automaticallyInstallsUpdates = settingsStore.automaticallyInstallsUpdates
         updater.shouldRelaunchVeto = { [weak self] in self?.isBusy() ?? false }
+        updater.diagnosticSnapshot = { [weak self] in self?.diagnosticSnapshot() ?? "" }
         updater.start()
     }
 

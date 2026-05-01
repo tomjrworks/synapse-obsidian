@@ -27,6 +27,12 @@ protocol UpdaterService: AnyObject {
     /// postpone (in-flight push or first-run window open); `false` →
     /// allow. Polled every 2s by the relaunch hook in commit 6.
     var shouldRelaunchVeto: @MainActor () -> Bool { get set }
+    /// Diagnostic snapshot read at the 60s fall-through NSLog. Empty
+    /// default keeps the log line clean for tests / paths that don't
+    /// inject. AppDelegate populates with pushInFlight + firstRunWindowOpen
+    /// so post-launch we can decide whether the 60s cap is right.
+    /// /security-audit C2 (audit option 3).
+    var diagnosticSnapshot: @MainActor () -> String { get set }
 }
 
 /// Production implementation backed by Sparkle's `SPUStandardUpdaterController`.
@@ -50,6 +56,7 @@ final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate 
 
     private(set) var isStarted: Bool = false
     var shouldRelaunchVeto: @MainActor () -> Bool = { false }
+    var diagnosticSnapshot: @MainActor () -> String = { "" }
 
     var automaticallyInstallsUpdates: Bool {
         get { controller.updater.automaticallyDownloadsUpdates }
@@ -112,7 +119,8 @@ final class SparkleUpdaterService: NSObject, UpdaterService, SPUUpdaterDelegate 
                 guard let self else { timer.invalidate(); return }
                 if let start = self.postponeStartTime,
                    Date().timeIntervalSince(start) >= Self.postponeFallThroughSeconds {
-                    NSLog("[Taproot] update relaunch: 60s fall-through; allowing relaunch despite veto")
+                    let snap = self.diagnosticSnapshot()
+                    NSLog("[Taproot] update relaunch: 60s fall-through\(snap.isEmpty ? "" : "; \(snap)"); allowing relaunch despite veto")
                     self.firePending()
                     timer.invalidate()
                     return

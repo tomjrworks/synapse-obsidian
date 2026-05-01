@@ -11,6 +11,7 @@ final class FakeUpdaterService: UpdaterService {
     private(set) var checkForUpdatesCallCount: Int = 0
     var automaticallyInstallsUpdates: Bool = false
     var shouldRelaunchVeto: @MainActor () -> Bool = { false }
+    var diagnosticSnapshot: @MainActor () -> String = { "" }
 
     func start() {
         startCallCount += 1

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Taproot Helper</title>
+    <link>https://updates.taproothq.com/appcast.xml</link>
+    <description>Most recent updates for the Taproot menubar helper.</description>
+    <language>en</language>
+    <item>
+      <title>Version __SHORT_VERSION__</title>
+      <pubDate>__PUB_DATE__</pubDate>
+      <sparkle:version>__BUNDLE_VERSION__</sparkle:version>
+      <sparkle:shortVersionString>__SHORT_VERSION__</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[__RELEASE_NOTES_HTML__]]></description>
+      <enclosure
+        url="https://downloads.taproothq.com/releases/v__SHORT_VERSION__/TaprootHelper-__SHORT_VERSION__.zip"
+        sparkle:version="__BUNDLE_VERSION__"
+        sparkle:shortVersionString="__SHORT_VERSION__"
+        length="__LENGTH__"
+        type="application/octet-stream"
+        sparkle:edSignature="__ED_SIGNATURE__"/>
+    </item>
+  </channel>
+</rss>

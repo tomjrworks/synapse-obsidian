@@ -242,6 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updates.isBusy = { [weak self, syncEngine] in
             (syncEngine.pushInFlight > 0) || (self?.firstRun.isFirstRunWindowOpen ?? false)
         }
+        updates.diagnosticSnapshot = { [weak self, syncEngine] in
+            let pif = syncEngine.pushInFlight
+            let frw = self?.firstRun.isFirstRunWindowOpen ?? false
+            return "isBusy=\(pif > 0 || frw); pushInFlight=\(pif); firstRunWindowOpen=\(frw)"
+        }
         updates.start()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
