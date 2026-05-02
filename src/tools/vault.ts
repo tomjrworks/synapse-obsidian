@@ -58,25 +58,51 @@ export function registerVaultTools(
     {
       title: "Save a note",
       description:
-        "Use this whenever the user wants to save, write, create, or update any markdown note in their vault. Writes or overwrites a file and creates parent directories automatically. Triggers: 'save this', 'add this to my notes', 'remember this', 'write a note about X', 'update the X note'. The vault's filing conventions (folders, naming, frontmatter) are exposed as the `vault-rules` resource (CLAUDE.md) — read it before writing to an unfamiliar folder. For saving a web page or article URL, prefer `taproot_save_url` (single call: fetch + extract + save).",
+        "Use this whenever the user wants to save, write, create, or update any markdown note in their vault. Writes or overwrites a file and creates parent directories automatically. Triggers: 'save this', 'add this to my notes', 'remember this', 'write a note about X', 'update the X note'. The vault's filing conventions (folders, naming, frontmatter) are exposed as the `vault-rules` resource (CLAUDE.md) — read it before writing to an unfamiliar folder. For saving a web page or article URL, prefer `taproot_save_url` (single call: fetch + extract + save). WARNING: This tool can write to protected vault config files (CLAUDE.md, index.md, .taproot/config.json). Writing to these paths will overwrite persistent AI instructions or vault configuration — only do so with explicit user consent, and set acknowledgeRoot: true.",
       inputSchema: {
         path: z
           .string()
           .describe("Relative path for the file (e.g. 'notes/my-concept.md')"),
         content: z
           .string()
+          .max(50_000_000)
           .describe(
             "Full markdown content to write (including frontmatter if needed)",
+          ),
+        acknowledgeRoot: z
+          .boolean()
+          .optional()
+          .describe(
+            "Must be true when writing to a protected path (CLAUDE.md, index.md, .taproot/config.json). Omit for normal notes.",
           ),
       },
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        destructiveHint: true,
         idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async ({ path: filePath, content }) => {
+    async ({ path: filePath, content, acknowledgeRoot }) => {
+      // H5 (05-01): guard persistent-instruction files against unacknowledged
+      // overwrites. Prompt injection could otherwise silently rewrite CLAUDE.md.
+      const PROTECTED_PATHS = new Set([
+        "CLAUDE.md",
+        "index.md",
+        ".taproot/config.json",
+      ]);
+      if (PROTECTED_PATHS.has(filePath) && acknowledgeRoot !== true) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Writing to '${filePath}' is protected. This file contains persistent AI instructions or vault configuration. To proceed, re-call garden_plant with acknowledgeRoot: true and explicit user consent.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
       try {
         await writeVaultFile(backend, filePath, content);
         if (filePath === "CLAUDE.md") {
