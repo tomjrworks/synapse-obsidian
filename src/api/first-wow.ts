@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { nukeWorkspace } from "../utils/supabase-mirror.js";
-import { getBackend } from "../utils/backend-cache.js";
+import { evict, getBackend } from "../utils/backend-cache.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -75,6 +75,7 @@ export function firstWowRouter(): Router {
 
       try {
         const result = await nukeWorkspace(sb, membership.workspaceId, user.id);
+        evict(membership.workspaceId);
         res.json({
           nuked: true,
           object_count: result.objectCount,
