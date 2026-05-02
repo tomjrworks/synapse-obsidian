@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +106,29 @@ export async function startServer(port: number): Promise<void> {
     next();
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
+
+  const proxyIp = (req: express.Request): string => {
+    const cf = req.headers["cf-connecting-ip"];
+    if (typeof cf === "string" && cf) return cf;
+    const xff = req.headers["x-forwarded-for"];
+    if (typeof xff === "string" && xff) return xff.split(",")[0].trim();
+    return req.ip ?? "unknown";
+  };
+
+  const makeLimit = (max: number, windowSec = 60) =>
+    rateLimit({
+      windowMs: windowSec * 1000,
+      max,
+      standardHeaders: true,
+      legacyHeaders: false,
+      keyGenerator: proxyIp,
+    });
+
+  app.use("/authorize", makeLimit(10));
+  app.use("/register", makeLimit(5));
+  app.use("/token", makeLimit(20));
+  app.use("/revoke", makeLimit(20));
+  app.use("/signin", makeLimit(10));
 
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   registerOAuthRoutes(app, baseUrl);
