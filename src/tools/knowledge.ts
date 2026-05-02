@@ -18,6 +18,28 @@ const TODAY = () => new Date().toISOString().split("T")[0];
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
 
+// Escape a string for use inside a YAML double-quoted scalar.
+// Strips control chars (including newlines) that would break the YAML structure,
+// then escapes any remaining double quotes.
+function yamlEscape(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f]/g, "").replace(/"/g, '\\"');
+}
+
+const RATE_LIMIT_MS = 60_000;
+const rateLimitMap = new Map<string, number>();
+
+function checkRateLimit(workspaceId: string, tool: string): string | null {
+  const key = `${workspaceId}:${tool}`;
+  const last = rateLimitMap.get(key) ?? 0;
+  const now = Date.now();
+  if (now - last < RATE_LIMIT_MS) {
+    const waitSec = Math.ceil((RATE_LIMIT_MS - (now - last)) / 1000);
+    return `Rate limit: ${tool} can only run once per 60 seconds per workspace. Try again in ${waitSec}s.`;
+  }
+  rateLimitMap.set(key, now);
+  return null;
+}
+
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
@@ -296,10 +318,10 @@ export function registerKnowledgeTools(
 
         if (schema) {
           output.push("### Wiki Schema (CLAUDE.md)");
-          output.push("```markdown");
+          output.push(`<vault-file path="${schemaPath}">`);
           output.push(schema.slice(0, 4000));
           if (schema.length > 4000) output.push("... (truncated)");
-          output.push("```");
+          output.push("</vault-file>");
           output.push("");
         }
 
@@ -396,23 +418,21 @@ export function registerKnowledgeTools(
           `**Already processed:** ${alreadyProcessed ? "YES — update existing pages" : "NO — create new pages"}`,
           "",
           "### Source Content",
-          "```markdown",
+          `<vault-file path="${sourcePath}">`,
           content.slice(0, 15000),
-          content.length > 15000 ? "\n... (truncated)" : "",
-          "```",
+          content.length > 15000 ? "... (truncated)" : "",
+          "</vault-file>",
           "",
           "### Source Frontmatter",
           JSON.stringify(fm, null, 2),
           "",
           "### Current Index",
           existingIndex
-            ? "```markdown\n" + existingIndex.slice(0, 5000) + "\n```"
+            ? `<vault-file path="index.md">\n${existingIndex.slice(0, 5000)}\n</vault-file>`
             : "(No index yet — this is the first ingest)",
           "",
           schema
-            ? "### Schema (CLAUDE.md)\n```markdown\n" +
-              schema.slice(0, 3000) +
-              "\n```"
+            ? `### Schema (CLAUDE.md)\n<vault-file path="${schemaPath}">\n${schema.slice(0, 3000)}\n</vault-file>`
             : "",
           "",
           "### Instructions",
@@ -565,6 +585,15 @@ export function registerKnowledgeTools(
       },
     },
     async ({ question, save }) => {
+      if ("workspaceId" in backend) {
+        const rateLimitErr = checkRateLimit(
+          (backend as { workspaceId: string }).workspaceId,
+          "taproot_harvest",
+        );
+        if (rateLimitErr) {
+          return { content: [{ type: "text" as const, text: rateLimitErr }] };
+        }
+      }
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -610,7 +639,7 @@ export function registerKnowledgeTools(
           try {
             const content = await readVaultFile(backend, file);
             pageContents.push(
-              `### ${file}\n\`\`\`markdown\n${content.slice(0, 3000)}\n\`\`\``,
+              `### ${file}\n<vault-file path="${file}">\n${content.slice(0, 3000)}\n</vault-file>`,
             );
           } catch {
             // Skip unreadable files
@@ -622,7 +651,7 @@ export function registerKnowledgeTools(
           "",
           "### Index",
           index
-            ? "```markdown\n" + index.slice(0, 5000) + "\n```"
+            ? `<vault-file path="index.md">\n${index.slice(0, 5000)}\n</vault-file>`
             : "(No index found — run taproot_cultivate first)",
           "",
           `### Relevant Pages (${relevantFiles.length} found)`,
@@ -691,6 +720,15 @@ export function registerKnowledgeTools(
       },
     },
     async () => {
+      if ("workspaceId" in backend) {
+        const rateLimitErr = checkRateLimit(
+          (backend as { workspaceId: string }).workspaceId,
+          "taproot_prune",
+        );
+        if (rateLimitErr) {
+          return { content: [{ type: "text" as const, text: rateLimitErr }] };
+        }
+      }
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -894,6 +932,14 @@ export function registerKnowledgeTools(
         suggestedFolder: z
           .string()
           .optional()
+          .refine(
+            (v) =>
+              v === undefined ||
+              (!/(?:^|\/)\.\.(?:\/|$)/.test(v) &&
+                !v.startsWith("/") &&
+                !/[\x00-\x1f\x7f]/.test(v)),
+            "suggestedFolder must be relative, must not contain .. segments, and must not contain control characters",
+          )
           .describe(
             "Optional folder override (relative to vault root). Defaults to the configured sources folder.",
           ),
@@ -996,13 +1042,13 @@ export function registerKnowledgeTools(
         const allTags = ["raw", ...(suggestedTags || [])];
         const frontmatter = [
           "---",
-          `title: "${resolvedTitle.replace(/"/g, '\\"')}"`,
-          `source: "${url}"`,
+          `title: "${yamlEscape(resolvedTitle)}"`,
+          `source: "${yamlEscape(url)}"`,
           `date_created: ${TODAY()}`,
           `type: article`,
           `status: raw`,
           `tags: [${allTags.join(", ")}]`,
-          userIntent ? `note: "${userIntent.replace(/"/g, '\\"')}"` : "",
+          userIntent ? `note: "${yamlEscape(userIntent)}"` : "",
           "---",
         ]
           .filter(Boolean)

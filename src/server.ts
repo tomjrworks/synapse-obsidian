@@ -51,6 +51,7 @@ export async function startServer(port: number): Promise<void> {
   // Add new credential-equivalent keys here; replacer applies at every nesting level.
   const SENSITIVE_BODY_KEYS = new Set([
     "password",
+    "email",
     "code_verifier",
     "client_secret",
     "refresh_token",
@@ -146,7 +147,10 @@ export async function startServer(port: number): Promise<void> {
     if (await requireAuth(req, res)) return;
     try {
       const { workspaceId } = req as AuthedMcpRequest;
-      const mcpBackend = await getBackend(workspaceId);
+      const mcpBackend = await getBackend(workspaceId, {
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined as any,
       });

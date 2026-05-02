@@ -1,6 +1,22 @@
 import XCTest
 @testable import TaprootHelper
 
+// Valid 32-char bearers for handleAuthURL test fixtures.
+// Bearers shorter than 32 chars are now rejected by DeepLinkParser (M5 hardening).
+private let kBearerA = "integration-test" + String(repeating: "0", count: 16)  // 32 chars
+private let kBearerB = "second" + String(repeating: "0", count: 26)             // 32 chars
+private let kBearerNew = "new" + String(repeating: "0", count: 29)              // 32 chars
+private let kBearerKeep = "keep" + String(repeating: "0", count: 28)            // 32 chars
+private let kBearerRemove = "remove" + String(repeating: "0", count: 26)        // 32 chars
+private let kBearerToClear = "to-clear" + String(repeating: "0", count: 24)     // 32 chars
+private let kBearerWatchMe = "watch-me" + String(repeating: "0", count: 24)     // 32 chars
+private let kBearerInFlight = "in-flight" + String(repeating: "0", count: 23)   // 32 chars
+private let kBearerClearMe = "clear-me" + String(repeating: "0", count: 24)     // 32 chars
+private let kBearerAlpha = "a" + String(repeating: "0", count: 31)              // 32 chars
+private let kBearerBravo = "b" + String(repeating: "0", count: 31)              // 32 chars
+private let kBearerAttacker = "attacker" + String(repeating: "0", count: 24)    // 32 chars
+private let kBearerBig = "B" + String(repeating: "0", count: 31)                // 32 chars
+
 @MainActor
 final class AppDelegateTests: XCTestCase {
     private let testService = "com.taproot.helper.tests"
@@ -54,14 +70,14 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=integration-test&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerA)&workspace=\(id.uuidString)")!
 
         app.handleAuthURL(url)
 
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "integration-test")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerA)
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces.first?.id, id)
-        XCTAssertEqual(app.workspaces.first?.bearer, "integration-test")
+        XCTAssertEqual(app.workspaces.first?.bearer, kBearerA)
     }
 
     func testHandleAuthURLOverwritesExistingWorkspace() throws {
@@ -70,8 +86,8 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let firstURL = URL(string: "taproot://auth?bearer=first&workspace=\(id.uuidString)")!
-        let secondURL = URL(string: "taproot://auth?bearer=second&workspace=\(id.uuidString)")!
+        let firstURL = URL(string: "taproot://auth?bearer=\(kBearerA)&workspace=\(id.uuidString)")!
+        let secondURL = URL(string: "taproot://auth?bearer=\(kBearerB)&workspace=\(id.uuidString)")!
 
         // First call routes through presentFirstRun → confirmFirstRun → workspace appended.
         // Second call finds the workspace in `app.workspaces` and takes the upsert path.
@@ -82,8 +98,8 @@ final class AppDelegateTests: XCTestCase {
         app.handleAuthURL(secondURL)
 
         XCTAssertEqual(app.workspaces.count, 1, "Same workspace ID should not duplicate")
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "second")
-        XCTAssertEqual(app.workspaces.first?.bearer, "second")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerB)
+        XCTAssertEqual(app.workspaces.first?.bearer, kBearerB)
     }
 
     func testHandleAuthURLIgnoresMalformedURL() throws {
@@ -100,7 +116,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=to-clear&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerToClear)&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
         XCTAssertEqual(app.workspaces.count, 1)
 
@@ -118,14 +134,14 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=keep&workspace=\(id1.uuidString)")!)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=remove&workspace=\(id2.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerKeep)&workspace=\(id1.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerRemove)&workspace=\(id2.uuidString)")!)
 
         app.signOut(workspaceID: id2)
 
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces.first?.id, id1)
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id1), "keep")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id1), kBearerKeep)
         XCTAssertNil(try keychain.retrieve(workspaceID: id2))
     }
 
@@ -169,7 +185,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=watch-me&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerWatchMe)&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
         // confirmFirstRun already started a watcher; startAllWatchers is a no-op
         // for IDs already in the dict (idempotent guard).
@@ -491,7 +507,7 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(testApp, folder: folder)
 
         // Seed workspace + Keychain + watcher.
-        let url = URL(string: "taproot://auth?bearer=in-flight&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerInFlight)&workspace=\(id.uuidString)")!
         testApp.handleAuthURL(url)
         XCTAssertEqual(testApp.workspaces.count, 1)
         testApp.startAllWatchers()
@@ -541,7 +557,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=to-clear&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerToClear)&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
         XCTAssertEqual(app.workspaces.count, 1)
 
@@ -557,7 +573,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=keep&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerKeep)&workspace=\(id.uuidString)")!)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.confirmSignOut = { _ in false }
@@ -567,7 +583,7 @@ final class AppDelegateTests: XCTestCase {
         app.menuSignOut(item)
 
         XCTAssertEqual(app.workspaces.count, 1, "Cancelled confirm leaves workspace in place")
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "keep")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerKeep)
     }
 
     func testMenuSignOutInvokesPerformWhenConfirmed() throws {
@@ -576,7 +592,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=remove&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerRemove)&workspace=\(id.uuidString)")!)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.confirmSignOut = { _ in true }
@@ -751,7 +767,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=clear-me&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerClearMe)&workspace=\(id.uuidString)")!)
 
         app.togglePauseSync(workspaceID: id)
         XCTAssertTrue(UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
@@ -1002,8 +1018,8 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=b&workspace=\(id2.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAlpha)&workspace=\(id1.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBravo)&workspace=\(id2.uuidString)")!)
         XCTAssertEqual(app.currentMenu?.items.count, 4, "Pre-signOut: nested 4-item menu")
 
         app.signOut(workspaceID: id2)
@@ -1021,13 +1037,13 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=a&workspace=\(id1.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAlpha)&workspace=\(id1.uuidString)")!)
 
         // After 1 workspace, currentMenu reflects the 7-item flat shape.
         let afterFirst = try XCTUnwrap(app.currentMenu)
         XCTAssertEqual(afterFirst.items.count, 7, "Flat layout after first auth")
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=b&workspace=\(id2.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBravo)&workspace=\(id2.uuidString)")!)
 
         // After 2 workspaces, currentMenu reflects the 4-item nested shape.
         let afterSecond = try XCTUnwrap(app.currentMenu)
@@ -1286,13 +1302,13 @@ final class AppDelegateTests: XCTestCase {
             exp.fulfill()
         }
 
-        let url = URL(string: "taproot://auth?bearer=B&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?bearer=\(kBearerBig)&workspace=\(id.uuidString)")!
         app.handleAuthURL(url)
 
         wait(for: [exp], timeout: 1.0)
         XCTAssertEqual(capturedID, id)
-        XCTAssertEqual(capturedBearer, "B")
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "B",
+        XCTAssertEqual(capturedBearer, kBearerBig)
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerBig,
                        "Bearer must land in Keychain immediately on first-connect")
         XCTAssertTrue(
             app.workspaces.isEmpty,
@@ -1324,11 +1340,11 @@ final class AppDelegateTests: XCTestCase {
         // test asserting the rotation behaviour.
         app.confirmReauth = { _ in true }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=new&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerNew)&workspace=\(id.uuidString)")!)
 
         XCTAssertEqual(app.workspaces.count, 1)
-        XCTAssertEqual(app.workspaces[0].bearer, "new")
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "new")
+        XCTAssertEqual(app.workspaces[0].bearer, kBearerNew)
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerNew)
     }
 
     /// /security-audit C3 (2026-04-30): re-auth on an existing workspace must
@@ -1361,13 +1377,13 @@ final class AppDelegateTests: XCTestCase {
             return true
         }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=new&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerNew)&workspace=\(id.uuidString)")!)
 
         XCTAssertEqual(capturedWorkspace?.id, id, "confirmReauth must receive the existing Workspace")
         XCTAssertEqual(capturedWorkspace?.name, "MyVault")
         XCTAssertEqual(capturedWorkspace?.bearer, "old", "confirmReauth must see the OLD bearer (rotation hasn't happened yet)")
-        XCTAssertEqual(app.workspaces[0].bearer, "new")
-        XCTAssertEqual(try keychain.retrieve(workspaceID: id), "new")
+        XCTAssertEqual(app.workspaces[0].bearer, kBearerNew)
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerNew)
     }
 
     /// /security-audit C3 (2026-04-30): if the user cancels the re-auth
@@ -1395,7 +1411,7 @@ final class AppDelegateTests: XCTestCase {
         }
         app.confirmReauth = { _ in false }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=attacker&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAttacker)&workspace=\(id.uuidString)")!)
 
         XCTAssertEqual(app.workspaces[0].bearer, "legit-bearer", "Cancel must not rotate in-memory bearer")
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), "legit-bearer", "Cancel must not write attacker bearer to Keychain")
@@ -1474,7 +1490,7 @@ final class AppDelegateTests: XCTestCase {
         // No-op seam: skip the welcome-window flow entirely.
         app.firstRun.presentFirstRun = { _, _ in }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=B&workspace=\(id.uuidString)")!)
+        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBig)&workspace=\(id.uuidString)")!)
 
         XCTAssertTrue(app.watchers.isEmpty,
                       "Watcher must not start before confirmFirstRun")

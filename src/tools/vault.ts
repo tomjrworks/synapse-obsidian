@@ -41,7 +41,14 @@ export function registerVaultTools(
     async ({ path: filePath }) => {
       try {
         const content = await readVaultFile(backend, filePath);
-        return { content: [{ type: "text", text: content }] };
+        return {
+          content: [
+            {
+              type: "text",
+              text: `<vault-file path="${filePath}">\n${content}\n</vault-file>`,
+            },
+          ],
+        };
       } catch (err: any) {
         return {
           content: [
@@ -232,7 +239,7 @@ export function registerVaultTools(
               .slice(0, 3)
               .map((m) => `  L${m.line}: ${m.text}`)
               .join("\n");
-            return `${r.file} (${r.matches.length} matches)\n${matchLines}`;
+            return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)\n${matchLines}\n</vault-file>`;
           })
           .join("\n\n");
 
@@ -455,7 +462,7 @@ export function registerVaultTools(
           "",
           ...results.map(
             (r) =>
-              `- **${r.title}** — ${r.file}${r.preview ? `\n  > ${r.preview}` : ""}`,
+              `- **${r.title}** — ${r.file}${r.preview ? `\n  <vault-file path="${r.file}">${r.preview}</vault-file>` : ""}`,
           ),
           "",
           results.length === 1

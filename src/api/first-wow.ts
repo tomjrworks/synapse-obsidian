@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { nukeWorkspace } from "../utils/supabase-mirror.js";
-import { getBackend } from "../utils/backend-cache.js";
+import { evict, getBackend } from "../utils/backend-cache.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -74,7 +74,16 @@ export function firstWowRouter(): Router {
       // someone else's mirror). Tracked under T2 follow-ups.
 
       try {
-        const result = await nukeWorkspace(sb, membership.workspaceId, user.id);
+        const result = await nukeWorkspace(
+          sb,
+          membership.workspaceId,
+          user.id,
+          {
+            ip: req.ip,
+            userAgent: req.headers["user-agent"],
+          },
+        );
+        evict(membership.workspaceId);
         res.json({
           nuked: true,
           object_count: result.objectCount,

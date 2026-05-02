@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { supabaseService } from "./supabase.js";
 import { generateDek, wrapDek } from "./crypto.js";
@@ -32,9 +33,8 @@ export function authRouter(): Router {
         password,
       });
       if (signupError) {
-        res
-          .status(400)
-          .json({ error: "signup_failed", detail: signupError.message });
+        console.error(`[signup] signUp failed: ${signupError.message}`);
+        res.status(400).json({ error: "signup_failed" });
         return;
       }
       if (!signupData.user) {
@@ -48,14 +48,16 @@ export function authRouter(): Router {
           ? workspace_name.trim()
           : `${email.split("@")[0]}'s garden`;
 
+      const workspaceId = randomUUID();
       const dek = generateDek();
-      const wrapped = wrapDek(dek);
+      const wrapped = wrapDek(dek, workspaceId);
       // PostgREST/Postgres bytea literal format: \x followed by hex.
       const wrappedDekParam = `\\x${wrapped.toString("hex")}`;
 
-      const { data: workspaceId, error: rpcError } = await sb.rpc(
+      const { data: rpcWorkspaceId, error: rpcError } = await sb.rpc(
         "create_workspace_for_new_user",
         {
+          p_workspace_id: workspaceId,
           p_user_id: userId,
           p_workspace_name: wsName,
           p_wrapped_dek: wrappedDekParam,
@@ -71,10 +73,10 @@ export function authRouter(): Router {
             cleanupErr?.message,
           );
         }
-        res.status(500).json({
-          error: "workspace_create_failed",
-          detail: rpcError.message,
-        });
+        console.error(
+          `[signup] create_workspace_for_new_user RPC failed: ${rpcError.message}`,
+        );
+        res.status(500).json({ error: "workspace_create_failed" });
         return;
       }
 
@@ -110,7 +112,8 @@ export function authRouter(): Router {
         password,
       });
       if (error) {
-        res.status(401).json({ error: "login_failed", detail: error.message });
+        console.error(`[login] signInWithPassword failed: ${error.message}`);
+        res.status(401).json({ error: "login_failed" });
         return;
       }
       if (!data.session || !data.user) {
@@ -140,9 +143,8 @@ export function authRouter(): Router {
       const sb = supabaseService();
       const { error } = await sb.auth.signInWithOtp({ email });
       if (error) {
-        res
-          .status(400)
-          .json({ error: "magic_link_failed", detail: error.message });
+        console.error(`[magic-link] signInWithOtp failed: ${error.message}`);
+        res.status(400).json({ error: "magic_link_failed" });
         return;
       }
 

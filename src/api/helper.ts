@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { randomBytes } from "node:crypto";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -8,7 +7,6 @@ import {
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
 
-const PAIR_TOKEN_TTL_MS = 15 * 60 * 1000;
 const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
 
 export function helperRouter(): Router {
@@ -32,7 +30,8 @@ export function helperRouter(): Router {
         .maybeSingle();
 
       if (error) {
-        res.status(500).json({ error: "lookup_failed", detail: error.message });
+        console.error(`[helper/status] lookup_failed: ${error.message}`);
+        res.status(500).json({ error: "lookup_failed" });
         return;
       }
 
@@ -60,37 +59,6 @@ export function helperRouter(): Router {
         device_name: data.device_name,
         os_platform: data.os_platform,
         vault_path: vaultPath,
-      });
-    }),
-  );
-
-  router.post(
-    "/helper/pair-token",
-    requireSupabaseAuth,
-    requireWorkspace,
-    asyncHandler(async (req, res) => {
-      const { membership } = req as AuthedWorkspaceRequest;
-      const sb = supabaseService();
-
-      const token = randomBytes(24).toString("base64url");
-      const expiresAt = new Date(Date.now() + PAIR_TOKEN_TTL_MS).toISOString();
-
-      const { error } = await sb.from("pair_tokens").insert({
-        token,
-        workspace_id: membership.workspaceId,
-        expires_at: expiresAt,
-      });
-      if (error) {
-        res
-          .status(500)
-          .json({ error: "token_insert_failed", detail: error.message });
-        return;
-      }
-
-      res.json({
-        token,
-        expires_at: expiresAt,
-        ttl_seconds: PAIR_TOKEN_TTL_MS / 1000,
       });
     }),
   );

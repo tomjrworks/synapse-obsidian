@@ -60,7 +60,7 @@ function bytesFromPg(value: unknown): Buffer {
 export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   constructor(
     private supabase: SupabaseClient,
-    private workspaceId: string,
+    readonly workspaceId: string,
     private dek: Buffer,
   ) {}
 
@@ -74,6 +74,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   // re-check membership — it trusts the workspaceId.
   static async forWorkspace(
     workspaceId: string,
+    opts?: { ip?: string; userAgent?: string },
   ): Promise<SupabaseEncryptedMirrorBackend> {
     const sb = supabaseService();
     const { data: keyRow, error: keyErr } = await sb
@@ -89,7 +90,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     const wrapped = bytesFromPg(keyRow.wrapped_dek);
-    const dek = unwrapDek(wrapped);
+    const dek = unwrapDek(wrapped, workspaceId);
 
     // Audit insert is fire-and-forget at the call site: per security model,
     // audit failure must not block user requests. We log but don't throw.
@@ -97,6 +98,8 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       workspace_id: workspaceId,
       operation: "kek_unwrap",
       details: { reason: "backend_construct" },
+      ip: opts?.ip ?? null,
+      user_agent: opts?.userAgent ?? null,
     });
     if (auditErr) {
       console.error(
@@ -140,7 +143,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     const ciphertext = Buffer.from(await blob.arrayBuffer());
-    return decryptBlob(ciphertext, this.dek).toString("utf8");
+    return decryptBlob(ciphertext, this.dek, this.workspaceId).toString("utf8");
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
@@ -148,7 +151,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     if (!normalized) throw new Error("filePath must not be empty");
 
     const plaintext = Buffer.from(content, "utf8");
-    const ciphertext = encryptBlob(plaintext, this.dek);
+    const ciphertext = encryptBlob(plaintext, this.dek, this.workspaceId);
     const sha256 = createHash("sha256").update(plaintext).digest();
     const sha256Param = `\\x${sha256.toString("hex")}`;
     const nowIso = new Date().toISOString();
@@ -289,7 +292,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       query = query.like("path", `${escapedPrefix}%`);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await query.limit(1000);
     if (error) throw new Error(`listFiles failed: ${error.message}`);
     let paths = (data ?? []).map((r) => r.path as string);
 
@@ -485,7 +488,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         continue;
       }
       const ciphertext = Buffer.from(await blob.arrayBuffer());
-      const plaintext = decryptBlob(ciphertext, this.dek).toString("utf8");
+      const plaintext = decryptBlob(
+        ciphertext,
+        this.dek,
+        this.workspaceId,
+      ).toString("utf8");
       files.push({ ...baseFields, content: plaintext });
     }
 
@@ -530,6 +537,7 @@ export async function nukeWorkspace(
   supabase: SupabaseClient,
   workspaceId: string,
   actorUserId: string | null,
+  opts?: { ip?: string; userAgent?: string },
 ): Promise<NukeResult> {
   const { data: rows, error: listErr } = await supabase
     .from("vault_files")
@@ -573,6 +581,8 @@ export async function nukeWorkspace(
     user_id: actorUserId,
     operation: "vault_nuke",
     details: { object_count: storageObjects.length },
+    ip: opts?.ip ?? null,
+    user_agent: opts?.userAgent ?? null,
   });
   if (auditErr) {
     console.error(
