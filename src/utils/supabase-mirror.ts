@@ -89,7 +89,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     const wrapped = bytesFromPg(keyRow.wrapped_dek);
-    const dek = unwrapDek(wrapped);
+    const dek = unwrapDek(wrapped, workspaceId);
 
     // Audit insert is fire-and-forget at the call site: per security model,
     // audit failure must not block user requests. We log but don't throw.
@@ -140,7 +140,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     const ciphertext = Buffer.from(await blob.arrayBuffer());
-    return decryptBlob(ciphertext, this.dek).toString("utf8");
+    return decryptBlob(ciphertext, this.dek, this.workspaceId).toString("utf8");
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
@@ -148,7 +148,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     if (!normalized) throw new Error("filePath must not be empty");
 
     const plaintext = Buffer.from(content, "utf8");
-    const ciphertext = encryptBlob(plaintext, this.dek);
+    const ciphertext = encryptBlob(plaintext, this.dek, this.workspaceId);
     const sha256 = createHash("sha256").update(plaintext).digest();
     const sha256Param = `\\x${sha256.toString("hex")}`;
     const nowIso = new Date().toISOString();
@@ -485,7 +485,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         continue;
       }
       const ciphertext = Buffer.from(await blob.arrayBuffer());
-      const plaintext = decryptBlob(ciphertext, this.dek).toString("utf8");
+      const plaintext = decryptBlob(
+        ciphertext,
+        this.dek,
+        this.workspaceId,
+      ).toString("utf8");
       files.push({ ...baseFields, content: plaintext });
     }
 

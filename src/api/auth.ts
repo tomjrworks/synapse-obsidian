@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { supabaseService } from "./supabase.js";
 import { generateDek, wrapDek } from "./crypto.js";
@@ -48,14 +49,16 @@ export function authRouter(): Router {
           ? workspace_name.trim()
           : `${email.split("@")[0]}'s garden`;
 
+      const workspaceId = randomUUID();
       const dek = generateDek();
-      const wrapped = wrapDek(dek);
+      const wrapped = wrapDek(dek, workspaceId);
       // PostgREST/Postgres bytea literal format: \x followed by hex.
       const wrappedDekParam = `\\x${wrapped.toString("hex")}`;
 
-      const { data: workspaceId, error: rpcError } = await sb.rpc(
+      const { data: rpcWorkspaceId, error: rpcError } = await sb.rpc(
         "create_workspace_for_new_user",
         {
+          p_workspace_id: workspaceId,
           p_user_id: userId,
           p_workspace_name: wsName,
           p_wrapped_dek: wrappedDekParam,

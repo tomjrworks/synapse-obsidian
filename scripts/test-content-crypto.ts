@@ -37,76 +37,79 @@ function expectThrows(name: string, fn: () => unknown) {
 console.log("\n→ Content crypto round-trip");
 
 const dek = randomBytes(32);
+const wsId = "test-workspace-aad-00000000";
 
-const empty = encryptBlob(Buffer.from(""), dek);
+const empty = encryptBlob(Buffer.from(""), dek, wsId);
 check(
   "empty plaintext round-trips",
-  decryptBlob(empty, dek).toString("utf8") === "",
+  decryptBlob(empty, dek, wsId).toString("utf8") === "",
 );
 
-const small = encryptBlob(Buffer.from("hello world", "utf8"), dek);
+const small = encryptBlob(Buffer.from("hello world", "utf8"), dek, wsId);
 check(
   "small plaintext round-trips",
-  decryptBlob(small, dek).toString("utf8") === "hello world",
+  decryptBlob(small, dek, wsId).toString("utf8") === "hello world",
 );
 
-const utf8 = "🌱 Taproot — your AI brain.\n\n## heading\n\n> quote";
-const utf8Blob = encryptBlob(Buffer.from(utf8, "utf8"), dek);
+const utf8 = "🌱 Taproot — your memory layer.\n\n## heading\n\n> quote";
+const utf8Blob = encryptBlob(Buffer.from(utf8, "utf8"), dek, wsId);
 check(
   "utf-8 + emoji round-trips",
-  decryptBlob(utf8Blob, dek).toString("utf8") === utf8,
+  decryptBlob(utf8Blob, dek, wsId).toString("utf8") === utf8,
 );
 
 const big = randomBytes(1024 * 64); // 64 KiB
-const bigBlob = encryptBlob(big, dek);
+const bigBlob = encryptBlob(big, dek, wsId);
 check(
   "64KiB random plaintext round-trips",
-  decryptBlob(bigBlob, dek).equals(big),
+  decryptBlob(bigBlob, dek, wsId).equals(big),
 );
 
 const ivOverhead = small.length - "hello world".length;
 check(
-  "envelope overhead = 28 bytes (12-IV + 16-tag)",
-  ivOverhead === 28,
+  "envelope overhead = 29 bytes (1-version + 12-IV + 16-tag)",
+  ivOverhead === 29,
   ivOverhead,
 );
 
 console.log("\n→ AEAD failure modes");
 
-const ref = encryptBlob(Buffer.from("authentic", "utf8"), dek);
+const ref = encryptBlob(Buffer.from("authentic", "utf8"), dek, wsId);
 
-// Flip one byte in the ciphertext region (after iv+tag) — auth tag must reject.
+// Flip one byte in the ciphertext region (after version+iv+tag) — auth tag must reject.
 const corruptCt = Buffer.from(ref);
 corruptCt[corruptCt.length - 1] ^= 0x01;
 expectThrows("corrupt ciphertext byte → throws", () =>
-  decryptBlob(corruptCt, dek),
+  decryptBlob(corruptCt, dek, wsId),
 );
 
 // Flip one byte in the auth tag region — must reject.
 const corruptTag = Buffer.from(ref);
-corruptTag[12] ^= 0x01; // first tag byte
+corruptTag[13] ^= 0x01; // first tag byte (offset 1 version + 12 iv = 13)
 expectThrows("corrupt auth tag byte → throws", () =>
-  decryptBlob(corruptTag, dek),
+  decryptBlob(corruptTag, dek, wsId),
 );
 
 // Flip one byte in the IV — must reject (different IV → different keystream → tag mismatch).
 const corruptIv = Buffer.from(ref);
-corruptIv[0] ^= 0x01;
-expectThrows("corrupt IV byte → throws", () => decryptBlob(corruptIv, dek));
+corruptIv[1] ^= 0x01; // first IV byte (offset 1 for version byte)
+expectThrows("corrupt IV byte → throws", () =>
+  decryptBlob(corruptIv, dek, wsId),
+);
 
 // Wrong DEK — must reject.
 const wrongDek = randomBytes(32);
-expectThrows("wrong DEK → throws", () => decryptBlob(ref, wrongDek));
+expectThrows("wrong DEK → throws", () => decryptBlob(ref, wrongDek, wsId));
 
 // Truncated blob — must reject.
 expectThrows("truncated blob → throws", () =>
-  decryptBlob(ref.subarray(0, ref.length - 1), dek),
+  decryptBlob(ref.subarray(0, ref.length - 1), dek, wsId),
 );
 
 console.log("\n→ Distinct IVs across calls (probabilistic uniqueness)");
 
-const a = encryptBlob(Buffer.from("same plaintext"), dek);
-const b = encryptBlob(Buffer.from("same plaintext"), dek);
+const a = encryptBlob(Buffer.from("same plaintext"), dek, wsId);
+const b = encryptBlob(Buffer.from("same plaintext"), dek, wsId);
 check("same plaintext + same DEK → different ciphertexts", !a.equals(b));
 
 console.log(`\n${pass} pass, ${fail} fail`);
