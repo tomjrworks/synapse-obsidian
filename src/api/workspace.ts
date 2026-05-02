@@ -11,6 +11,7 @@ export type Membership = {
   workspaceId: string;
   name: string;
   settings: WorkspaceSettings;
+  userId?: string;
 };
 
 export async function getMembershipForUser(
@@ -35,6 +36,29 @@ export async function getMembershipForUser(
     // workspace_name to the helper-mac decoder.
     name: (ws.name ?? "Workspace") as string,
     settings: (ws.settings ?? {}) as WorkspaceSettings,
+  };
+}
+
+// Looks up membership by workspace_id (used when we have an OAuth bearer
+// but not a Supabase JWT — e.g., helper-mac direct signin flow).
+export async function getMembershipForWorkspace(
+  sb: SupabaseClient,
+  workspaceId: string,
+): Promise<Membership | null> {
+  const { data, error } = await sb
+    .from("workspaces")
+    .select("id, name, settings, workspace_members!inner(user_id)")
+    .eq("id", workspaceId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  const member = (data as any).workspace_members?.[0];
+  return {
+    workspaceId: data.id,
+    name: (data.name ?? "Workspace") as string,
+    settings: (data.settings ?? {}) as WorkspaceSettings,
+    userId: member?.user_id as string | undefined,
   };
 }
 
