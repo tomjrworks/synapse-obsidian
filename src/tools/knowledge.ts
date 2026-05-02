@@ -36,6 +36,7 @@ export function registerKnowledgeTools(
           .describe("URL to fetch and convert to markdown"),
         content: z
           .string()
+          .max(50_000_000)
           .optional()
           .describe("Raw text or markdown content to save directly"),
         folder: z

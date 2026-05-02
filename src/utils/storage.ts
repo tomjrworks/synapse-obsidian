@@ -220,6 +220,10 @@ export class LocalBackend implements StorageBackend {
   }
 
   private resolveSafe(filePath: string): string {
+    // H9 (04-30): control chars bypass filesystem checks on some kernels.
+    if (/[\x00-\x1f\x7f]/.test(filePath)) {
+      throw new Error(`Invalid path: control characters not allowed`);
+    }
     const resolved = path.resolve(this.vaultPath, filePath);
     const rel = path.relative(this.vaultPath, resolved);
     if (

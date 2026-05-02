@@ -1,7 +1,7 @@
 import { Router } from "express";
 import {
-  requireSupabaseAuth,
-  requireWorkspace,
+  requireOAuthAuth,
+  requireOAuthWorkspace,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -28,8 +28,8 @@ export function meRouter(): Router {
 
   router.get(
     "/me",
-    requireSupabaseAuth,
-    requireWorkspace,
+    requireOAuthAuth,
+    requireOAuthWorkspace,
     asyncHandler(async (req, res) => {
       const { user, membership } = req as AuthedWorkspaceRequest;
       const settings = membership.settings;

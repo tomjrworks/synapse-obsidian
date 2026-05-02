@@ -75,7 +75,10 @@ final class AppDelegateTests: XCTestCase {
 
         // First call routes through presentFirstRun → confirmFirstRun → workspace appended.
         // Second call finds the workspace in `app.workspaces` and takes the upsert path.
+        // BUG-2: stub confirmReauth before the second call so it doesn't block
+        // on NSAlert, which hangs headless test runs.
         app.handleAuthURL(firstURL)
+        app.confirmReauth = { _ in true }
         app.handleAuthURL(secondURL)
 
         XCTAssertEqual(app.workspaces.count, 1, "Same workspace ID should not duplicate")
@@ -1539,6 +1542,31 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertTrue(
             capturedURL?.absoluteString.hasSuffix("/signin?source=helper") == true,
             "expected /signin?source=helper, got \(capturedURL?.absoluteString ?? "nil")"
+        )
+    }
+
+    // MARK: - build-audit C1 (diagnosticSnapshot format)
+
+    func testDiagnosticSnapshotFormat() {
+        // Wire diagnosticSnapshot the same way AppDelegate does in
+        // applicationDidFinishLaunching, but using syncEngine directly so
+        // we don't need to call the full launch lifecycle.
+        let syncEngine = app.syncEngine
+        app.updates.diagnosticSnapshot = { [weak app, syncEngine] in
+            let pif = syncEngine.pushInFlight
+            let frw = app?.firstRun.isFirstRunWindowOpen ?? false
+            return "isBusy=\(pif > 0 || frw); pushInFlight=\(pif); firstRunWindowOpen=\(frw)"
+        }
+
+        let snapshot = app.updates.diagnosticSnapshot()
+
+        // build-audit C1: format must be parseable by monitoring tooling.
+        // Pattern: isBusy=(true|false); pushInFlight=\d+; firstRunWindowOpen=(true|false)
+        let pattern = #"^isBusy=(true|false); pushInFlight=\d+; firstRunWindowOpen=(true|false)$"#
+        let matches = snapshot.range(of: pattern, options: .regularExpression) != nil
+        XCTAssertTrue(
+            matches,
+            "diagnosticSnapshot format must match '\(pattern)', got: '\(snapshot)'"
         )
     }
 }

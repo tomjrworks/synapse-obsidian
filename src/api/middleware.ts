@@ -1,6 +1,10 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { supabaseService } from "./supabase.js";
-import { getMembershipForUser, type Membership } from "./workspace.js";
+import {
+  getMembershipForUser,
+  getMembershipForWorkspace,
+  type Membership,
+} from "./workspace.js";
 import { requireAuth, type AuthedMcpRequest } from "../oauth.js";
 
 export interface AuthedRequest extends Request {
@@ -75,5 +79,31 @@ export function asyncHandler(
 // to AuthedOAuthRequest in handlers to read it.
 export const requireOAuthAuth: RequestHandler = async (req, res, next) => {
   if (await requireAuth(req, res)) return;
+  next();
+};
+
+// Mount AFTER requireOAuthAuth. Resolves membership by workspaceId (from the
+// OAuth token row) and synthesizes req.user from the workspace owner. Use on
+// routes that need req.membership but are called with a custom bearer rather
+// than a Supabase JWT (e.g. GET /api/me from helper-mac direct signin).
+export const requireOAuthWorkspace: RequestHandler = async (req, res, next) => {
+  const oauthReq = req as AuthedOAuthRequest;
+  const workspaceId = oauthReq.workspaceId;
+  if (!workspaceId) {
+    res.status(401).json({ error: "no_workspace_id" });
+    return;
+  }
+  const sb = supabaseService();
+  const membership = await getMembershipForWorkspace(sb, workspaceId);
+  if (!membership) {
+    res.status(404).json({ error: "no_workspace" });
+    return;
+  }
+  (req as AuthedWorkspaceRequest).membership = membership;
+  (req as AuthedWorkspaceRequest).user = {
+    id: membership.userId ?? workspaceId,
+    email: undefined,
+  };
+  (req as AuthedWorkspaceRequest).jwt = "";
   next();
 };

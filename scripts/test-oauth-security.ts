@@ -82,6 +82,22 @@ async function authorizeGet(
   return { status: r.status, body: await r.text() };
 }
 
+async function authorizePost(
+  body: Record<string, string | undefined>,
+): Promise<{ status: number; body: string }> {
+  const r = await fetch(`${BASE}/authorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(body).filter(([, v]) => v !== undefined),
+      ) as Record<string, string>,
+    ).toString(),
+    redirect: "manual",
+  });
+  return { status: r.status, body: await r.text() };
+}
+
 let serverProc: ChildProcess | null = null;
 let tmpVault: string | null = null;
 
@@ -91,6 +107,7 @@ try {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(PORT),
+    TAPROOT_DISABLE_RATE_LIMIT: "1",
   };
   delete env.SYNAPSE_PASSWORD;
   serverProc = spawn(
@@ -180,6 +197,48 @@ try {
     missing.status,
   );
 
+  // --- H2 — redirect_uris validation on /register ---
+  console.log("\n→ H2: /register rejects missing redirect_uris");
+  const noUris = await registerClient({ client_name: "NoUris" });
+  check(
+    "POST /register without redirect_uris → 400",
+    noUris.status === 400,
+    noUris.status,
+  );
+
+  console.log("\n→ H2: /register rejects empty redirect_uris array");
+  const emptyUris = await registerClient({
+    client_name: "EmptyUris",
+    redirect_uris: [],
+  });
+  check(
+    "POST /register with [] redirect_uris → 400",
+    emptyUris.status === 400,
+    emptyUris.status,
+  );
+
+  console.log("\n→ H2: /register rejects non-https redirect_uri");
+  const httpUri = await registerClient({
+    client_name: "HttpUri",
+    redirect_uris: ["http://evil.example/cb"],
+  });
+  check(
+    "POST /register with http://evil.example redirect_uri → 400",
+    httpUri.status === 400,
+    httpUri.status,
+  );
+
+  console.log("\n→ H2: /register accepts http://localhost redirect_uri");
+  const localUri = await registerClient({
+    client_name: "LocalUri",
+    redirect_uris: ["http://localhost:12345/cb"],
+  });
+  check(
+    "POST /register with http://localhost redirect_uri → 201",
+    localUri.status === 201,
+    localUri.status,
+  );
+
   // --- Set up a clean client for C2/C4 negative cases ---
   console.log("\n→ Provisioning a benign client for C2/C4 GET-side gates");
   const goodReg = await registerClient({
@@ -252,6 +311,29 @@ try {
     {
       status: wrongRedirect.status,
       snippet: wrongRedirect.body.slice(0, 200),
+    },
+  );
+
+  // --- H1 — POST /authorize redirect_uri allowlist (pre-credential check) ---
+  console.log(
+    "\n→ H1: POST /authorize with unregistered redirect_uri → 400 (no creds checked)",
+  );
+  const postWrongRedirect = await authorizePost({
+    client_id: goodClient.client_id,
+    redirect_uri: "https://evil.example/cb",
+    code_challenge: "a".repeat(43),
+    code_challenge_method: "S256",
+    state: "h1-test",
+    email: "attacker@evil.example",
+    password: "irrelevant",
+  });
+  check(
+    "POST /authorize with unregistered redirect_uri → 400 before auth",
+    postWrongRedirect.status === 400 &&
+      postWrongRedirect.body.includes("redirect_uri"),
+    {
+      status: postWrongRedirect.status,
+      snippet: postWrongRedirect.body.slice(0, 200),
     },
   );
 

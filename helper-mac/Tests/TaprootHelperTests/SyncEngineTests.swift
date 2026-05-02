@@ -401,6 +401,33 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
+    // Stage 1: server always wins (write-through, no conflict detection — T11.4 lock).
+    // If this test fails after conflict resolution is added, update it to reflect the new semantics.
+    func testPullOverwritesDivergentLocalFile() async throws {
+        try makeFile(name: "conflict.md", contents: "local version")
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"conflict.md","size":14,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"server version"}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000002"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: snapshot,
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        XCTAssertEqual(writes.count, 1, "Stage 1: write-through must call applyWrite once")
+        XCTAssertEqual(writes.first?.0.path, tmpDir.appendingPathComponent("conflict.md").path)
+        XCTAssertEqual(writes.first?.1, "server version", "Stage 1: server content wins over local divergent content")
+    }
+
     func testPullPaginatedResponseReturnsMorePages() async throws {
         // limit=2 + 2 returned files = full page → .morePages
         let fake = FakeHTTPClient()

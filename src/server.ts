@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ import {
   requireAuth,
   type AuthedMcpRequest,
 } from "./oauth.js";
+import { registerSigninRoutes } from "./signin.js";
 import { mountApiRoutes } from "./api/routes.js";
 import { getBackend } from "./utils/backend-cache.js";
 
@@ -83,8 +85,19 @@ export async function startServer(port: number): Promise<void> {
     next();
   });
 
-  app.use((_req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+  const allowedOrigins = (
+    process.env.ALLOWED_ORIGINS || "https://claude.ai,https://claude.com"
+  )
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
+    }
     res.header(
       "Access-Control-Allow-Headers",
       "Content-Type, mcp-session-id, Authorization",
@@ -94,11 +107,37 @@ export async function startServer(port: number): Promise<void> {
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
+  const proxyIp = (req: express.Request): string => {
+    const cf = req.headers["cf-connecting-ip"];
+    if (typeof cf === "string" && cf) return cf;
+    const xff = req.headers["x-forwarded-for"];
+    if (typeof xff === "string" && xff) return xff.split(",")[0].trim();
+    return req.ip ?? "unknown";
+  };
+
+  const makeLimit = (max: number, windowSec = 60) =>
+    rateLimit({
+      windowMs: windowSec * 1000,
+      max,
+      standardHeaders: true,
+      legacyHeaders: false,
+      keyGenerator: proxyIp,
+      skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
+    });
+
+  app.use("/authorize", makeLimit(10));
+  app.use("/register", makeLimit(5));
+  app.use("/token", makeLimit(20));
+  app.use("/revoke", makeLimit(20));
+  app.use("/signin", makeLimit(10));
+
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   registerOAuthRoutes(app, baseUrl);
   console.error(
     `[OAuth] Enabled. Sign in with your Taproot account (taproothq.com).`,
   );
+  registerSigninRoutes(app, baseUrl);
+  console.error(`[Signin] Direct signin enabled at /signin`);
 
   mountApiRoutes(app);
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
@@ -144,5 +183,20 @@ export async function startServer(port: number): Promise<void> {
     console.error(`  MCP:    POST /mcp`);
     console.error(`  API:    /api/*`);
     console.error(`  Health: GET  /health`);
+  });
+}
+
+// Self-invoke when run directly (Railway / cloud deploy)
+const isMain =
+  typeof process !== "undefined" &&
+  process.argv[1] != null &&
+  (process.argv[1].endsWith("server.js") ||
+    process.argv[1].endsWith("server.ts"));
+
+if (isMain) {
+  const port = parseInt(process.env.PORT || "3777", 10);
+  startServer(port).catch((err) => {
+    console.error("Taproot server fatal error:", err);
+    process.exit(1);
   });
 }

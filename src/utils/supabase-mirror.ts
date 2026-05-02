@@ -283,11 +283,10 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       : null;
 
     if (prefix) {
-      // NOTE: Postgres LIKE special chars (`_`, `%`) inside `prefix` would
-      // over-match. Stage 1 paths are user-supplied vault paths; they don't
-      // typically contain these. Helper-layer normalization will reject
-      // problematic chars before they reach here.
-      query = query.like("path", `${prefix}%`);
+      // H8 (04-30): escape Postgres LIKE metacharacters so a path component
+      // containing `%` or `_` (or the escape char `\`) does not over-match.
+      const escapedPrefix = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+      query = query.like("path", `${escapedPrefix}%`);
     }
 
     const { data, error } = await query;
