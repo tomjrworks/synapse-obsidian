@@ -1,13 +1,14 @@
 /**
- * B3 cloud signin smoke (2026-05-01).
+ * /signin smoke (B1 code-exchange refactor, 2026-05-02).
  *
- * Cases 1-3 and 6 run without Supabase env (form rendering + input validation).
- * Case 4 (invalid creds) requires Supabase to be reachable.
- * Cases 5 and 7 (happy path + UPSERT idempotence) additionally require:
+ * Cases that don't need credentials run without env. Happy path additionally
+ * requires:
  *   TEST_FIXTURE_EMAIL=<email>
  *   TEST_FIXTURE_PASSWORD=<password>
  * Env vars are auto-loaded from .env if not set in the shell.
- * Skip messages are printed for skipped cases — not failures.
+ *
+ * The deeper exchange-side coverage (PKCE mismatch, single-use, hash-at-rest,
+ * UPSERT idempotence) lives in scripts/test-signin-exchange.ts.
  *
  * Run: tsx scripts/test-signin.ts
  */
@@ -15,7 +16,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createClient } from "@supabase/supabase-js";
+import { createHash, randomBytes } from "node:crypto";
 
 function loadDotEnv(): Record<string, string> {
   const envPath = resolve(process.cwd(), ".env");
@@ -54,6 +55,12 @@ function skip(name: string, reason: string) {
   console.log(`  ~ ${name}  (skipped: ${reason})`);
 }
 
+function makePKCE(): { verifier: string; challenge: string } {
+  const verifier = randomBytes(32).toString("base64url"); // 43 chars
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+
 async function waitForHealth(url: string, timeoutMs = 8000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -79,7 +86,7 @@ async function getSignin(
 
 async function postSignin(
   body: Record<string, string>,
-): Promise<{ status: number; location: string | null }> {
+): Promise<{ status: number; location: string | null; body: string }> {
   const form = new URLSearchParams(body);
   const r = await fetch(`${BASE}/signin`, {
     method: "POST",
@@ -90,6 +97,7 @@ async function postSignin(
   return {
     status: r.status,
     location: r.headers.get("location"),
+    body: await r.text(),
   };
 }
 
@@ -130,59 +138,68 @@ try {
   }
   check("server up at /health", true);
 
-  // --- Case 1: GET /signin renders branded form ---
-  console.log("\n→ Case 1: GET /signin renders form");
-  const get1 = await getSignin({});
+  // --- Case 1: GET /signin WITH challenge renders branded form ---
+  console.log("\n→ Case 1: GET /signin with challenge renders form");
+  const { challenge: c1Challenge } = makePKCE();
+  const get1 = await getSignin({
+    code_challenge: c1Challenge,
+    code_challenge_method: "S256",
+  });
   check(
     "200, contains Fraunces font reference",
     get1.status === 200 && get1.body.includes("Fraunces"),
     { status: get1.status },
   );
-  check("contains forest-dark color token", get1.body.includes("#1A5C32"), {
-    found: get1.body.includes("#1A5C32"),
-  });
+  check("contains forest-dark color token", get1.body.includes("#1A5C32"), {});
   check(
     "contains POST form targeting /signin",
     get1.body.includes('method="POST"') &&
       get1.body.includes('action="/signin"'),
-    {
-      method: get1.body.includes('method="POST"'),
-      action: get1.body.includes('action="/signin"'),
-    },
+    {},
   );
   check(
     "contains email + password inputs",
     get1.body.includes('name="email"') && get1.body.includes('name="password"'),
-    {
-      email: get1.body.includes('name="email"'),
-      password: get1.body.includes('name="password"'),
-    },
+    {},
+  );
+  check(
+    "challenge + method round-trip into hidden inputs",
+    get1.body.includes(`value="${c1Challenge}"`) &&
+      get1.body.includes('value="S256"'),
+    {},
   );
 
   // --- Case 2: GET /signin re-renders with error + pre-filled email ---
   console.log("\n→ Case 2: GET /signin re-renders error");
+  const { challenge: c2Challenge } = makePKCE();
   const get2 = await getSignin({
     error: "invalid_credentials",
     email: "foo@bar.com",
+    code_challenge: c2Challenge,
+    code_challenge_method: "S256",
   });
   check(
     "200, error banner present",
     get2.status === 200 && get2.body.includes("Invalid email or password"),
-    {
-      status: get2.status,
-      hasBanner: get2.body.includes("Invalid email or password"),
-    },
+    {},
   );
-  check("pre-fills email value", get2.body.includes('value="foo@bar.com"'), {
-    found: get2.body.includes('value="foo@bar.com"'),
-  });
+  check("pre-fills email value", get2.body.includes('value="foo@bar.com"'), {});
 
-  // --- Case 3: POST missing email → 302 missing_email ---
+  // --- Case 3: POST missing email → 302 with challenge preserved ---
   console.log("\n→ Case 3: POST missing email");
-  const post3 = await postSignin({ password: "anything" });
+  const { challenge: c3Challenge } = makePKCE();
+  const post3 = await postSignin({
+    password: "anything",
+    code_challenge: c3Challenge,
+    code_challenge_method: "S256",
+  });
   check(
-    "302 + Location: /signin?error=missing_email",
-    post3.status === 302 && post3.location === "/signin?error=missing_email",
+    "302 + Location includes error=missing_email + preserves challenge",
+    post3.status === 302 &&
+      post3.location != null &&
+      post3.location.includes("error=missing_email") &&
+      post3.location.includes(`code_challenge=${c3Challenge}`) &&
+      post3.location.includes("code_challenge_method=S256"),
     { status: post3.status, location: post3.location },
   );
 
@@ -194,15 +211,19 @@ try {
       "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not available",
     );
   } else {
+    const { challenge: c4Challenge } = makePKCE();
     const post4 = await postSignin({
       email: "notreal@example.com",
       password: "wrong-password-xyz",
+      code_challenge: c4Challenge,
+      code_challenge_method: "S256",
     });
     check(
-      "302 + Location contains invalid_credentials",
+      "302 + Location contains invalid_credentials + preserves challenge",
       post4.status === 302 &&
         post4.location != null &&
-        post4.location.includes("error=invalid_credentials"),
+        post4.location.includes("error=invalid_credentials") &&
+        post4.location.includes(`code_challenge=${c4Challenge}`),
       { status: post4.status, location: post4.location },
     );
   }
@@ -211,127 +232,75 @@ try {
   console.log("\n→ Case 5: POST happy path");
   if (!hasFixture) {
     skip(
-      "happy path → taproot://auth deep-link redirect",
+      "happy path → taproot://auth?code=… deep-link redirect",
       "TEST_FIXTURE_EMAIL / TEST_FIXTURE_PASSWORD not set",
     );
   } else {
+    const { challenge: c5Challenge } = makePKCE();
     const post5 = await postSignin({
       email: FIXTURE_EMAIL,
       password: FIXTURE_PASSWORD,
+      code_challenge: c5Challenge,
+      code_challenge_method: "S256",
     });
-    const deepLinkRe =
-      /^taproot:\/\/auth\/?\?bearer=[a-f0-9]{64}&workspace=[0-9a-f-]{36}$/;
+    const codeRedirectRe =
+      /^taproot:\/\/auth\/?\?code=[a-f0-9]{64}&workspace=[0-9a-f-]{36}$/;
     check(
-      "302 + Location matches taproot://auth?bearer=<64hex>&workspace=<uuid>",
+      "302 + Location matches taproot://auth?code=<64hex>&workspace=<uuid>",
       post5.status === 302 &&
         post5.location != null &&
-        deepLinkRe.test(post5.location),
+        codeRedirectRe.test(post5.location),
       { status: post5.status, location: post5.location },
     );
-
-    if (hasSupabase && post5.location) {
-      const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-      const params = new URL(
-        post5.location.replace("taproot://", "https://taproot/"),
-      );
-      const workspaceId = params.searchParams.get("workspace")!;
-      const syntheticClientId = `taproot-helper-${workspaceId}`;
-      const { data: tokenRows } = await supa
-        .from("oauth_tokens")
-        .select("id")
-        .eq("workspace_id", workspaceId)
-        .eq("client_id", syntheticClientId);
-      check(
-        "oauth_tokens row exists for synthetic client",
-        Array.isArray(tokenRows) && tokenRows.length >= 1,
-        { rows: tokenRows?.length },
-      );
-    } else {
-      skip(
-        "oauth_tokens DB assertion",
-        "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set",
-      );
-    }
+    check(
+      "no bearer= in redirect URL (B1 regression guard)",
+      post5.location != null && !post5.location.includes("bearer="),
+      { location: post5.location },
+    );
   }
 
   // --- Case 6: HTML-escape sanity ---
   console.log("\n→ Case 6: HTML-escape sanity");
-  const get6 = await getSignin({ email: "<script>alert(1)</script>" });
+  const { challenge: c6Challenge } = makePKCE();
+  const get6 = await getSignin({
+    email: "<script>alert(1)</script>",
+    code_challenge: c6Challenge,
+    code_challenge_method: "S256",
+  });
   check(
     "raw <script> tag absent from rendered body",
     !get6.body.includes("<script>alert(1)</script>"),
-    { found: get6.body.includes("<script>alert(1)</script>") },
+    {},
   );
   check(
     "escaped form present (&lt;script&gt;)",
     get6.body.includes("&lt;script&gt;"),
-    { found: get6.body.includes("&lt;script&gt;") },
+    {},
   );
 
-  // --- Case 7: UPSERT idempotence (requires fixture user) ---
-  console.log("\n→ Case 7: UPSERT idempotence");
-  if (!hasFixture || !hasSupabase) {
-    skip(
-      "POST twice → one oauth_clients row, two oauth_tokens rows",
-      !hasFixture
-        ? "TEST_FIXTURE_EMAIL / TEST_FIXTURE_PASSWORD not set"
-        : "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set",
-    );
-  } else {
-    const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+  // --- Case 7: GET /signin without challenge → friendly helper-required page ---
+  console.log("\n→ Case 7: GET /signin without challenge");
+  const get7 = await getSignin({});
+  check(
+    "200 + helper-required message present",
+    get7.status === 200 &&
+      get7.body.includes("Open Taproot from your menu bar"),
+    { status: get7.status },
+  );
+  check(
+    "no <form> rendered when challenge missing",
+    !get7.body.includes('action="/signin"'),
+    {},
+  );
 
-    // First signin
-    const first = await postSignin({
-      email: FIXTURE_EMAIL,
-      password: FIXTURE_PASSWORD,
-    });
-    check(
-      "first signin → 302",
-      first.status === 302 && first.location?.includes("taproot://auth"),
-      { status: first.status },
-    );
-
-    // Second signin
-    const second = await postSignin({
-      email: FIXTURE_EMAIL,
-      password: FIXTURE_PASSWORD,
-    });
-    check(
-      "second signin → 302",
-      second.status === 302 && second.location?.includes("taproot://auth"),
-      { status: second.status },
-    );
-
-    const params = new URL(
-      (first.location ?? "taproot://auth?workspace=x").replace(
-        "taproot://",
-        "https://taproot/",
-      ),
-    );
-    const workspaceId = params.searchParams.get("workspace")!;
-    const syntheticClientId = `taproot-helper-${workspaceId}`;
-
-    const { data: clientRows } = await supa
-      .from("oauth_clients")
-      .select("client_id")
-      .eq("client_id", syntheticClientId);
-    check(
-      "exactly one oauth_clients row (UPSERT idempotent)",
-      Array.isArray(clientRows) && clientRows.length === 1,
-      { rows: clientRows?.length },
-    );
-
-    const { data: tokenRows } = await supa
-      .from("oauth_tokens")
-      .select("id")
-      .eq("workspace_id", workspaceId)
-      .eq("client_id", syntheticClientId);
-    check(
-      "two oauth_tokens rows (one per signin)",
-      Array.isArray(tokenRows) && tokenRows.length >= 2,
-      { rows: tokenRows?.length },
-    );
-  }
+  // --- Case 8: POST /signin without challenge → 400 ---
+  console.log("\n→ Case 8: POST /signin without challenge");
+  const post8 = await postSignin({ email: "x@y.com", password: "pw" });
+  check(
+    "400 invalid_request when challenge missing",
+    post8.status === 400 && post8.body.includes("invalid_request"),
+    { status: post8.status, body: post8.body.slice(0, 120) },
+  );
 
   const skipNote = skipped > 0 ? `, ${skipped} skipped` : "";
   console.log(`\n${pass} pass, ${fail} fail${skipNote}`);

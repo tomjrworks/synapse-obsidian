@@ -1,18 +1,18 @@
 import XCTest
 @testable import TaprootHelper
 
-// 64-char bearer that satisfies the 32-256 range + [A-Za-z0-9_-] charset.
-private let kValidBearer = String(repeating: "a1b2c3d4", count: 8)
-// 32-char variants for tests that check exact bearer values.
-private let kBearerABC = "abc" + String(repeating: "0", count: 29)
-private let kBearerABC123 = "abc123" + String(repeating: "0", count: 26)
+// 64-char lowercase hex matches the server's `randomBytes(32).toString("hex")`
+// auth-code format (B1 code-exchange flow). The bearer never appears in
+// the deep-link URL anymore — exchange-only.
+private let kValidCode = String(repeating: "ab12cd34", count: 8)
+private let kCodeAllZeros = String(repeating: "0", count: 64)
 
 final class DeepLinkParserTests: XCTestCase {
     func testValidAuthURL() throws {
         let id = UUID()
-        let url = URL(string: "taproot://auth?bearer=\(kBearerABC123)&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://auth?code=\(kValidCode)&workspace=\(id.uuidString)")!
         let link = try DeepLinkParser.parseAuth(url)
-        XCTAssertEqual(link.bearer, kBearerABC123)
+        XCTAssertEqual(link.code, kValidCode)
         XCTAssertEqual(link.workspaceID, id)
     }
 
@@ -20,85 +20,99 @@ final class DeepLinkParserTests: XCTestCase {
         // Per RFC 3986, hosts are case-insensitive. URL preserves the original
         // casing in `.host`, so the parser must lowercase before comparing.
         let id = UUID()
-        let url = URL(string: "taproot://AUTH?bearer=\(kBearerABC)&workspace=\(id.uuidString)")!
+        let url = URL(string: "taproot://AUTH?code=\(kCodeAllZeros)&workspace=\(id.uuidString)")!
         let link = try DeepLinkParser.parseAuth(url)
-        XCTAssertEqual(link.bearer, kBearerABC)
-        XCTAssertEqual(link.workspaceID, id)
-    }
-
-    func testValidAuthURLWithLongBearer() throws {
-        // 64-char hex bearer matches the real `oauth_tokens` shape.
-        let id = UUID()
-        let url = URL(string: "taproot://auth?bearer=\(kValidBearer)&workspace=\(id.uuidString)")!
-        let link = try DeepLinkParser.parseAuth(url)
-        XCTAssertEqual(link.bearer, kValidBearer)
+        XCTAssertEqual(link.code, kCodeAllZeros)
         XCTAssertEqual(link.workspaceID, id)
     }
 
     func testWrongScheme() {
-        let url = URL(string: "https://auth?bearer=\(kValidBearer)&workspace=\(UUID().uuidString)")!
+        let url = URL(string: "https://auth?code=\(kValidCode)&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
             XCTAssertEqual(err as? DeepLinkParseError, .wrongScheme)
         }
     }
 
     func testWrongHost() {
-        let url = URL(string: "taproot://other?bearer=\(kValidBearer)&workspace=\(UUID().uuidString)")!
+        let url = URL(string: "taproot://other?code=\(kValidCode)&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
             XCTAssertEqual(err as? DeepLinkParseError, .wrongHost)
         }
     }
 
-    func testMissingBearer() {
+    func testMissingCode() {
         let url = URL(string: "taproot://auth?workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
-            XCTAssertEqual(err as? DeepLinkParseError, .missingBearer)
+            XCTAssertEqual(err as? DeepLinkParseError, .missingCode)
         }
     }
 
-    func testEmptyBearer() {
-        let url = URL(string: "taproot://auth?bearer=&workspace=\(UUID().uuidString)")!
+    func testEmptyCode() {
+        let url = URL(string: "taproot://auth?code=&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
-            XCTAssertEqual(err as? DeepLinkParseError, .missingBearer)
+            XCTAssertEqual(err as? DeepLinkParseError, .missingCode)
         }
     }
 
-    func testBearerTooShort() {
-        // Bearers shorter than 32 chars are rejected (truncated-token hardening).
-        let url = URL(string: "taproot://auth?bearer=short&workspace=\(UUID().uuidString)")!
+    func testCodeTooShort() {
+        // Only 64-char hex is accepted — anything shorter is rejected even
+        // if every character is in the hex charset.
+        let shortCode = String(repeating: "a", count: 32)
+        let url = URL(string: "taproot://auth?code=\(shortCode)&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
-            XCTAssertEqual(err as? DeepLinkParseError, .invalidBearer)
+            XCTAssertEqual(err as? DeepLinkParseError, .invalidCode)
         }
     }
 
-    func testBearerTooLong() {
-        let longBearer = String(repeating: "a", count: 257)
-        let url = URL(string: "taproot://auth?bearer=\(longBearer)&workspace=\(UUID().uuidString)")!
+    func testCodeTooLong() {
+        let longCode = String(repeating: "a", count: 65)
+        let url = URL(string: "taproot://auth?code=\(longCode)&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
-            XCTAssertEqual(err as? DeepLinkParseError, .invalidBearer)
+            XCTAssertEqual(err as? DeepLinkParseError, .invalidCode)
         }
     }
 
-    func testBearerInvalidCharset() {
-        // Spaces and special chars outside [A-Za-z0-9_-] are rejected.
-        let badBearer = String(repeating: "a", count: 30) + "!!"
-        let url = URL(string: "taproot://auth?bearer=\(badBearer)&workspace=\(UUID().uuidString)")!
+    func testCodeUppercaseRejected() {
+        // Server emits lowercase hex; uppercase shouldn't pass the strict charset
+        // check (avoids ambiguity with case-folded comparisons later).
+        let upperCode = String(repeating: "AB", count: 32)
+        let url = URL(string: "taproot://auth?code=\(upperCode)&workspace=\(UUID().uuidString)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
-            XCTAssertEqual(err as? DeepLinkParseError, .invalidBearer)
+            XCTAssertEqual(err as? DeepLinkParseError, .invalidCode)
+        }
+    }
+
+    func testCodeInvalidCharset() {
+        // `g` is outside the [0-9a-f] charset.
+        let badCode = String(repeating: "g", count: 64)
+        let url = URL(string: "taproot://auth?code=\(badCode)&workspace=\(UUID().uuidString)")!
+        XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
+            XCTAssertEqual(err as? DeepLinkParseError, .invalidCode)
         }
     }
 
     func testMissingWorkspace() {
-        let url = URL(string: "taproot://auth?bearer=\(kValidBearer)")!
+        let url = URL(string: "taproot://auth?code=\(kValidCode)")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
             XCTAssertEqual(err as? DeepLinkParseError, .missingWorkspace)
         }
     }
 
     func testInvalidWorkspaceUUID() {
-        let url = URL(string: "taproot://auth?bearer=\(kValidBearer)&workspace=not-a-uuid")!
+        let url = URL(string: "taproot://auth?code=\(kValidCode)&workspace=not-a-uuid")!
         XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
             XCTAssertEqual(err as? DeepLinkParseError, .invalidWorkspaceUUID)
+        }
+    }
+
+    func testBearerParamRejected() {
+        // B1 regression guard: the old `?bearer=…` shape MUST fail to parse so
+        // a stale browser-history link can never reach the helper as an
+        // auth payload.
+        let bearer = String(repeating: "a", count: 64)
+        let url = URL(string: "taproot://auth?bearer=\(bearer)&workspace=\(UUID().uuidString)")!
+        XCTAssertThrowsError(try DeepLinkParser.parseAuth(url)) { err in
+            XCTAssertEqual(err as? DeepLinkParseError, .missingCode)
         }
     }
 }

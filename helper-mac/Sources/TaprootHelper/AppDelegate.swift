@@ -479,7 +479,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (new workspace). /security-audit C3 (2026-04-30) gate is preserved
     /// — a malicious deep-link plus a guessed PKCE pair still can't rotate
     /// an existing workspace's bearer without explicit user confirmation.
-    private func applyBearer(workspaceID: UUID, bearer: String) {
+    /// Internal access so tests can drive the post-exchange logic directly
+    /// without standing up a fake HTTPClient + PKCE round-trip.
+    func applyBearer(workspaceID: UUID, bearer: String) {
         do {
             if let idx = workspaces.firstIndex(where: { $0.id == workspaceID }) {
                 let existing = workspaces[idx]
