@@ -130,7 +130,17 @@ export async function startServer(port: number): Promise<void> {
   app.use("/register", makeLimit(5));
   app.use("/token", makeLimit(20));
   app.use("/revoke", makeLimit(20));
-  app.use("/signin", makeLimit(10));
+  // /signin and /signin/exchange need independent buckets — exchange is
+  // non-interactive and codes naturally expire in 5 min, so it gets a higher
+  // cap. Mounting "/signin/exchange" first only narrows the path-match; both
+  // middlewares fire on /signin/exchange unless we exclude it from /signin.
+  const signinLimit = makeLimit(10);
+  const signinExchangeLimit = makeLimit(20);
+  app.use("/signin/exchange", signinExchangeLimit);
+  app.use("/signin", (req, res, next) => {
+    if (req.path.startsWith("/exchange")) return next();
+    return signinLimit(req, res, next);
+  });
 
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   registerOAuthRoutes(app, baseUrl);

@@ -70,9 +70,8 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=\(kBearerA)&workspace=\(id.uuidString)")!
 
-        app.handleAuthURL(url)
+        app.applyBearer(workspaceID: id, bearer: kBearerA)
 
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerA)
         XCTAssertEqual(app.workspaces.count, 1)
@@ -86,16 +85,14 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let firstURL = URL(string: "taproot://auth?bearer=\(kBearerA)&workspace=\(id.uuidString)")!
-        let secondURL = URL(string: "taproot://auth?bearer=\(kBearerB)&workspace=\(id.uuidString)")!
 
         // First call routes through presentFirstRun → confirmFirstRun → workspace appended.
         // Second call finds the workspace in `app.workspaces` and takes the upsert path.
         // BUG-2: stub confirmReauth before the second call so it doesn't block
         // on NSAlert, which hangs headless test runs.
-        app.handleAuthURL(firstURL)
+        app.applyBearer(workspaceID: id, bearer: kBearerA)
         app.confirmReauth = { _ in true }
-        app.handleAuthURL(secondURL)
+        app.applyBearer(workspaceID: id, bearer: kBearerB)
 
         XCTAssertEqual(app.workspaces.count, 1, "Same workspace ID should not duplicate")
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerB)
@@ -110,14 +107,148 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(try keychain.retrieveAll().count, 0)
     }
 
+    // MARK: - B1 code-exchange flow
+
+    /// Happy path: PKCE seeded → handleAuthURL with code URL → fake HTTP
+    /// returns 200 + bearer → applyBearer routes through firstRun, bearer
+    /// lands in Keychain. Mirrors the production flow end-to-end with
+    /// stubbed network.
+    func testHandleAuthURLExchangeHappyPath() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
+
+        // Seed PKCE the same way menuConnectAccount would.
+        let (challenge, _) = app.pkceStore.beginSignin()
+        XCTAssertEqual(challenge.count, 43)
+
+        // Stub /signin/exchange response.
+        let serverBearer = "exchanged-bearer" + String(repeating: "0", count: 16)
+        let respBody = try JSONSerialization.data(withJSONObject: [
+            "bearer": serverBearer,
+            "workspace_id": id.uuidString,
+            "expires_at": "2099-01-01T00:00:00.000Z",
+        ])
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 200, body: respBody)))
+
+        let exp = expectation(description: "exchange POST sent")
+        await fake.setOnSend { exp.fulfill() }
+
+        let code = String(repeating: "ab12cd34", count: 8)
+        let url = URL(string: "taproot://auth?code=\(code)&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+
+        await fulfillment(of: [exp], timeout: 2.0)
+        // Allow the post-exchange Task continuation to land on MainActor.
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), serverBearer)
+        XCTAssertEqual(app.workspaces.count, 1)
+        XCTAssertEqual(app.workspaces.first?.bearer, serverBearer)
+
+        // Sent body should carry the verifier (consumed) — sanity check the request shape.
+        let last = await fake.lastRequest
+        XCTAssertEqual(last?.url.path, "/signin/exchange")
+        XCTAssertEqual(last?.method, "POST")
+    }
+
+    /// Missing verifier (helper restarted between Connect click + deep-link
+    /// callback) → presentSigninError fires, no exchange POST issued, no
+    /// bearer stored.
+    func testHandleAuthURLWithoutVerifierShowsAlert() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+
+        var alertMessage: String?
+        let alertExp = expectation(description: "alert presented")
+        app.presentSigninError = { msg in
+            alertMessage = msg
+            alertExp.fulfill()
+        }
+
+        let code = String(repeating: "deadbeef", count: 8)
+        let url = URL(string: "taproot://auth?code=\(code)&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+
+        await fulfillment(of: [alertExp], timeout: 1.0)
+        XCTAssertTrue(alertMessage?.contains("Open the Taproot menu") == true)
+        let count = await fake.sendCount
+        XCTAssertEqual(count, 0, "no exchange POST should fire when verifier missing")
+        XCTAssertEqual(try keychain.retrieveAll().count, 0)
+    }
+
+    /// Server returns 400 pkce_mismatch → presentSigninError fires with
+    /// the verification-failed message; no bearer stored.
+    func testHandleAuthURLExchangeServerErrorShowsAlert() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+
+        app.pkceStore.beginSignin()
+
+        let respBody = try JSONSerialization.data(withJSONObject: [
+            "error": "pkce_mismatch",
+        ])
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 400, body: respBody)))
+
+        var alertMessage: String?
+        let alertExp = expectation(description: "alert presented")
+        app.presentSigninError = { msg in
+            alertMessage = msg
+            alertExp.fulfill()
+        }
+
+        let code = String(repeating: "ab12cd34", count: 8)
+        let url = URL(string: "taproot://auth?code=\(code)&workspace=\(id.uuidString)")!
+        app.handleAuthURL(url)
+
+        await fulfillment(of: [alertExp], timeout: 2.0)
+        XCTAssertTrue(alertMessage?.contains("verification failed") == true,
+                      "got: \(alertMessage ?? "nil")")
+        XCTAssertEqual(try keychain.retrieveAll().count, 0)
+    }
+
+    /// Server echoes a different workspace_id than the deep-link
+    /// (defense-in-depth) → presentSigninError fires; nothing stored.
+    func testHandleAuthURLExchangeWorkspaceMismatchAlerts() async throws {
+        let deeplinkID = UUID()
+        let serverID = UUID()
+        defer { cleanSettingsDefaults(for: deeplinkID) }
+
+        app.pkceStore.beginSignin()
+
+        let respBody = try JSONSerialization.data(withJSONObject: [
+            "bearer": String(repeating: "a", count: 64),
+            "workspace_id": serverID.uuidString,
+            "expires_at": "2099-01-01T00:00:00.000Z",
+        ])
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 200, body: respBody)))
+
+        var alertMessage: String?
+        let alertExp = expectation(description: "alert presented")
+        app.presentSigninError = { msg in
+            alertMessage = msg
+            alertExp.fulfill()
+        }
+
+        let code = String(repeating: "ab12cd34", count: 8)
+        let url = URL(string: "taproot://auth?code=\(code)&workspace=\(deeplinkID.uuidString)")!
+        app.handleAuthURL(url)
+
+        await fulfillment(of: [alertExp], timeout: 2.0)
+        XCTAssertTrue(alertMessage?.contains("workspace mismatch") == true,
+                      "got: \(alertMessage ?? "nil")")
+        XCTAssertEqual(try keychain.retrieveAll().count, 0)
+    }
+
     func testSignOutClearsKeychainAndRemovesWorkspace() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=\(kBearerToClear)&workspace=\(id.uuidString)")!
-        app.handleAuthURL(url)
+        app.applyBearer(workspaceID: id, bearer: kBearerToClear)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.signOut(workspaceID: id)
@@ -134,8 +265,8 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerKeep)&workspace=\(id1.uuidString)")!)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerRemove)&workspace=\(id2.uuidString)")!)
+        app.applyBearer(workspaceID: id1, bearer: kBearerKeep)
+        app.applyBearer(workspaceID: id2, bearer: kBearerRemove)
 
         app.signOut(workspaceID: id2)
 
@@ -185,8 +316,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=\(kBearerWatchMe)&workspace=\(id.uuidString)")!
-        app.handleAuthURL(url)
+        app.applyBearer(workspaceID: id, bearer: kBearerWatchMe)
         // confirmFirstRun already started a watcher; startAllWatchers is a no-op
         // for IDs already in the dict (idempotent guard).
         app.startAllWatchers()
@@ -507,8 +637,7 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(testApp, folder: folder)
 
         // Seed workspace + Keychain + watcher.
-        let url = URL(string: "taproot://auth?bearer=\(kBearerInFlight)&workspace=\(id.uuidString)")!
-        testApp.handleAuthURL(url)
+        testApp.applyBearer(workspaceID: id, bearer: kBearerInFlight)
         XCTAssertEqual(testApp.workspaces.count, 1)
         testApp.startAllWatchers()
         XCTAssertNotNil(testApp.watchers[id])
@@ -557,8 +686,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        let url = URL(string: "taproot://auth?bearer=\(kBearerToClear)&workspace=\(id.uuidString)")!
-        app.handleAuthURL(url)
+        app.applyBearer(workspaceID: id, bearer: kBearerToClear)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.performSignOut(workspaceID: id)
@@ -573,7 +701,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerKeep)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerKeep)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.confirmSignOut = { _ in false }
@@ -592,7 +720,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerRemove)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerRemove)
         XCTAssertEqual(app.workspaces.count, 1)
 
         app.confirmSignOut = { _ in true }
@@ -767,7 +895,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerClearMe)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerClearMe)
 
         app.togglePauseSync(workspaceID: id)
         XCTAssertTrue(UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
@@ -1018,8 +1146,8 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAlpha)&workspace=\(id1.uuidString)")!)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBravo)&workspace=\(id2.uuidString)")!)
+        app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
+        app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
         XCTAssertEqual(app.currentMenu?.items.count, 4, "Pre-signOut: nested 4-item menu")
 
         app.signOut(workspaceID: id2)
@@ -1037,13 +1165,13 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         wireFirstRunForTest(app, folder: folder)
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAlpha)&workspace=\(id1.uuidString)")!)
+        app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
 
         // After 1 workspace, currentMenu reflects the 7-item flat shape.
         let afterFirst = try XCTUnwrap(app.currentMenu)
         XCTAssertEqual(afterFirst.items.count, 7, "Flat layout after first auth")
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBravo)&workspace=\(id2.uuidString)")!)
+        app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
 
         // After 2 workspaces, currentMenu reflects the 4-item nested shape.
         let afterSecond = try XCTUnwrap(app.currentMenu)
@@ -1302,8 +1430,7 @@ final class AppDelegateTests: XCTestCase {
             exp.fulfill()
         }
 
-        let url = URL(string: "taproot://auth?bearer=\(kBearerBig)&workspace=\(id.uuidString)")!
-        app.handleAuthURL(url)
+        app.applyBearer(workspaceID: id, bearer: kBearerBig)
 
         wait(for: [exp], timeout: 1.0)
         XCTAssertEqual(capturedID, id)
@@ -1340,7 +1467,7 @@ final class AppDelegateTests: XCTestCase {
         // test asserting the rotation behaviour.
         app.confirmReauth = { _ in true }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerNew)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerNew)
 
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces[0].bearer, kBearerNew)
@@ -1377,7 +1504,7 @@ final class AppDelegateTests: XCTestCase {
             return true
         }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerNew)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerNew)
 
         XCTAssertEqual(capturedWorkspace?.id, id, "confirmReauth must receive the existing Workspace")
         XCTAssertEqual(capturedWorkspace?.name, "MyVault")
@@ -1411,7 +1538,7 @@ final class AppDelegateTests: XCTestCase {
         }
         app.confirmReauth = { _ in false }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerAttacker)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerAttacker)
 
         XCTAssertEqual(app.workspaces[0].bearer, "legit-bearer", "Cancel must not rotate in-memory bearer")
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), "legit-bearer", "Cancel must not write attacker bearer to Keychain")
@@ -1490,7 +1617,7 @@ final class AppDelegateTests: XCTestCase {
         // No-op seam: skip the welcome-window flow entirely.
         app.firstRun.presentFirstRun = { _, _ in }
 
-        app.handleAuthURL(URL(string: "taproot://auth?bearer=\(kBearerBig)&workspace=\(id.uuidString)")!)
+        app.applyBearer(workspaceID: id, bearer: kBearerBig)
 
         XCTAssertTrue(app.watchers.isEmpty,
                       "Watcher must not start before confirmFirstRun")
@@ -1555,10 +1682,20 @@ final class AppDelegateTests: XCTestCase {
         app.menuConnectAccount(NSMenuItem())
         await fulfillment(of: [exp], timeout: 1.0)
 
-        XCTAssertTrue(
-            capturedURL?.absoluteString.hasSuffix("/signin?source=helper") == true,
-            "expected /signin?source=helper, got \(capturedURL?.absoluteString ?? "nil")"
-        )
+        // B1: URL now carries source + PKCE challenge + method. Assert each
+        // expected query item rather than full string match (challenge is
+        // randomized per-call).
+        guard let url = capturedURL else {
+            return XCTFail("captured URL must be non-nil")
+        }
+        XCTAssertEqual(url.path, "/signin")
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first(where: { $0.name == "source" })?.value, "helper")
+        XCTAssertEqual(items.first(where: { $0.name == "code_challenge_method" })?.value, "S256")
+        let challenge = items.first(where: { $0.name == "code_challenge" })?.value ?? ""
+        XCTAssertEqual(challenge.count, 43, "expected 43-char base64url challenge")
+        // Verifier must have been seeded into the PKCEStore by beginSignin.
+        XCTAssertNotNil(app.pkceStore.consumeVerifier(), "menuConnectAccount must seed PKCE verifier")
     }
 
     // MARK: - build-audit C1 (diagnosticSnapshot format)

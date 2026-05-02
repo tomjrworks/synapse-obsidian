@@ -93,6 +93,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater: makeUpdaterService(),
         settingsStore: settingsStore
     )
+    /// PKCE verifier storage for the /signin code-exchange flow (B1).
+    /// `menuConnectAccount` calls `beginSignin()` to seed; `handleAuthURL`
+    /// calls `consumeVerifier()` on the deep-link callback. Per-instance
+    /// (not a singleton) so tests can swap a fake. Single-user UX, so the
+    /// "most-recent-wins" semantics inside PKCEStore are acceptable.
+    var pkceStore: PKCEStore = PKCEStore()
+    /// Test seam for the "no active sign-in" alert. Default presents an
+    /// NSAlert; tests override to drive both the alert path and the
+    /// happy path without blocking on a modal in headless XCTest.
+    var presentSigninError: @MainActor (String) -> Void = { message in
+        let alert = NSAlert()
+        alert.messageText = "Taproot sign-in"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        _ = alert.runModal()
+    }
     /// Factory for the underlying UpdaterService; default returns the
     /// production `SparkleUpdaterService`. Override in tests before first
     /// `updates` access.
@@ -273,11 +290,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func menuConnectAccount(_ sender: NSMenuItem) {
+        // B1: seed a PKCE challenge before opening the browser. The
+        // matching verifier is held in memory until the deep-link
+        // callback (`handleAuthURL`) consumes it for /signin/exchange.
+        let (challenge, method) = pkceStore.beginSignin()
         var components = URLComponents(
             url: services.baseURL.appendingPathComponent("signin"),
             resolvingAgainstBaseURL: false
         )!
-        components.queryItems = [URLQueryItem(name: "source", value: "helper")]
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "helper"),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: method),
+        ]
         guard let url = components.url else { return }
         firstRun.openConnectURL(url)
     }
@@ -366,42 +391,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handleAuthURL(url)
     }
 
-    /// Parses an auth deep link, persists the bearer to Keychain, and either
-    /// upserts the bearer on an existing workspace (re-auth) or hands off to
-    /// the first-run flow for a never-seen workspace. Extracted from
-    /// `handleGetURLEvent` so tests can drive it directly without
-    /// synthesizing AppleEvents.
+    /// Parses an auth deep link, exchanges the auth code for a bearer at
+    /// POST /signin/exchange (B1), persists the bearer to Keychain, and
+    /// either upserts on an existing workspace (re-auth) or hands off to
+    /// the first-run flow for a never-seen workspace.
+    ///
+    /// The exchange POST happens on a background Task so this method
+    /// returns synchronously. Tests drive both halves explicitly:
+    /// inject a stubbed FakeHTTPClient response, call this method, await
+    /// an expectation that fires from `applyBearer`.
     func handleAuthURL(_ url: URL) {
         do {
             let link = try DeepLinkParser.parseAuth(url)
-            if let idx = workspaces.firstIndex(where: { $0.id == link.workspaceID }) {
-                // Re-auth: existing workspace, bearer rotation only.
-                // /security-audit C3 (2026-04-30): require user confirmation
-                // BEFORE writing Keychain or rotating the in-memory bearer.
-                // A malicious webpage opening
-                // `taproot://auth?bearer=<attacker>&workspace=<victim-uuid>`
-                // must not silently swap the helper's bearer. Cancel-path
-                // leaves Keychain + workspaces[] untouched.
-                let existing = workspaces[idx]
-                guard confirmReauth(existing) else {
-                    NSLog("[Taproot] Re-auth cancelled by user for workspace \(link.workspaceID.uuidString)")
-                    return
-                }
-                try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
-                mutateWorkspaces { $0[idx].bearer = link.bearer }
-                NSLog("[Taproot] Updated bearer for existing workspace \(link.workspaceID.uuidString)")
-            } else {
-                // First connect: hand off to first-run UX. Workspace is NOT
-                // appended to `workspaces[]` yet — that happens in
-                // confirmFirstRun once the user accepts a folder.
-                // presentFirstRun expects the bearer in Keychain so the
-                // welcome window can fetch the workspace name with it.
-                try services.keychain.store(workspaceID: link.workspaceID, bearer: link.bearer)
-                NSLog("[Taproot] New workspace \(link.workspaceID.uuidString) — opening first-run window")
-                firstRun.presentFirstRun(link.workspaceID, link.bearer)
+            guard let verifier = pkceStore.consumeVerifier() else {
+                NSLog("[Taproot] No active sign-in — PKCE verifier not seeded for \(link.workspaceID.uuidString)")
+                presentSigninError(
+                    "Sign-in link received without an active sign-in. Open the Taproot menu and click Connect again."
+                )
+                return
+            }
+            let workspaceID = link.workspaceID
+            let code = link.code
+            Task { @MainActor [weak self] in
+                await self?.exchangeAndApply(
+                    workspaceID: workspaceID,
+                    code: code,
+                    codeVerifier: verifier
+                )
             }
         } catch {
             NSLog("[Taproot] Deep-link handling failed: \(error)")
+        }
+    }
+
+    /// POSTs `{code, code_verifier}` to `<baseURL>/signin/exchange`,
+    /// validates the response, and routes the bearer through
+    /// `applyBearer`. Internal so tests can drive it directly with a
+    /// FakeHTTPClient stubbed response.
+    func exchangeAndApply(workspaceID: UUID, code: String, codeVerifier: String) async {
+        let exchangeURL = services.baseURL.appendingPathComponent("signin/exchange")
+        let payload: [String: String] = ["code": code, "code_verifier": codeVerifier]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            NSLog("[Taproot] /signin/exchange: failed to encode body")
+            presentSigninError("Sign-in failed (encoding error). Please try again.")
+            return
+        }
+        let req = HTTPRequest(
+            url: exchangeURL,
+            method: "POST",
+            headers: ["Content-Type": "application/json"],
+            body: body
+        )
+        do {
+            let resp = try await services.httpClient.send(req)
+            guard resp.status == 200 else {
+                let errCode = (try? JSONSerialization.jsonObject(with: resp.body) as? [String: Any])?["error"] as? String
+                NSLog("[Taproot] /signin/exchange failed: HTTP \(resp.status) error=\(errCode ?? "unknown")")
+                presentSigninError(messageForExchangeError(errCode ?? "unknown", status: resp.status))
+                return
+            }
+            guard
+                let json = try JSONSerialization.jsonObject(with: resp.body) as? [String: Any],
+                let bearer = json["bearer"] as? String,
+                let respWorkspaceStr = json["workspace_id"] as? String,
+                let respWorkspaceID = UUID(uuidString: respWorkspaceStr)
+            else {
+                NSLog("[Taproot] /signin/exchange returned malformed response")
+                presentSigninError("Sign-in failed (unexpected server response). Please try again.")
+                return
+            }
+            // Defense in depth: server should echo the same workspace_id, but
+            // verify before persisting so a corrupted response can't redirect us.
+            guard respWorkspaceID == workspaceID else {
+                NSLog("[Taproot] /signin/exchange workspace mismatch: deeplink=\(workspaceID.uuidString) resp=\(respWorkspaceID.uuidString)")
+                presentSigninError("Sign-in failed (workspace mismatch). Please try again.")
+                return
+            }
+            applyBearer(workspaceID: workspaceID, bearer: bearer)
+        } catch {
+            NSLog("[Taproot] /signin/exchange transport error: \(error)")
+            presentSigninError("Couldn't reach Taproot to finish sign-in. Check your network and try again.")
+        }
+    }
+
+    /// Persists the exchanged bearer and routes to either the re-auth path
+    /// (existing workspace, requires confirmReauth) or the first-run path
+    /// (new workspace). /security-audit C3 (2026-04-30) gate is preserved
+    /// — a malicious deep-link plus a guessed PKCE pair still can't rotate
+    /// an existing workspace's bearer without explicit user confirmation.
+    /// Internal access so tests can drive the post-exchange logic directly
+    /// without standing up a fake HTTPClient + PKCE round-trip.
+    func applyBearer(workspaceID: UUID, bearer: String) {
+        do {
+            if let idx = workspaces.firstIndex(where: { $0.id == workspaceID }) {
+                let existing = workspaces[idx]
+                guard confirmReauth(existing) else {
+                    NSLog("[Taproot] Re-auth cancelled by user for workspace \(workspaceID.uuidString)")
+                    return
+                }
+                try services.keychain.store(workspaceID: workspaceID, bearer: bearer)
+                mutateWorkspaces { $0[idx].bearer = bearer }
+                NSLog("[Taproot] Updated bearer for existing workspace \(workspaceID.uuidString)")
+            } else {
+                try services.keychain.store(workspaceID: workspaceID, bearer: bearer)
+                NSLog("[Taproot] New workspace \(workspaceID.uuidString) — opening first-run window")
+                firstRun.presentFirstRun(workspaceID, bearer)
+            }
+        } catch {
+            NSLog("[Taproot] applyBearer keychain store failed: \(error)")
+            presentSigninError("Sign-in succeeded but storing the credential failed. Please try again.")
+        }
+    }
+
+    private func messageForExchangeError(_ code: String, status: Int) -> String {
+        switch code {
+        case "expired":
+            return "Your sign-in link expired. Open the Taproot menu and click Connect again."
+        case "pkce_mismatch":
+            return "Sign-in verification failed. Please try again."
+        case "invalid_code", "invalid_verifier":
+            return "Sign-in link was malformed. Please try again."
+        case "server_error":
+            return "Taproot couldn't finish sign-in. Please try again."
+        default:
+            return "Sign-in failed (HTTP \(status))."
         }
     }
 
