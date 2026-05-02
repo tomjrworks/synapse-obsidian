@@ -462,6 +462,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopPullPoller(for: workspaceID)
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
+
+        // H1 (04-30): fire-and-forget /revoke before deleting from Keychain
+        // so the bearer is invalidated server-side (RFC 7009). Never blocks
+        // sign-out — a failed revoke still completes the local sign-out.
+        let bearerToRevoke = workspaces.first(where: { $0.id == workspaceID })?.bearer
+        if let bearer = bearerToRevoke {
+            let revokeURL = services.baseURL.appendingPathComponent("revoke")
+            var req = URLRequest(url: revokeURL)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 3
+            req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            req.httpBody = "token=\(bearer)".data(using: .utf8)
+            URLSession.shared.dataTask(with: req) { _, resp, err in
+                if let err = err {
+                    NSLog("[Taproot] /revoke fire-and-forget error: \(err.localizedDescription)")
+                } else if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                    NSLog("[Taproot] /revoke returned HTTP \(http.statusCode)")
+                } else {
+                    NSLog("[Taproot] /revoke succeeded for workspace \(workspaceID.uuidString)")
+                }
+            }.resume()
+        }
+
         do {
             try services.keychain.delete(workspaceID: workspaceID)
             mutateWorkspaces { $0.removeAll { $0.id == workspaceID } }
