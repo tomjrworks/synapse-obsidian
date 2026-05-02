@@ -134,7 +134,7 @@ SPARKLE_VER_DIR="$SPARKLE_FW/Versions/B"
 sign() {
     local target="$1"
     echo "    codesign: $target"
-    codesign --force --options runtime --sign "$IDENTITY" "$target"
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$target"
 }
 
 echo "==> Inside-out codesign"
