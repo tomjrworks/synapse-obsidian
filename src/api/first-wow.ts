@@ -74,7 +74,15 @@ export function firstWowRouter(): Router {
       // someone else's mirror). Tracked under T2 follow-ups.
 
       try {
-        const result = await nukeWorkspace(sb, membership.workspaceId, user.id);
+        const result = await nukeWorkspace(
+          sb,
+          membership.workspaceId,
+          user.id,
+          {
+            ip: req.ip,
+            userAgent: req.headers["user-agent"],
+          },
+        );
         evict(membership.workspaceId);
         res.json({
           nuked: true,

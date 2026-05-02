@@ -74,6 +74,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   // re-check membership — it trusts the workspaceId.
   static async forWorkspace(
     workspaceId: string,
+    opts?: { ip?: string; userAgent?: string },
   ): Promise<SupabaseEncryptedMirrorBackend> {
     const sb = supabaseService();
     const { data: keyRow, error: keyErr } = await sb
@@ -97,6 +98,8 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       workspace_id: workspaceId,
       operation: "kek_unwrap",
       details: { reason: "backend_construct" },
+      ip: opts?.ip ?? null,
+      user_agent: opts?.userAgent ?? null,
     });
     if (auditErr) {
       console.error(
@@ -534,6 +537,7 @@ export async function nukeWorkspace(
   supabase: SupabaseClient,
   workspaceId: string,
   actorUserId: string | null,
+  opts?: { ip?: string; userAgent?: string },
 ): Promise<NukeResult> {
   const { data: rows, error: listErr } = await supabase
     .from("vault_files")
@@ -577,6 +581,8 @@ export async function nukeWorkspace(
     user_id: actorUserId,
     operation: "vault_nuke",
     details: { object_count: storageObjects.length },
+    ip: opts?.ip ?? null,
+    user_agent: opts?.userAgent ?? null,
   });
   if (auditErr) {
     console.error(

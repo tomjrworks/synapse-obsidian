@@ -41,14 +41,18 @@ const cache = new Map<string, CacheEntry>();
 
 export async function getBackend(
   workspaceId: string,
+  opts?: { ip?: string; userAgent?: string },
 ): Promise<SupabaseEncryptedMirrorBackend> {
   const hit = cache.get(workspaceId);
   if (hit && Date.now() - hit.loadedAt < ttlMs) return hit.backend;
 
-  // Either no entry or TTL expired — construct fresh. The audit_log row
-  // for this kek_unwrap is what callers will see in the trail.
-  const backend =
-    await SupabaseEncryptedMirrorBackend.forWorkspace(workspaceId);
+  // Cache miss — construct fresh. The audit_log row for this kek_unwrap
+  // records the request context (ip, ua) of the first request that caused
+  // the backend to be constructed.
+  const backend = await SupabaseEncryptedMirrorBackend.forWorkspace(
+    workspaceId,
+    opts,
+  );
   cache.set(workspaceId, { backend, loadedAt: Date.now() });
   return backend;
 }
