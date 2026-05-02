@@ -96,6 +96,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
+        panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.directoryURL = currentURL
         guard let window else { return }
