@@ -303,10 +303,10 @@ export function registerKnowledgeTools(
 
         if (schema) {
           output.push("### Wiki Schema (CLAUDE.md)");
-          output.push("```markdown");
+          output.push(`<vault-file path="${schemaPath}">`);
           output.push(schema.slice(0, 4000));
           if (schema.length > 4000) output.push("... (truncated)");
-          output.push("```");
+          output.push("</vault-file>");
           output.push("");
         }
 
@@ -403,23 +403,21 @@ export function registerKnowledgeTools(
           `**Already processed:** ${alreadyProcessed ? "YES — update existing pages" : "NO — create new pages"}`,
           "",
           "### Source Content",
-          "```markdown",
+          `<vault-file path="${sourcePath}">`,
           content.slice(0, 15000),
-          content.length > 15000 ? "\n... (truncated)" : "",
-          "```",
+          content.length > 15000 ? "... (truncated)" : "",
+          "</vault-file>",
           "",
           "### Source Frontmatter",
           JSON.stringify(fm, null, 2),
           "",
           "### Current Index",
           existingIndex
-            ? "```markdown\n" + existingIndex.slice(0, 5000) + "\n```"
+            ? `<vault-file path="index.md">\n${existingIndex.slice(0, 5000)}\n</vault-file>`
             : "(No index yet — this is the first ingest)",
           "",
           schema
-            ? "### Schema (CLAUDE.md)\n```markdown\n" +
-              schema.slice(0, 3000) +
-              "\n```"
+            ? `### Schema (CLAUDE.md)\n<vault-file path="${schemaPath}">\n${schema.slice(0, 3000)}\n</vault-file>`
             : "",
           "",
           "### Instructions",
@@ -617,7 +615,7 @@ export function registerKnowledgeTools(
           try {
             const content = await readVaultFile(backend, file);
             pageContents.push(
-              `### ${file}\n\`\`\`markdown\n${content.slice(0, 3000)}\n\`\`\``,
+              `### ${file}\n<vault-file path="${file}">\n${content.slice(0, 3000)}\n</vault-file>`,
             );
           } catch {
             // Skip unreadable files
@@ -629,7 +627,7 @@ export function registerKnowledgeTools(
           "",
           "### Index",
           index
-            ? "```markdown\n" + index.slice(0, 5000) + "\n```"
+            ? `<vault-file path="index.md">\n${index.slice(0, 5000)}\n</vault-file>`
             : "(No index found — run taproot_cultivate first)",
           "",
           `### Relevant Pages (${relevantFiles.length} found)`,
