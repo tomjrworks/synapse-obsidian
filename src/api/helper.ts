@@ -32,7 +32,8 @@ export function helperRouter(): Router {
         .maybeSingle();
 
       if (error) {
-        res.status(500).json({ error: "lookup_failed", detail: error.message });
+        console.error(`[helper/status] lookup_failed: ${error.message}`);
+        res.status(500).json({ error: "lookup_failed" });
         return;
       }
 
@@ -81,9 +82,8 @@ export function helperRouter(): Router {
         expires_at: expiresAt,
       });
       if (error) {
-        res
-          .status(500)
-          .json({ error: "token_insert_failed", detail: error.message });
+        console.error(`[helper/pair-token] insert failed: ${error.message}`);
+        res.status(500).json({ error: "token_insert_failed" });
         return;
       }
 
