@@ -7,6 +7,7 @@ import {
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
 import { patchWorkspaceSettings } from "./workspace.js";
+import { respondError } from "./respond-error.js";
 
 const ONBOARDING_STEPS = [
   "persona",
@@ -61,7 +62,9 @@ export function onboardingRouter(): Router {
         { onboarding_step: step },
       );
       if (error) {
-        res.status(500).json({ error: "update_failed", detail: error });
+        respondError(res, 500, "update_failed", error, {
+          logPrefix: "onboarding",
+        });
         return;
       }
 
@@ -120,7 +123,9 @@ export function onboardingRouter(): Router {
         { persona },
       );
       if (error) {
-        res.status(500).json({ error: "update_failed", detail: error });
+        respondError(res, 500, "update_failed", error, {
+          logPrefix: "onboarding",
+        });
         return;
       }
 
