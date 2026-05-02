@@ -8,6 +8,11 @@ import type { Express, Request, Response } from "express";
 import { LRUCache } from "lru-cache";
 import { supabaseService } from "./api/supabase.js";
 import { getMembershipForUser } from "./api/workspace.js";
+import {
+  TOKEN_TTL_SECONDS,
+  tokenHashByteaParam,
+  escapeHtml,
+} from "./auth/bearer.js";
 
 // T6.3: tokens + clients live in Supabase (`oauth_tokens` + `oauth_clients`
 // tables from migration 0004). The raw token is sha256-hashed at rest —
@@ -37,31 +42,6 @@ const authCodes = new LRUCache<
     redirectUris: string[];
   }
 >({ max: 100_000, ttl: 5 * 60 * 1000 });
-
-const TOKEN_TTL_SECONDS = 30 * 86400; // 30 days
-
-function tokenHashHex(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function tokenHashByteaParam(token: string): string {
-  // Postgres bytea literal: \x followed by hex. Always pass via this
-  // form; supabase-js JSON-stringifies a raw Buffer into
-  // {"type":"Buffer","data":[...]} which Postgres stores as the literal
-  // bytes of that JSON string (the same trap T4 documented).
-  return `\\x${tokenHashHex(token)}`;
-}
-
-// XSS defense for HTML interpolation. Encode `&` first or chains break
-// (e.g. `<` would become `&amp;lt;`). /security-audit C1 (2026-04-30).
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 function authFailedHtml(title: string, message: string): string {
   return `<!DOCTYPE html>

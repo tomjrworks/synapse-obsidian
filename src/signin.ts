@@ -1,28 +1,12 @@
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { supabaseService } from "./api/supabase.js";
 import { getMembershipForUser } from "./api/workspace.js";
-
-// TODO(b3-hardening): extract these three helpers to src/auth/bearer.ts
-// and import here + in oauth.ts to eliminate duplication.
-const TOKEN_TTL_SECONDS = 30 * 86400; // 30 days — matches oauth.ts
-
-function tokenHashByteaParam(token: string): string {
-  // Postgres bytea literal: \x + hex. Raw Buffer round-trips as JSON object
-  // (the same trap T4 documented in oauth.ts); this form is always safe.
-  return `\\x${createHash("sha256").update(token).digest("hex")}`;
-}
-
-// XSS defense for HTML interpolation. Encode `&` first or chains break.
-// Mirrors oauth.ts:56-63 (security-audit C1, 2026-04-30).
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+import {
+  TOKEN_TTL_SECONDS,
+  tokenHashByteaParam,
+  escapeHtml,
+} from "./auth/bearer.js";
 
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_credentials: "Invalid email or password.",
