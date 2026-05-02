@@ -91,6 +91,7 @@ try {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(PORT),
+    TAPROOT_DISABLE_RATE_LIMIT: "1",
   };
   delete env.SYNAPSE_PASSWORD;
   serverProc = spawn(

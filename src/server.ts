@@ -122,6 +122,7 @@ export async function startServer(port: number): Promise<void> {
       standardHeaders: true,
       legacyHeaders: false,
       keyGenerator: proxyIp,
+      skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
     });
 
   app.use("/authorize", makeLimit(10));

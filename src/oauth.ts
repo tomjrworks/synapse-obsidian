@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { Express, Request, Response } from "express";
+import { LRUCache } from "lru-cache";
 import { supabaseService } from "./api/supabase.js";
 import { getMembershipForUser } from "./api/workspace.js";
 
@@ -17,12 +18,12 @@ import { getMembershipForUser } from "./api/workspace.js";
 // /register clients are still tracked in-process until /authorize gives
 // them a workspace context. Once authorized, they're persisted to
 // oauth_clients (one row per workspace×client).
-const pendingClients = new Map<
+const pendingClients = new LRUCache<
   string,
   { name: string; redirectUris: string[] }
->();
+>({ max: 10_000, ttl: 60 * 60 * 1000 });
 
-const authCodes = new Map<
+const authCodes = new LRUCache<
   string,
   {
     clientId: string;
@@ -35,7 +36,7 @@ const authCodes = new Map<
     clientName: string;
     redirectUris: string[];
   }
->();
+>({ max: 100_000, ttl: 5 * 60 * 1000 });
 
 const TOKEN_TTL_SECONDS = 30 * 86400; // 30 days
 
