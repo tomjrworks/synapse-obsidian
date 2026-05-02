@@ -60,7 +60,7 @@ function bytesFromPg(value: unknown): Buffer {
 export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   constructor(
     private supabase: SupabaseClient,
-    private workspaceId: string,
+    readonly workspaceId: string,
     private dek: Buffer,
   ) {}
 

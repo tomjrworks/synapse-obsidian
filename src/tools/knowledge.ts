@@ -25,6 +25,21 @@ function yamlEscape(value: string): string {
   return value.replace(/[\x00-\x1f\x7f]/g, "").replace(/"/g, '\\"');
 }
 
+const RATE_LIMIT_MS = 60_000;
+const rateLimitMap = new Map<string, number>();
+
+function checkRateLimit(workspaceId: string, tool: string): string | null {
+  const key = `${workspaceId}:${tool}`;
+  const last = rateLimitMap.get(key) ?? 0;
+  const now = Date.now();
+  if (now - last < RATE_LIMIT_MS) {
+    const waitSec = Math.ceil((RATE_LIMIT_MS - (now - last)) / 1000);
+    return `Rate limit: ${tool} can only run once per 60 seconds per workspace. Try again in ${waitSec}s.`;
+  }
+  rateLimitMap.set(key, now);
+  return null;
+}
+
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
@@ -570,6 +585,15 @@ export function registerKnowledgeTools(
       },
     },
     async ({ question, save }) => {
+      if ("workspaceId" in backend) {
+        const rateLimitErr = checkRateLimit(
+          (backend as { workspaceId: string }).workspaceId,
+          "taproot_harvest",
+        );
+        if (rateLimitErr) {
+          return { content: [{ type: "text" as const, text: rateLimitErr }] };
+        }
+      }
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -696,6 +720,15 @@ export function registerKnowledgeTools(
       },
     },
     async () => {
+      if ("workspaceId" in backend) {
+        const rateLimitErr = checkRateLimit(
+          (backend as { workspaceId: string }).workspaceId,
+          "taproot_prune",
+        );
+        if (rateLimitErr) {
+          return { content: [{ type: "text" as const, text: rateLimitErr }] };
+        }
+      }
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
