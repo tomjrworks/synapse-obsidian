@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
+    "start": "node dist/server.js",
     "dev": "tsx src/index.ts",
     "prepare": "npm run build && husky",
     "smoke:crypto": "tsx scripts/test-content-crypto.ts",

@@ -149,3 +149,18 @@ export async function startServer(port: number): Promise<void> {
     console.error(`  Health: GET  /health`);
   });
 }
+
+// Self-invoke when run directly (Railway / cloud deploy)
+const isMain =
+  typeof process !== "undefined" &&
+  process.argv[1] != null &&
+  (process.argv[1].endsWith("server.js") ||
+    process.argv[1].endsWith("server.ts"));
+
+if (isMain) {
+  const port = parseInt(process.env.PORT || "3777", 10);
+  startServer(port).catch((err) => {
+    console.error("Taproot server fatal error:", err);
+    process.exit(1);
+  });
+}
