@@ -84,8 +84,19 @@ export async function startServer(port: number): Promise<void> {
     next();
   });
 
-  app.use((_req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+  const allowedOrigins = (
+    process.env.ALLOWED_ORIGINS || "https://claude.ai,https://claude.com"
+  )
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
+    }
     res.header(
       "Access-Control-Allow-Headers",
       "Content-Type, mcp-session-id, Authorization",
