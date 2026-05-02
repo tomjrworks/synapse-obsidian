@@ -234,10 +234,9 @@ export function registerSigninRoutes(app: Express, _baseUrl: string): void {
     }
 
     try {
-      const supa = supabaseService();
-
+      const authClient = supabaseService();
       const { data: auth, error: authError } =
-        await supa.auth.signInWithPassword({
+        await authClient.auth.signInWithPassword({
           email,
           password,
         });
@@ -249,6 +248,8 @@ export function registerSigninRoutes(app: Express, _baseUrl: string): void {
         return;
       }
 
+      // Fresh service-role client — authClient is tainted by signInWithPassword
+      const supa = supabaseService();
       const membership = await getMembershipForUser(supa, auth.user.id);
       if (!membership) {
         res.redirect(
