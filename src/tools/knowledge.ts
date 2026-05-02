@@ -18,6 +18,13 @@ const TODAY = () => new Date().toISOString().split("T")[0];
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
 
+// Escape a string for use inside a YAML double-quoted scalar.
+// Strips control chars (including newlines) that would break the YAML structure,
+// then escapes any remaining double quotes.
+function yamlEscape(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f]/g, "").replace(/"/g, '\\"');
+}
+
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
@@ -894,6 +901,14 @@ export function registerKnowledgeTools(
         suggestedFolder: z
           .string()
           .optional()
+          .refine(
+            (v) =>
+              v === undefined ||
+              (!/(?:^|\/)\.\.(?:\/|$)/.test(v) &&
+                !v.startsWith("/") &&
+                !/[\x00-\x1f\x7f]/.test(v)),
+            "suggestedFolder must be relative, must not contain .. segments, and must not contain control characters",
+          )
           .describe(
             "Optional folder override (relative to vault root). Defaults to the configured sources folder.",
           ),
@@ -996,13 +1011,13 @@ export function registerKnowledgeTools(
         const allTags = ["raw", ...(suggestedTags || [])];
         const frontmatter = [
           "---",
-          `title: "${resolvedTitle.replace(/"/g, '\\"')}"`,
-          `source: "${url}"`,
+          `title: "${yamlEscape(resolvedTitle)}"`,
+          `source: "${yamlEscape(url)}"`,
           `date_created: ${TODAY()}`,
           `type: article`,
           `status: raw`,
           `tags: [${allTags.join(", ")}]`,
-          userIntent ? `note: "${userIntent.replace(/"/g, '\\"')}"` : "",
+          userIntent ? `note: "${yamlEscape(userIntent)}"` : "",
           "---",
         ]
           .filter(Boolean)
