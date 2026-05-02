@@ -182,7 +182,7 @@ export function registerPrompts(
   server.registerPrompt(
     "getting-started",
     {
-      title: "Build my brain",
+      title: "Build my memory layer",
       description:
         "First-run onboarding — reads your files, organizes everything, and makes it searchable.",
     },
@@ -198,17 +198,17 @@ export function registerPrompts(
             content: {
               type: "text" as const,
               text: [
-                "I just connected my files. Help me build my brain.",
+                "I just connected my files. Help me build my memory layer.",
                 "",
                 "## RULES — How to talk to the user",
                 "- Plain, friendly English. NO technical jargon ever.",
                 "- Never show tool names, function names, folder paths, or code.",
                 "- Never say 'knowledge base', 'compile', 'ingest', 'wiki', 'schema', 'sourcesFolder', 'raw/', etc.",
-                "- Instead say 'brain', 'organize', 'read', 'build', 'notes', 'files'.",
+                "- Instead say 'memory layer', 'organize', 'read', 'build', 'notes', 'files'.",
                 "",
                 "## PHASE 1 — Ask two simple questions (and ONLY these two)",
                 "",
-                'Ask: "What would you like your brain to help you with? For example: work projects, school, research, personal notes, or something else?"',
+                'Ask: "What would you like your memory layer to help you with? For example: work projects, school, research, personal notes, or something else?"',
                 "",
                 'Then ask: "What topics matter most to you? Just list a few words or phrases — I\'ll organize your files around them."',
                 "",
@@ -235,10 +235,10 @@ export function registerPrompts(
                 "",
                 "## PHASE 4 — Summary",
                 "When done (or after first batch), give a warm summary:",
-                "\"Your brain is ready! Here's what's inside:\"",
+                "\"Your memory layer is ready! Here's what's inside:\"",
                 "- List the main topics/themes found",
                 "- Tell them what they can do: 'Try asking me anything about your files — like [example question based on their actual content]'",
-                "- Mention they can save new stuff anytime: 'You can also share articles or notes with me anytime and I\\'ll add them to your brain.'",
+                "- Mention they can save new stuff anytime: 'You can also share articles or notes with me anytime and I\\'ll add them to your memory layer.'",
               ].join("\n"),
             },
           },
