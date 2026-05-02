@@ -51,6 +51,7 @@ export async function startServer(port: number): Promise<void> {
   // Add new credential-equivalent keys here; replacer applies at every nesting level.
   const SENSITIVE_BODY_KEYS = new Set([
     "password",
+    "email",
     "code_verifier",
     "client_secret",
     "refresh_token",

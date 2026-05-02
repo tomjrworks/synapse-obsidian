@@ -292,7 +292,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       query = query.like("path", `${escapedPrefix}%`);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await query.limit(1000);
     if (error) throw new Error(`listFiles failed: ${error.message}`);
     let paths = (data ?? []).map((r) => r.path as string);
 

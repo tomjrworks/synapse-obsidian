@@ -684,12 +684,13 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     res.status(200).end();
   });
 
-  // Clean up expired auth codes periodically
+  // Clean up expired auth codes periodically. unref() so this timer doesn't
+  // prevent process exit when no active requests are in flight.
   setInterval(() => {
     for (const [code, data] of authCodes) {
       if (Date.now() > data.expiresAt) authCodes.delete(code);
     }
-  }, 60000);
+  }, 60000).unref();
 }
 
 /**
