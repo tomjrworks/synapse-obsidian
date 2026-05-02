@@ -9,6 +9,7 @@ enum DeepLinkParseError: Error, Equatable {
     case wrongScheme
     case wrongHost
     case missingBearer
+    case invalidBearer
     case missingWorkspace
     case invalidWorkspaceUUID
 }
@@ -29,6 +30,11 @@ enum DeepLinkParser {
         guard let bearer = items.first(where: { $0.name == "bearer" })?.value,
               !bearer.isEmpty else {
             throw DeepLinkParseError.missingBearer
+        }
+        let bearerCharset = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+        guard (32...256).contains(bearer.count),
+              bearer.unicodeScalars.allSatisfy({ bearerCharset.contains($0) }) else {
+            throw DeepLinkParseError.invalidBearer
         }
         guard let workspaceStr = items.first(where: { $0.name == "workspace" })?.value,
               !workspaceStr.isEmpty else {

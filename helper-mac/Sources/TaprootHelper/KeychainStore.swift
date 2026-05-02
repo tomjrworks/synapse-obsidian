@@ -9,8 +9,8 @@ enum KeychainError: Error, Equatable {
 /// Stores per-workspace bearer tokens in the macOS Keychain.
 ///
 /// Account format: `workspace.<uuid>.bearer`. Accessibility is
-/// `kSecAttrAccessibleAfterFirstUnlock` so reads after device unlock don't prompt
-/// on every launch (per T11.1 risk register).
+/// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — tokens are bound to this
+/// device and excluded from iCloud Keychain backup (per T11.1 risk register).
 struct KeychainStore {
     let service: String
 
@@ -38,7 +38,7 @@ struct KeychainStore {
 
         var addAttrs = baseQuery
         addAttrs[kSecValueData as String] = data
-        addAttrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        addAttrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         let status = SecItemAdd(addAttrs as CFDictionary, nil)
         guard status == errSecSuccess else {
