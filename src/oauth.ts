@@ -133,11 +133,40 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
+    // H2 (05-01): validate redirect_uris before staging in pendingClients.
+    // Reject non-array, empty, >5 entries, non-URL values, non-https:
+    // (except http: to localhost for local dev tools).
+    const validLocalHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+    if (
+      !Array.isArray(redirect_uris) ||
+      redirect_uris.length < 1 ||
+      redirect_uris.length > 5 ||
+      !redirect_uris.every((uri: unknown) => {
+        if (typeof uri !== "string") return false;
+        let u: URL;
+        try {
+          u = new URL(uri);
+        } catch {
+          return false;
+        }
+        if (u.protocol === "https:") return true;
+        if (u.protocol === "http:") return validLocalHosts.has(u.hostname);
+        return false;
+      })
+    ) {
+      res.status(400).json({
+        error: "invalid_redirect_uri",
+        error_description:
+          "redirect_uris must be 1–5 valid https: URLs (or http: to localhost only)",
+      });
+      return;
+    }
+
     const clientId = randomUUID();
 
     pendingClients.set(clientId, {
       name: client_name,
-      redirectUris: redirect_uris || [],
+      redirectUris: redirect_uris,
     });
 
     console.error(`[OAuth] Registered client: ${clientId} (${client_name})`);
@@ -349,6 +378,27 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       password,
     } = req.body || {};
 
+    // H1 (05-01): validate client + redirect_uri BEFORE touching credentials.
+    // Without this check the POST path could be used to oracle whether
+    // an email/password is valid via the success/failure response difference.
+    const pendingPost = pendingClients.get(client_id);
+    if (
+      !pendingPost ||
+      typeof redirect_uri !== "string" ||
+      !Array.isArray(pendingPost.redirectUris) ||
+      !pendingPost.redirectUris.includes(redirect_uri)
+    ) {
+      res
+        .status(400)
+        .send(
+          authFailedHtml(
+            "Invalid request",
+            "redirect_uri is not registered for this client.",
+          ),
+        );
+      return;
+    }
+
     if (
       typeof email !== "string" ||
       !email.trim() ||
@@ -422,10 +472,10 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
     // /security-audit C1+C4 (2026-04-30): pending.name is guaranteed by
     // /register's validation gate; pending.redirectUris is allowlisted by
     // GET /authorize. Drop the legacy ?? "Unknown" / ?? [redirect_uri]
-    // fallbacks — they were masking missing validation.
-    const pending = pendingClients.get(client_id);
-    const clientName = pending?.name ?? "";
-    const redirectUris = pending?.redirectUris ?? [];
+    // fallbacks — they were masking missing validation. Reuse pendingPost
+    // (already validated by the H1 gate above; guaranteed non-null here).
+    const clientName = pendingPost.name;
+    const redirectUris = pendingPost.redirectUris;
     try {
       const sb = supabaseService();
       const { error: upsertErr } = await sb.from("oauth_clients").upsert(
