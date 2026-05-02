@@ -322,6 +322,33 @@ try {
     await backend.exists("valid/inner-ok.md"),
   );
 
+  // H9 (04-30): control characters in path must throw before any I/O.
+  let ctrlCharErr: unknown = null;
+  try {
+    await backend.writeFile("bad\x00null.md", "nope");
+  } catch (e) {
+    ctrlCharErr = e;
+  }
+  check(
+    "writeFile('bad\\x00null.md') throws (control char in path)",
+    ctrlCharErr instanceof Error &&
+      /control character/i.test(ctrlCharErr.message),
+    ctrlCharErr instanceof Error ? ctrlCharErr.message : ctrlCharErr,
+  );
+
+  let ctrlTabErr: unknown = null;
+  try {
+    await backend.writeFile("bad\x09tab.md", "nope");
+  } catch (e) {
+    ctrlTabErr = e;
+  }
+  check(
+    "writeFile('bad\\x09tab.md') throws (control char in path)",
+    ctrlTabErr instanceof Error &&
+      /control character/i.test(ctrlTabErr.message),
+    ctrlTabErr instanceof Error ? ctrlTabErr.message : ctrlTabErr,
+  );
+
   console.log(`\n${pass} pass, ${fail} fail`);
   if (fail > 0) {
     console.log("\nFailures:");

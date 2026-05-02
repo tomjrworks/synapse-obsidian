@@ -55,19 +55,34 @@ interface SyncRouterOptions {
   requireAuth?: RequestHandler;
 }
 
+// H3 (05-01) + H9 (04-30): reject absolute paths, .. traversal, and
+// control characters at the schema layer before any I/O.
+const safePath = z
+  .string()
+  .min(1)
+  .refine((p) => !p.startsWith("/"), "path must be relative")
+  .refine(
+    (p) => !p.split("/").includes(".."),
+    "path must not contain .. segments",
+  )
+  .refine(
+    (p) => !/[\x00-\x1f\x7f]/.test(p),
+    "path must not contain control characters",
+  );
+
 const pushSchema = z.object({
   ops: z
     .array(
       z.discriminatedUnion("kind", [
         z.object({
           kind: z.literal("upsert"),
-          path: z.string().min(1),
+          path: safePath,
           content: z.string(),
           mtime: z.string().datetime().optional(),
         }),
         z.object({
           kind: z.literal("delete"),
-          path: z.string().min(1),
+          path: safePath,
         }),
       ]),
     )
