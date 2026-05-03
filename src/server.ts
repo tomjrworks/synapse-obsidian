@@ -17,6 +17,7 @@ import {
   type AuthedMcpRequest,
 } from "./oauth.js";
 import { registerSigninRoutes } from "./signin.js";
+import { respondError } from "./api/respond-error.js";
 import { mountApiRoutes } from "./api/routes.js";
 import { getBackend } from "./utils/backend-cache.js";
 
@@ -167,11 +168,8 @@ export async function startServer(port: number): Promise<void> {
       const server = createMcpServer(mcpBackend);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
-    } catch (err: any) {
-      console.error(`[${new Date().toISOString()}] ERROR: ${err.message}`);
-      if (!res.headersSent) {
-        res.status(500).json({ error: err.message });
-      }
+    } catch (err) {
+      respondError(res, 500, "mcp_handler_error", err, { logPrefix: "mcp" });
     }
   });
 

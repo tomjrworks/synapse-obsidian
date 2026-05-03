@@ -6,6 +6,7 @@ import {
   type Membership,
 } from "./workspace.js";
 import { requireAuth, type AuthedMcpRequest } from "../oauth.js";
+import { respondError } from "./respond-error.js";
 
 export interface AuthedRequest extends Request {
   user: { id: string; email?: string };
@@ -42,8 +43,8 @@ export const requireSupabaseAuth: RequestHandler = async (req, res, next) => {
     (req as AuthedRequest).user = { id: data.user.id, email: data.user.email };
     (req as AuthedRequest).jwt = jwt;
     next();
-  } catch (err: any) {
-    res.status(401).json({ error: "auth_failed", detail: err.message });
+  } catch (err) {
+    respondError(res, 401, "auth_failed", err, { logPrefix: "auth" });
   }
 };
 

@@ -24,6 +24,7 @@
  */
 import { Router, type RequestHandler } from "express";
 import { z } from "zod";
+import { logErrorWithId, respondError } from "./respond-error.js";
 import {
   asyncHandler,
   requireOAuthAuth,
@@ -96,7 +97,7 @@ type PushResultEntry =
       path: string;
       ok: false;
       error: "not_found" | "conflict" | "internal";
-      detail?: string;
+      request_id?: string;
     };
 
 interface PushResponse {
@@ -156,11 +157,8 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       let backend: Pick<StorageBackend, "writeFile" | "delete">;
       try {
         backend = await resolveBackend(workspaceId);
-      } catch (err: any) {
-        res.status(500).json({
-          error: "server_error",
-          detail: err?.message ?? String(err),
-        });
+      } catch (err) {
+        respondError(res, 500, "server_error", err, { logPrefix: "sync/push" });
         return;
       }
 
@@ -186,18 +184,19 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
               throw err;
             }
           }
-        } catch (err: any) {
+        } catch (err) {
           const error =
             err instanceof NotFoundError
               ? "not_found"
               : err instanceof ConflictError
                 ? "conflict"
                 : "internal";
+          const request_id = logErrorWithId(err, error, "sync/push");
           results.push({
             path: op.path,
             ok: false,
             error,
-            detail: err?.message ?? String(err),
+            request_id,
           });
         }
       }
@@ -224,11 +223,8 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       let backend: Pick<StorageBackend, "writeFile" | "delete" | "listChanged">;
       try {
         backend = await resolveBackend(workspaceId);
-      } catch (err: any) {
-        res.status(500).json({
-          error: "server_error",
-          detail: err?.message ?? String(err),
-        });
+      } catch (err) {
+        respondError(res, 500, "server_error", err, { logPrefix: "sync/pull" });
         return;
       }
 
@@ -238,13 +234,8 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       let result: ListChangedResult;
       try {
         result = await backend.listChanged(cursor, limit);
-      } catch (err: any) {
-        console.error(
-          `[sync/pull] listChanged failed (workspace=${workspaceId}): ${err?.message ?? err}`,
-        );
-        res
-          .status(500)
-          .json({ error: "server_error", detail: err?.message ?? String(err) });
+      } catch (err) {
+        respondError(res, 500, "server_error", err, { logPrefix: "sync/pull" });
         return;
       }
 

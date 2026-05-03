@@ -8,6 +8,7 @@ import {
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
+import { respondError } from "./respond-error.js";
 
 export function firstWowRouter(): Router {
   const router = Router();
@@ -35,10 +36,10 @@ export function firstWowRouter(): Router {
 
       try {
         await backend.writeFile(path, body);
-      } catch (err: any) {
-        res
-          .status(500)
-          .json({ error: "vault_write_failed", detail: err.message });
+      } catch (err) {
+        respondError(res, 500, "vault_write_failed", err, {
+          logPrefix: "first-wow",
+        });
         return;
       }
 

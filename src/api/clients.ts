@@ -7,6 +7,7 @@ import {
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
 import { patchWorkspaceSettings } from "./workspace.js";
+import { respondError } from "./respond-error.js";
 
 type ClientPath = "url-paste" | "json-config" | "cli-command";
 
@@ -168,7 +169,9 @@ export function clientsRouter(): Router {
         { connected_clients: next },
       );
       if (error) {
-        res.status(500).json({ error: "update_failed", detail: error });
+        respondError(res, 500, "update_failed", error, {
+          logPrefix: "clients",
+        });
         return;
       }
 
