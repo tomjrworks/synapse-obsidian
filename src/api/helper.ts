@@ -6,6 +6,7 @@ import {
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
+import { respondError } from "./respond-error.js";
 
 const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
 
@@ -30,8 +31,7 @@ export function helperRouter(): Router {
         .maybeSingle();
 
       if (error) {
-        console.error(`[helper/status] lookup_failed: ${error.message}`);
-        res.status(500).json({ error: "lookup_failed" });
+        respondError(res, 500, "lookup_failed", error, { logPrefix: "helper" });
         return;
       }
 

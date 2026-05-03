@@ -91,10 +91,7 @@ export function firstWowRouter(): Router {
           file_row_count: result.fileRowCount,
         });
       } catch (err: any) {
-        res.status(500).json({
-          error: "nuke_failed",
-          detail: err?.message ?? String(err),
-        });
+        respondError(res, 500, "nuke_failed", err, { logPrefix: "first-wow" });
       }
     }),
   );
