@@ -11,12 +11,14 @@ import { respondError } from "./respond-error.js";
 
 const ONBOARDING_STEPS = [
   "persona",
-  "vault_folder",
+  "clients",
+  "vault",
   "obsidian",
   "helper",
   "permissions",
-  "clients",
-  "first_wow",
+  "connect",
+  "first-wow",
+  "done",
   "complete",
 ] as const;
 type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
