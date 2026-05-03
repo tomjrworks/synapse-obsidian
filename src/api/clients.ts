@@ -14,7 +14,7 @@ type ClientPath = "url-paste" | "json-config" | "cli-command";
 type ClientDef = {
   id: string;
   label: string;
-  path: ClientPath;
+  path_type: ClientPath;
   instructions_md: string;
   screenshot_url: string;
 };
@@ -22,67 +22,64 @@ type ClientDef = {
 const CLIENTS: ClientDef[] = [
   {
     id: "claude-ai",
-    label: "claude.ai",
-    path: "url-paste",
+    label: "claude.ai (web)",
+    path_type: "url-paste",
     instructions_md:
-      "Open claude.ai → Settings → Integrations → Add custom integration. Paste the URL below.",
+      "Paste this URL in claude.ai → Settings → Custom Integrations → Add custom integration.",
     screenshot_url: "/screenshots/connect/claude-ai.png",
-  },
-  {
-    id: "cowork",
-    label: "Cowork",
-    path: "url-paste",
-    instructions_md:
-      "Open Cowork → Settings → Integrations → Add MCP server. Paste the URL below.",
-    screenshot_url: "/screenshots/connect/cowork.png",
   },
   {
     id: "claude-desktop",
     label: "Claude Desktop",
-    path: "json-config",
+    path_type: "json-config",
     instructions_md:
-      "Open `~/Library/Application Support/Claude/claude_desktop_config.json` (Mac) or `%APPDATA%\\Claude\\claude_desktop_config.json` (Windows). Merge the JSON below into `mcpServers`.",
+      "Add this to ~/Library/Application Support/Claude/claude_desktop_config.json. Restart Claude Desktop.",
     screenshot_url: "/screenshots/connect/claude-desktop.png",
   },
   {
     id: "claude-code",
     label: "Claude Code",
-    path: "cli-command",
-    instructions_md:
-      "Run the command below in your terminal. Claude Code will register Taproot as a remote MCP server.",
+    path_type: "cli-command",
+    instructions_md: "Run this command in your terminal.",
     screenshot_url: "/screenshots/connect/claude-code.png",
   },
   {
     id: "cursor",
     label: "Cursor",
-    path: "json-config",
+    path_type: "json-config",
     instructions_md:
-      "Open Cursor → Settings → MCP. Add the JSON below to your MCP config.",
+      "Add this to .cursor/mcp.json in your project root, or globally at ~/.cursor/mcp.json. Restart Cursor.",
     screenshot_url: "/screenshots/connect/cursor.png",
   },
   {
     id: "windsurf",
-    label: "Windsurf",
-    path: "json-config",
-    instructions_md:
-      "Open Windsurf → Settings → MCP Servers. Add the JSON below.",
+    label: "Windsurf (Cascade)",
+    path_type: "json-config",
+    instructions_md: "Add this to Cascade's MCP config. Restart Windsurf.",
     screenshot_url: "/screenshots/connect/windsurf.png",
   },
   {
     id: "chatgpt",
     label: "ChatGPT",
-    path: "url-paste",
+    path_type: "url-paste",
     instructions_md:
-      "Open ChatGPT → Settings → Connectors → Add MCP. Paste the URL below.",
+      "Open ChatGPT → Custom GPTs → Add connector → paste this URL.",
     screenshot_url: "/screenshots/connect/chatgpt.png",
   },
   {
-    id: "microsoft-copilot",
-    label: "Microsoft Copilot",
-    path: "url-paste",
+    id: "copilot-vscode",
+    label: "GitHub Copilot (VS Code)",
+    path_type: "json-config",
     instructions_md:
-      "Open Microsoft 365 Copilot → Settings → Connectors → Add MCP. Paste the URL below.",
-    screenshot_url: "/screenshots/connect/microsoft-copilot.png",
+      "Add this to VS Code settings.json (Cmd+Shift+P → Preferences: Open User Settings (JSON)). Reload window.",
+    screenshot_url: "/screenshots/connect/copilot-vscode.png",
+  },
+  {
+    id: "cowork",
+    label: "Cowork",
+    path_type: "url-paste",
+    instructions_md: "In Cowork, open Connectors → Add → paste this URL.",
+    screenshot_url: "/screenshots/connect/cowork.png",
   },
 ];
 
@@ -95,7 +92,7 @@ function publicMcpUrl(): string {
 }
 
 function buildPayload(client: ClientDef, mcpUrl: string): string {
-  switch (client.path) {
+  switch (client.path_type) {
     case "url-paste":
       return mcpUrl;
     case "json-config":
@@ -123,7 +120,7 @@ export function clientsRouter(): Router {
       const entries = CLIENTS.map((c) => ({
         id: c.id,
         label: c.label,
-        path: c.path,
+        path_type: c.path_type,
         payload: buildPayload(c, mcpUrl),
         instructions_md: c.instructions_md,
         screenshot_url: c.screenshot_url,
