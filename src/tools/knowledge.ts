@@ -1,3 +1,4 @@
+import { LRUCache } from "lru-cache";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
@@ -26,7 +27,10 @@ function yamlEscape(value: string): string {
 }
 
 const RATE_LIMIT_MS = 60_000;
-const rateLimitMap = new Map<string, number>();
+const rateLimitMap = new LRUCache<string, number>({
+  max: 10_000,
+  ttl: RATE_LIMIT_MS * 5,
+});
 
 function checkRateLimit(workspaceId: string, tool: string): string | null {
   const key = `${workspaceId}:${tool}`;

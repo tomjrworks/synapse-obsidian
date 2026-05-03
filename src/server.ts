@@ -158,7 +158,7 @@ export async function startServer(port: number): Promise<void> {
     try {
       const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId, {
-        ip: req.ip,
+        ip: proxyIp(req),
         userAgent: req.headers["user-agent"],
       });
       const transport = new StreamableHTTPServerTransport({
