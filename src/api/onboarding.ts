@@ -58,6 +58,38 @@ export function onboardingRouter(): Router {
       const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
 
+      // Monotonicity guard: forward-or-equal only.
+      // Note: forward-or-equal allows skip-ahead (e.g. persona → complete).
+      // The /onboarding/done bypass is closed at the SITE proxy by a
+      // precondition that requires current_step === "done".
+      const currentStep = (membership.settings?.onboarding_step ??
+        "persona") as OnboardingStep;
+      const currentIdx = ONBOARDING_STEPS.indexOf(currentStep);
+      const nextIdx = ONBOARDING_STEPS.indexOf(step as OnboardingStep);
+
+      if (currentIdx < 0) {
+        respondError(
+          res,
+          500,
+          "invalid_current_step",
+          new Error(`unknown current step: ${currentStep}`),
+          {
+            logPrefix: "onboarding",
+          },
+        );
+        return;
+      }
+
+      if (nextIdx < currentIdx) {
+        res.status(400).json({
+          error: "invalid_step",
+          reason: "cannot_move_backward",
+          current: currentStep,
+          requested: step,
+        });
+        return;
+      }
+
       const { settings, error } = await patchWorkspaceSettings(
         sb,
         membership.workspaceId,
