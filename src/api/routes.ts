@@ -1,5 +1,4 @@
 import { Router, type Express } from "express";
-import { authRouter } from "./auth.js";
 import { meRouter } from "./me.js";
 import { onboardingRouter } from "./onboarding.js";
 import { clientsRouter } from "./clients.js";
@@ -16,7 +15,6 @@ export function mountApiRoutes(app: Express): void {
     res.json({ ok: true, api: "taproot", scope: "stage1-onboarding" });
   });
 
-  api.use("/", authRouter());
   api.use("/", meRouter());
   api.use("/", onboardingRouter());
   api.use("/", clientsRouter());
