@@ -4,7 +4,7 @@
  * Provisions a test user via the Supabase Auth admin API (bypasses
  * Supabase's MX-record email validation that rejects @example.com etc.),
  * mirrors the /api/signup atomic flow via the same PL/pgSQL function,
- * obtains a real JWT via POST /api/login, then exercises every Stage 1
+ * obtains a real JWT via supabase.auth.signInWithPassword, then exercises every Stage 1
  * onboarding endpoint over HTTP.
  *
  * Cleans up the test user, workspace, and any vault writes on exit
@@ -132,17 +132,18 @@ async function http(
     keys,
   );
 
-  // 2. /api/login over HTTP — gets us a real JWT
-  const login = await http("POST", "/api/login", null, {
-    email: testEmail,
-    password: testPassword,
-  });
+  // 2. Sign in directly via Supabase client — gets us a real JWT
+  const { data: signInData, error: signInError } =
+    await sb.auth.signInWithPassword({
+      email: testEmail,
+      password: testPassword,
+    });
   check(
-    "POST /api/login returns 200 + JWT",
-    login.status === 200 && !!login.json?.jwt,
-    login.json,
+    "supabase.auth.signInWithPassword returns 200 + JWT",
+    !signInError && !!signInData?.session?.access_token,
+    signInError?.message ?? signInData,
   );
-  const jwt: string = login.json.jwt;
+  const jwt: string = signInData!.session!.access_token;
 
   // 3. Auth gate: /api/me without JWT → 401
   const meNoAuth = await http("GET", "/api/me");
