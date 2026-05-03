@@ -52,7 +52,7 @@ curl -fsS -X PATCH \
   "security_captcha_secret": "${HCAPTCHA_SECRET}",
   "smtp_admin_email": "tom@taproothq.com",
   "smtp_host": "smtp.resend.com",
-  "smtp_port": 587,
+  "smtp_port": "587",
   "smtp_user": "resend",
   "smtp_pass": "${RESEND_API_KEY}",
   "smtp_sender_name": "Taproot",
