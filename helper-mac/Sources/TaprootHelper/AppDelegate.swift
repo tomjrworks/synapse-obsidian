@@ -110,6 +110,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         _ = alert.runModal()
     }
+    /// Test seam for pair-flow errors (B6). Default presents an NSAlert;
+    /// tests override to inspect error messages without blocking on a modal.
+    var presentPairError: @MainActor (String) -> Void = { message in
+        let alert = NSAlert()
+        alert.messageText = "Taproot pairing"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        _ = alert.runModal()
+    }
+    /// Holds the paste-the-code window so it isn't deallocated mid-flow (B6).
+    /// Nil when the window is closed or not yet opened.
+    var pairWindowController: PairWindowController?
     /// Factory for the underlying UpdaterService; default returns the
     /// production `SparkleUpdaterService`. Override in tests before first
     /// `updates` access.
@@ -285,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let injected = ProcessInfo.processInfo.environment["TAPROOT_DEV_INJECT_DEEPLINK"],
            let url = URL(string: injected),
            url.scheme == "taproot" {
-            Task { @MainActor [weak self] in self?.handleAuthURL(url) }
+            Task { @MainActor [weak self] in self?.dispatchURL(url) }
         }
     }
 
@@ -388,7 +401,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("[Taproot] handleGetURLEvent: missing or invalid URL")
             return
         }
-        handleAuthURL(url)
+        dispatchURL(url)
+    }
+
+    /// Routes a `taproot://` URL to the correct handler based on host.
+    /// Centralizes dispatch so both the AppleEvent path and the smoke-test
+    /// injection seam share a single routing point.
+    func dispatchURL(_ url: URL) {
+        if url.host?.lowercased() == "pair" {
+            handlePairURL(url)
+        } else {
+            handleAuthURL(url)
+        }
     }
 
     /// Parses an auth deep link, exchanges the auth code for a bearer at
@@ -516,6 +540,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             return "Sign-in failed (HTTP \(status))."
         }
+    }
+
+    // MARK: - Pair flow (B6)
+
+    /// Routes `taproot://pair?code=TAP-XXXX-XXXX` to `redeemAndApply`.
+    /// Validates the code format before dispatching — invalid deep-links are
+    /// logged and dropped rather than forwarded to the network.
+    func handlePairURL(_ url: URL) {
+        do {
+            let link = try DeepLinkParser.parsePair(url)
+            let code = link.code
+            Task { @MainActor [weak self] in
+                await self?.redeemAndApply(code: code)
+            }
+        } catch {
+            NSLog("[Taproot] Pair deep-link handling failed: \(error)")
+        }
+    }
+
+    /// POSTs `{code, device_name, os_platform}` to `<baseURL>/api/helper/pair/redeem`.
+    /// On 200, routes the returned bearer through `applyBearer` — same Keychain
+    /// lifecycle as the PKCE exchange path. Internal so tests can drive it directly
+    /// with a stubbed FakeHTTPClient.
+    func redeemAndApply(code: String) async {
+        let redeemURL = services.baseURL.appendingPathComponent("api/helper/pair/redeem")
+        let ver = ProcessInfo.processInfo.operatingSystemVersion
+        let verStr = "\(ver.majorVersion).\(ver.minorVersion).\(ver.patchVersion)"
+        #if arch(arm64)
+        let arch = "arm64"
+        #else
+        let arch = "x86_64"
+        #endif
+        let payload: [String: String] = [
+            "code": code,
+            "device_name": ProcessInfo.processInfo.hostName,
+            "os_platform": "macOS \(verStr) \(arch)",
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            presentPairError("Pairing failed (encoding error). Please try again.")
+            return
+        }
+        let req = HTTPRequest(
+            url: redeemURL,
+            method: "POST",
+            headers: ["Content-Type": "application/json"],
+            body: body
+        )
+        do {
+            let resp = try await services.httpClient.send(req)
+            guard resp.status == 200 else {
+                let errCode = (try? JSONSerialization.jsonObject(with: resp.body) as? [String: Any])?["error"] as? String
+                NSLog("[Taproot] /api/helper/pair/redeem failed: HTTP \(resp.status) error=\(errCode ?? "unknown")")
+                presentPairError(messageForRedeemError(errCode ?? "unknown", status: resp.status))
+                return
+            }
+            guard
+                let json = try JSONSerialization.jsonObject(with: resp.body) as? [String: Any],
+                let bearer = json["bearer"] as? String,
+                let wsStr = json["workspace_id"] as? String,
+                let workspaceID = UUID(uuidString: wsStr)
+            else {
+                NSLog("[Taproot] /api/helper/pair/redeem returned malformed response")
+                presentPairError("Pairing failed (unexpected server response). Please try again.")
+                return
+            }
+            applyBearer(workspaceID: workspaceID, bearer: bearer)
+        } catch {
+            NSLog("[Taproot] /api/helper/pair/redeem transport error: \(error)")
+            presentPairError("Couldn't reach Taproot to finish pairing. Check your network and try again.")
+        }
+    }
+
+    private func messageForRedeemError(_ code: String, status: Int) -> String {
+        switch code {
+        case "expired":
+            return "Your pair code expired. Go back to taproothq.com and generate a new one."
+        case "already_consumed":
+            return "This pair code has already been used. Generate a new one from taproothq.com."
+        case "invalid_code":
+            return "Pair code not found. Check the code and try again."
+        case "bad_request":
+            return "Pairing failed (bad request). Please try again."
+        default:
+            return "Pairing failed (HTTP \(status))."
+        }
+    }
+
+    /// Opens the paste-the-code panel. Reuses an existing controller if the
+    /// window is already on screen (idempotent — brings it front).
+    func openPairWindow() {
+        if pairWindowController == nil {
+            pairWindowController = PairWindowController(
+                onSubmit: { [weak self] code in
+                    self?.pairWindowController = nil
+                    Task { @MainActor [weak self] in
+                        await self?.redeemAndApply(code: code)
+                    }
+                },
+                onCancel: { [weak self] in
+                    self?.pairWindowController = nil
+                }
+            )
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        pairWindowController?.showWindow(nil)
+    }
+
+    @objc func menuEnterPairCode(_ sender: NSMenuItem) {
+        openPairWindow()
     }
 
     /// Persists workspace name + vault folder, appends the workspace to the
@@ -654,6 +787,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             connect.target = self
             menu.addItem(connect)
+            let pair = NSMenuItem(
+                title: "Pair with code…",
+                action: #selector(menuEnterPairCode(_:)),
+                keyEquivalent: ""
+            )
+            pair.target = self
+            menu.addItem(pair)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
             return menu

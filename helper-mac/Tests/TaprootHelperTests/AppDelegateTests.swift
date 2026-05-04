@@ -1662,13 +1662,16 @@ final class AppDelegateTests: XCTestCase {
     func testConnectAccountMenuItemAppearsWhenWorkspacesEmpty() {
         let menu = app.buildMenu(for: [])
 
-        XCTAssertEqual(menu.items.count, 3, "Empty menu shape: [Connect, separator, Quit]")
+        XCTAssertEqual(menu.items.count, 4, "Empty menu shape: [Connect, PairWithCode, separator, Quit]")
         let connect = menu.items[0]
         XCTAssertEqual(connect.title, "Connect your Taproot account")
         XCTAssertTrue(connect.isEnabled)
         XCTAssertEqual(connect.action, #selector(AppDelegate.menuConnectAccount(_:)))
-        XCTAssertTrue(menu.items[1].isSeparatorItem)
-        XCTAssertEqual(menu.items[2].title, "Quit")
+        let pair = menu.items[1]
+        XCTAssertEqual(pair.title, "Pair with code…")
+        XCTAssertEqual(pair.action, #selector(AppDelegate.menuEnterPairCode(_:)))
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+        XCTAssertEqual(menu.items[3].title, "Quit")
     }
 
     func testMenuConnectAccountOpensSignInURL() async {

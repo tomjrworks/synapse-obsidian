@@ -11,6 +11,14 @@ struct AuthDeepLink: Equatable {
     let workspaceID: UUID
 }
 
+/// Parsed `taproot://pair?code=TAP-XXXX-XXXX` deep link (Bundle 6).
+///
+/// Carries a 10-min single-use pair code. The helper redeems this at
+/// `POST /api/helper/pair/redeem` to receive a bearer — no PKCE round-trip.
+struct PairDeepLink: Equatable {
+    let code: String  // canonical uppercase "TAP-XXXX-XXXX"
+}
+
 enum DeepLinkParseError: Error, Equatable {
     case wrongScheme
     case wrongHost
@@ -54,5 +62,42 @@ enum DeepLinkParser {
             throw DeepLinkParseError.invalidWorkspaceUUID
         }
         return AuthDeepLink(code: code, workspaceID: workspaceID)
+    }
+
+    /// Parses `taproot://pair?code=TAP-XXXX-XXXX`.
+    ///
+    /// Accepts any case and optional dash omission — `canonicalizePairCode`
+    /// normalizes to uppercase canonical form before returning. Invalid shapes
+    /// are rejected so malformed links can't reach the redeem endpoint.
+    static func parsePair(_ url: URL) throws -> PairDeepLink {
+        guard url.scheme == "taproot" else { throw DeepLinkParseError.wrongScheme }
+        guard url.host?.lowercased() == "pair" else { throw DeepLinkParseError.wrongHost }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let raw = items.first(where: { $0.name == "code" })?.value,
+              !raw.isEmpty else {
+            throw DeepLinkParseError.missingCode
+        }
+        guard let canonical = canonicalizePairCode(raw) else {
+            throw DeepLinkParseError.invalidCode
+        }
+        return PairDeepLink(code: canonical)
+    }
+
+    /// Normalizes a raw pair code to canonical uppercase "TAP-XXXX-XXXX" form,
+    /// or returns nil if the input is invalid. Accepts case variants and
+    /// omitted dashes (e.g. "tap3k7mAB2C" → "TAP-3K7M-AB2C").
+    ///
+    /// Alphabet: A-Z minus I, O, U; digits 2-9 (Crockford-inspired, avoids
+    /// visual confusion with 0/1/I/O). Matches server CODE_REGEX
+    /// [A-HJ-NP-TV-Z2-9]{4}-[A-HJ-NP-TV-Z2-9]{4}.
+    static func canonicalizePairCode(_ raw: String) -> String? {
+        let stripped = raw.trimmingCharacters(in: .whitespaces)
+            .uppercased()
+            .replacingOccurrences(of: "-", with: "")
+        guard stripped.count == 11, stripped.hasPrefix("TAP") else { return nil }
+        let body = String(stripped.dropFirst(3))
+        let charset = CharacterSet(charactersIn: "ABCDEFGHJKLMNPQRSTVWXYZ23456789")
+        guard body.unicodeScalars.allSatisfy({ charset.contains($0) }) else { return nil }
+        return "TAP-\(body.prefix(4))-\(body.suffix(4))"
     }
 }
