@@ -13,18 +13,12 @@ import {
 import { loadConfig, getDefaultConfig } from "../utils/config.js";
 import { fetchUrlAsText } from "../utils/fetch.js";
 import { getFilingHintCached, LOCAL_TENANT_KEY } from "../utils/cache.js";
+import { buildFrontmatter, stripControls } from "../utils/yaml.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
-
-// Escape a string for use inside a YAML double-quoted scalar.
-// Strips control chars (including newlines) that would break the YAML structure,
-// then escapes any remaining double quotes.
-function yamlEscape(value: string): string {
-  return value.replace(/[\x00-\x1f\x7f]/g, "").replace(/"/g, '\\"');
-}
 
 const RATE_LIMIT_MS = 60_000;
 const rateLimitMap = new LRUCache<string, number>({
@@ -122,20 +116,16 @@ export function registerKnowledgeTools(
           body = content!;
         }
 
-        const frontmatter = [
-          "---",
-          `title: "${title.replace(/"/g, '\\"')}"`,
-          sourceUrl ? `source: "${sourceUrl}"` : "",
-          `date_created: ${TODAY()}`,
-          `type: article`,
-          `status: raw`,
-          `tags: [raw]`,
-          "---",
-        ]
-          .filter(Boolean)
-          .join("\n");
+        const frontmatter = buildFrontmatter({
+          title,
+          source: sourceUrl,
+          date_created: TODAY(),
+          type: "article",
+          status: "raw",
+          tags: ["raw"],
+        });
 
-        const fullContent = `${frontmatter}\n\n# ${title}\n\n${body}`;
+        const fullContent = `${frontmatter}\n\n# ${stripControls(title)}\n\n${body}`;
 
         await writeVaultFile(backend, filePath, fullContent);
 
@@ -680,7 +670,14 @@ export function registerKnowledgeTools(
             JSON.stringify(
               {
                 path: outputPath,
-                content: `---\ntitle: "${question}"\ndate_created: ${TODAY()}\nsummary: "Answer to: ${question}"\ntags: [query, output]\ntype: output\nstatus: final\n---\n\n# ${question}\n\n[YOUR SYNTHESIZED ANSWER HERE — use [[wikilinks]] for citations]`,
+                content: `${buildFrontmatter({
+                  title: question,
+                  date_created: TODAY(),
+                  summary: `Answer to: ${question}`,
+                  tags: ["query", "output"],
+                  type: "output",
+                  status: "final",
+                })}\n\n# ${stripControls(question)}\n\n[YOUR SYNTHESIZED ANSWER HERE — use [[wikilinks]] for citations]`,
               },
               null,
               2,
@@ -1044,21 +1041,17 @@ export function registerKnowledgeTools(
         }
 
         const allTags = ["raw", ...(suggestedTags || [])];
-        const frontmatter = [
-          "---",
-          `title: "${yamlEscape(resolvedTitle)}"`,
-          `source: "${yamlEscape(url)}"`,
-          `date_created: ${TODAY()}`,
-          `type: article`,
-          `status: raw`,
-          `tags: [${allTags.join(", ")}]`,
-          userIntent ? `note: "${yamlEscape(userIntent)}"` : "",
-          "---",
-        ]
-          .filter(Boolean)
-          .join("\n");
+        const frontmatter = buildFrontmatter({
+          title: resolvedTitle,
+          source: url,
+          date_created: TODAY(),
+          type: "article",
+          status: "raw",
+          tags: allTags,
+          note: userIntent,
+        });
 
-        const fullContent = `${frontmatter}\n\n# ${resolvedTitle}\n\n${fetched.body}`;
+        const fullContent = `${frontmatter}\n\n# ${stripControls(resolvedTitle)}\n\n${fetched.body}`;
 
         await writeVaultFile(backend, filePath, fullContent);
 

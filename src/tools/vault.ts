@@ -15,6 +15,7 @@ import {
   invalidateClaudeMdCache,
   LOCAL_TENANT_KEY,
 } from "../utils/cache.js";
+import { checkProtected } from "../utils/path-guard.js";
 
 export function registerVaultTools(
   server: McpServer,
@@ -91,23 +92,54 @@ export function registerVaultTools(
       },
     },
     async ({ path: filePath, content, acknowledgeRoot }) => {
-      // H5 (05-01): guard persistent-instruction files against unacknowledged
-      // overwrites. Prompt injection could otherwise silently rewrite CLAUDE.md.
-      const PROTECTED_PATHS = new Set([
-        "CLAUDE.md",
-        "index.md",
-        ".taproot/config.json",
-      ]);
-      if (PROTECTED_PATHS.has(filePath) && acknowledgeRoot !== true) {
+      // H1 (05-05): guard persistent-instruction files against unacknowledged
+      // overwrites via canonical-form Set check. Closes raw-string-match bypasses
+      // (`./CLAUDE.md`, case folding on APFS, trailing-slash, traversal,
+      // backslash, basename-anywhere for nested CLAUDE.md). See
+      // `src/utils/path-guard.ts` and `scripts/test-protected-paths.ts`.
+      const guard = checkProtected(filePath);
+
+      if (guard.kind === "invalid") {
         return {
           content: [
             {
               type: "text",
-              text: `Writing to '${filePath}' is protected. This file contains persistent AI instructions or vault configuration. To proceed, re-call garden_plant with acknowledgeRoot: true and explicit user consent.`,
+              text: `Invalid path '${filePath}': ${guard.reason}`,
             },
           ],
           isError: true,
         };
+      }
+
+      if (guard.kind === "protected") {
+        if (acknowledgeRoot !== true) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Writing to '${filePath}' is protected (resolves to '${guard.canonical}'). This file contains persistent AI instructions or vault configuration. To proceed, re-call garden_plant with acknowledgeRoot: true and explicit user consent.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        // Reject acknowledged non-canonical writes: on case-sensitive filesystems
+        // (Linux/Railway) `claude.md` + ack=true would otherwise pass the gate
+        // and silently create a sibling lowercase file rather than touching the
+        // real CLAUDE.md the caller intends.
+        const isCanonical =
+          filePath === guard.canonical || filePath === "CLAUDE.md";
+        if (!isCanonical) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Path '${filePath}' is non-canonical for protected file '${guard.canonical}'. Re-call with the canonical path (e.g. 'CLAUDE.md', 'index.md', '.taproot/config.json' — or for nested CLAUDE.md, the exact intended path).`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
       try {
