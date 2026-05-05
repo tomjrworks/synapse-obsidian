@@ -142,6 +142,8 @@ export async function startServer(port: number): Promise<void> {
     if (req.path.startsWith("/exchange")) return next();
     return signinLimit(req, res, next);
   });
+  app.use("/api/helper/pair/redeem", makeLimit(10));
+  app.use("/api/helper/auth/direct", makeLimit(10));
 
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   registerOAuthRoutes(app, baseUrl);

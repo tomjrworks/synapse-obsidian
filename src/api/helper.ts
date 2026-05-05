@@ -18,9 +18,105 @@ import {
   PAIR_RATE_LIMIT,
 } from "../lib/pair-token.js";
 import { tokenHashByteaParam, TOKEN_TTL_SECONDS } from "../auth/bearer.js";
+import { z } from "zod";
 import { patchWorkspaceSettings } from "./workspace.js";
 
 const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
+
+async function mintHelperBearer(
+  sb: ReturnType<typeof supabaseService>,
+  workspaceId: string,
+  deviceName: string,
+  osPlatform: string,
+  existingDeviceId?: string,
+  oldBearerHashParam?: string,
+): Promise<
+  | { ok: true; bearer: string; deviceId: string; expiresAt: string }
+  | { ok: false; code: string; cause: unknown }
+> {
+  const bearer = randomBytes(32).toString("hex");
+  const newHashParam = tokenHashByteaParam(bearer);
+  const expiresAt = new Date(
+    Date.now() + TOKEN_TTL_SECONDS * 1000,
+  ).toISOString();
+
+  const syntheticClientId = `taproot-helper-${workspaceId}`;
+  const { error: clientErr } = await sb.from("oauth_clients").upsert(
+    {
+      workspace_id: workspaceId,
+      client_id: syntheticClientId,
+      client_name: "Taproot Helper",
+      redirect_uris: ["taproot://auth"],
+      last_authorized_at: new Date().toISOString(),
+    },
+    { onConflict: "client_id" },
+  );
+  if (clientErr) return { ok: false, code: "mint_failed", cause: clientErr };
+
+  let deviceId: string;
+
+  if (existingDeviceId === undefined) {
+    const { data: deviceRow, error: deviceErr } = await sb
+      .from("helper_devices")
+      .insert({
+        workspace_id: workspaceId,
+        device_name: deviceName,
+        os_platform: osPlatform,
+        device_secret_hash: newHashParam,
+      })
+      .select("id")
+      .single();
+    if (deviceErr || !deviceRow) {
+      return { ok: false, code: "mint_failed", cause: deviceErr };
+    }
+    deviceId = deviceRow.id;
+
+    const { error: tokenErr } = await sb.from("oauth_tokens").insert({
+      workspace_id: workspaceId,
+      client_id: syntheticClientId,
+      token_hash: newHashParam,
+      expires_at: expiresAt,
+      scopes: ["helper"],
+    });
+    if (tokenErr) return { ok: false, code: "mint_failed", cause: tokenErr };
+  } else {
+    const { data: updatedDevice, error: deviceErr } = await sb
+      .from("helper_devices")
+      .update({ device_secret_hash: newHashParam })
+      .eq("id", existingDeviceId)
+      .is("revoked_at", null)
+      .select("id")
+      .maybeSingle();
+    if (deviceErr || !updatedDevice) {
+      return { ok: false, code: "mint_failed", cause: deviceErr };
+    }
+
+    const { error: tokenErr } = await sb
+      .from("oauth_tokens")
+      .update({ token_hash: newHashParam, expires_at: expiresAt })
+      .eq("token_hash", oldBearerHashParam!)
+      .eq("workspace_id", workspaceId)
+      .is("revoked_at", null);
+    if (tokenErr) return { ok: false, code: "mint_failed", cause: tokenErr };
+
+    deviceId = existingDeviceId;
+  }
+
+  return { ok: true, bearer, deviceId, expiresAt };
+}
+
+const directAuthSchema = z.object({
+  device_name: z
+    .string()
+    .min(1)
+    .max(255)
+    .trim()
+    .refine(
+      (s) => !/[\x00-\x1f\x7f]/.test(s),
+      "device_name must not contain control characters",
+    ),
+  os_platform: z.string().min(1).max(64).trim(),
+});
 
 export function helperRouter(): Router {
   const router = Router();
@@ -179,71 +275,26 @@ export function helperRouter(): Router {
 
       const workspaceId = pairRow.workspace_id as string;
 
-      // Generate bearer; device_secret_hash = sha256(bearer) stored in helper_devices.
-      const bearer = randomBytes(32).toString("hex");
-      const bearerHashParam = tokenHashByteaParam(bearer);
-      const expiresAt = new Date(
-        Date.now() + TOKEN_TTL_SECONDS * 1000,
-      ).toISOString();
-
-      // Upsert synthetic OAuth client (required by oauth_tokens.client_id NOT NULL FK).
-      const syntheticClientId = `taproot-helper-${workspaceId}`;
-      const { error: clientErr } = await sb.from("oauth_clients").upsert(
-        {
-          workspace_id: workspaceId,
-          client_id: syntheticClientId,
-          client_name: "Taproot Helper",
-          redirect_uris: ["taproot://auth"],
-          last_authorized_at: new Date().toISOString(),
-        },
-        { onConflict: "client_id" },
+      const mint = await mintHelperBearer(
+        sb,
+        workspaceId,
+        device_name,
+        os_platform,
       );
-      if (clientErr) {
-        respondError(res, 500, "redeem_failed", clientErr, {
+      if (!mint.ok) {
+        respondError(res, 500, mint.code, mint.cause, {
           logPrefix: "helper/pair/redeem",
         });
         return;
       }
-
-      // Register device.
-      const { data: deviceRow, error: deviceErr } = await sb
-        .from("helper_devices")
-        .insert({
-          workspace_id: workspaceId,
-          device_name,
-          os_platform,
-          device_secret_hash: bearerHashParam,
-        })
-        .select("id")
-        .single();
-      if (deviceErr || !deviceRow) {
-        respondError(res, 500, "redeem_failed", deviceErr, {
-          logPrefix: "helper/pair/redeem",
-        });
-        return;
-      }
-
-      // Mint bearer token.
-      const { error: tokenErr } = await sb.from("oauth_tokens").insert({
-        workspace_id: workspaceId,
-        client_id: syntheticClientId,
-        token_hash: bearerHashParam,
-        expires_at: expiresAt,
-        scopes: ["helper"],
-      });
-      if (tokenErr) {
-        respondError(res, 500, "redeem_failed", tokenErr, {
-          logPrefix: "helper/pair/redeem",
-        });
-        return;
-      }
+      const { bearer, deviceId, expiresAt } = mint;
 
       // Mark pair token consumed; treat 0 rows updated as a race (409).
       const { data: consumed, error: consumeErr } = await sb
         .from("pair_tokens")
         .update({
           consumed_at: new Date().toISOString(),
-          consumed_by_device_id: deviceRow.id,
+          consumed_by_device_id: deviceId,
         })
         .eq("token_hash", pairHash)
         .is("consumed_at", null)
@@ -262,9 +313,107 @@ export function helperRouter(): Router {
       res.json({
         bearer,
         workspace_id: workspaceId,
-        device_id: deviceRow.id,
+        device_id: deviceId,
         expires_at: expiresAt,
       });
+    }),
+  );
+
+  // --- Direct Auth ---
+  router.post(
+    "/helper/auth/direct",
+    requireSupabaseAuth,
+    requireWorkspace,
+    asyncHandler(async (req, res) => {
+      const parsed = directAuthSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        respondError(res, 400, "bad_request", parsed.error, {
+          logPrefix: "helper/auth/direct",
+        });
+        return;
+      }
+      const { device_name, os_platform } = parsed.data;
+      const { membership } = req as AuthedWorkspaceRequest;
+      const sb = supabaseService();
+      const workspaceId = membership.workspaceId;
+
+      const { data: existing } = await sb
+        .from("helper_devices")
+        .select("id, device_secret_hash")
+        .eq("workspace_id", workspaceId)
+        .eq("device_name", device_name)
+        .is("revoked_at", null)
+        .order("installed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const mint = existing
+        ? await mintHelperBearer(
+            sb,
+            workspaceId,
+            device_name,
+            os_platform,
+            existing.id,
+            existing.device_secret_hash,
+          )
+        : await mintHelperBearer(sb, workspaceId, device_name, os_platform);
+
+      if (!mint.ok) {
+        respondError(res, 500, mint.code, mint.cause, {
+          logPrefix: "helper/auth/direct",
+        });
+        return;
+      }
+
+      res.json({
+        bearer: mint.bearer,
+        workspace_id: workspaceId,
+        device_id: mint.deviceId,
+        expires_at: mint.expiresAt,
+      });
+    }),
+  );
+
+  // --- Device Revocation ---
+  router.delete(
+    "/helper/devices/:id",
+    requireSupabaseAuth,
+    requireWorkspace,
+    asyncHandler(async (req, res) => {
+      const deviceId = req.params.id as string;
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          deviceId,
+        )
+      ) {
+        respondError(res, 400, "invalid_device_id", null, {
+          logPrefix: "helper/devices",
+        });
+        return;
+      }
+
+      const { membership } = req as AuthedWorkspaceRequest;
+      const sb = supabaseService();
+
+      const { error } = await sb.rpc("revoke_helper_device", {
+        p_device_id: deviceId,
+        p_workspace_id: membership.workspaceId,
+      });
+
+      if (error) {
+        if (error.code === "P0002") {
+          respondError(res, 404, "device_not_found", null, {
+            logPrefix: "helper/devices",
+          });
+        } else {
+          respondError(res, 500, "revoke_failed", error, {
+            logPrefix: "helper/devices",
+          });
+        }
+        return;
+      }
+
+      res.json({ ok: true });
     }),
   );
 

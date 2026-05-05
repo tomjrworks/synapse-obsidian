@@ -123,6 +123,23 @@ async function putJson(
   return { status: r.status, body };
 }
 
+async function deleteJson(
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+  let body: any = null;
+  try {
+    body = await r.json();
+  } catch {
+    body = null;
+  }
+  return { status: r.status, body };
+}
+
 const FIXTURE_EMAIL =
   process.env.TEST_FIXTURE_EMAIL ?? dotEnvVars.TEST_FIXTURE_EMAIL ?? "";
 const FIXTURE_PASSWORD =
@@ -251,7 +268,52 @@ try {
   const c6 = await putJson("/api/helper/heartbeat", {});
   check("PUT /api/helper/heartbeat without auth → 401", c6.status === 401, c6);
 
-  // --- Cases 7+: require fixture credentials ---
+  // --- Case 14: direct-auth requires auth ---
+  console.log("\n→ Case 14: direct-auth requires auth → 401");
+  const c14 = await postJson("/api/helper/auth/direct", {
+    device_name: "smoke",
+    os_platform: "macos",
+  });
+  check(
+    "POST /api/helper/auth/direct without auth → 401",
+    c14.status === 401,
+    c14,
+  );
+
+  // --- Case 15: device revocation requires auth ---
+  console.log("\n→ Case 15: DELETE /api/helper/devices/:id without auth → 401");
+  const c15 = await deleteJson(
+    "/api/helper/devices/00000000-0000-0000-0000-000000000000",
+  );
+  check(
+    "DELETE /api/helper/devices/:id without auth → 401",
+    c15.status === 401,
+    c15,
+  );
+
+  // --- Rate-limit: 11 rapid POSTs to pair/redeem → 429 (gated by TAPROOT_KEEP_RATE_LIMIT) ---
+  if (process.env.TAPROOT_KEEP_RATE_LIMIT) {
+    console.log("\n→ Rate-limit: 11 rapid POSTs to pair/redeem → 429");
+    const rlResults: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      const r = await postJson("/api/helper/pair/redeem", {
+        code: "TAP-ABCD-EFGH",
+        device_name: "smoke",
+        os_platform: "macos",
+      });
+      rlResults.push(r.status);
+    }
+    check("11th rapid POST to pair/redeem → 429", rlResults[10] === 429, {
+      statuses: rlResults,
+    });
+  } else {
+    skip(
+      "rate-limit: 11 rapid POSTs → 429",
+      "set TAPROOT_KEEP_RATE_LIMIT=1 to enable",
+    );
+  }
+
+  // --- Cases 16+: require fixture credentials ---
   if (!hasFixture || !hasSupabase) {
     skip(
       "happy path / redeem / double-redeem / rate-limit / heartbeat / status",
@@ -465,6 +527,180 @@ try {
         redeem13.status === 410 && redeem13.body?.error === "expired",
         redeem13,
       );
+
+      // --- Case 16: direct-auth bad body → 400 ---
+      console.log("\n→ Case 16: direct-auth bad body → 400");
+      const c16 = await postJson(
+        "/api/helper/auth/direct",
+        {},
+        { Authorization: `Bearer ${jwt}` },
+      );
+      check(
+        "direct-auth missing device_name → 400 bad_request",
+        c16.status === 400 && c16.body?.error === "bad_request",
+        c16,
+      );
+
+      // --- Case 17: direct-auth fresh register + rotate ---
+      console.log("\n→ Case 17: direct-auth fresh register");
+      const direct17a = await postJson(
+        "/api/helper/auth/direct",
+        { device_name: "smoke-direct", os_platform: "macos-test" },
+        { Authorization: `Bearer ${jwt}` },
+      );
+      check(
+        "direct-auth fresh → 200 + bearer + workspace_id + device_id + expires_at",
+        direct17a.status === 200 &&
+          typeof direct17a.body?.bearer === "string" &&
+          /^[a-f0-9]{64}$/.test(direct17a.body.bearer) &&
+          typeof direct17a.body?.workspace_id === "string" &&
+          typeof direct17a.body?.device_id === "string" &&
+          typeof direct17a.body?.expires_at === "string",
+        { status: direct17a.status },
+      );
+
+      if (direct17a.status === 200) {
+        const bearer17a = direct17a.body.bearer;
+        const deviceId17 = direct17a.body.device_id;
+        const workspaceId17 = direct17a.body.workspace_id;
+
+        const { data: devRows17 } = await supa
+          .from("helper_devices")
+          .select("id")
+          .eq("id", deviceId17);
+        check(
+          "direct-auth: helper_devices row created",
+          Array.isArray(devRows17) && devRows17.length === 1,
+          { rows: devRows17?.length },
+        );
+
+        const { data: tokenRows17 } = await supa
+          .from("oauth_tokens")
+          .select("scopes")
+          .eq("workspace_id", workspaceId17)
+          .eq("client_id", `taproot-helper-${workspaceId17}`)
+          .is("revoked_at", null);
+        check(
+          "direct-auth: oauth_tokens has scopes=['helper']",
+          Array.isArray(tokenRows17) &&
+            tokenRows17.some(
+              (r: any) =>
+                Array.isArray(r.scopes) && r.scopes.includes("helper"),
+            ),
+          { rows: tokenRows17?.length },
+        );
+
+        console.log(
+          "\n→ Case 17 (rotate): second direct-auth → same device_id",
+        );
+        const direct17b = await postJson(
+          "/api/helper/auth/direct",
+          { device_name: "smoke-direct", os_platform: "macos-test" },
+          { Authorization: `Bearer ${jwt}` },
+        );
+        check("direct-auth rotate → 200", direct17b.status === 200, {
+          status: direct17b.status,
+        });
+        check(
+          "direct-auth rotate → same device_id",
+          direct17b.body?.device_id === deviceId17,
+          { expected: deviceId17, got: direct17b.body?.device_id },
+        );
+
+        if (direct17b.status === 200) {
+          const bearer17b = direct17b.body.bearer;
+
+          const hb17a = await putJson(
+            "/api/helper/heartbeat",
+            {},
+            { Authorization: `Bearer ${bearer17a}` },
+          );
+          check(
+            "direct-auth: first bearer → 401 after rotate",
+            hb17a.status === 401,
+            { status: hb17a.status },
+          );
+
+          const hb17b = await putJson(
+            "/api/helper/heartbeat",
+            {},
+            { Authorization: `Bearer ${bearer17b}` },
+          );
+          check(
+            "direct-auth: second bearer → 200 after rotate",
+            hb17b.status === 200 && hb17b.body?.ok === true,
+            hb17b,
+          );
+        }
+      }
+
+      // --- Case 18: DELETE unknown device_id → 404 ---
+      console.log("\n→ Case 18: DELETE unknown device_id → 404");
+      const c18 = await deleteJson(
+        "/api/helper/devices/00000000-0000-0000-0000-000000000001",
+        { Authorization: `Bearer ${jwt}` },
+      );
+      check(
+        "DELETE unknown device_id → 404 device_not_found",
+        c18.status === 404 && c18.body?.error === "device_not_found",
+        c18,
+      );
+
+      // --- Case 19: Full revocation lifecycle ---
+      console.log("\n→ Case 19: full revocation lifecycle");
+      const mintRevoke = await getJson("/api/helper/pair-token", {
+        Authorization: `Bearer ${jwt}`,
+      });
+      if (!mintRevoke.body?.token) {
+        skip("revocation lifecycle", "mint failed");
+      } else {
+        const redeemRevoke = await postJson("/api/helper/pair/redeem", {
+          code: mintRevoke.body.token,
+          device_name: "smoke-revoke",
+          os_platform: "macos-test",
+        });
+        check(
+          "revocation lifecycle: redeem → 200",
+          redeemRevoke.status === 200,
+          { status: redeemRevoke.status },
+        );
+
+        if (redeemRevoke.status === 200) {
+          const revokeBearer = redeemRevoke.body.bearer;
+          const revokeDeviceId = redeemRevoke.body.device_id;
+
+          const del19 = await deleteJson(
+            `/api/helper/devices/${revokeDeviceId}`,
+            { Authorization: `Bearer ${jwt}` },
+          );
+          check(
+            "DELETE device → 200 { ok: true }",
+            del19.status === 200 && del19.body?.ok === true,
+            del19,
+          );
+
+          const hbRevoked = await putJson(
+            "/api/helper/heartbeat",
+            {},
+            { Authorization: `Bearer ${revokeBearer}` },
+          );
+          check(
+            "heartbeat with revoked bearer → 401",
+            hbRevoked.status === 401,
+            { status: hbRevoked.status },
+          );
+
+          const del19b = await deleteJson(
+            `/api/helper/devices/${revokeDeviceId}`,
+            { Authorization: `Bearer ${jwt}` },
+          );
+          check(
+            "DELETE already-revoked device → 404 device_not_found",
+            del19b.status === 404 && del19b.body?.error === "device_not_found",
+            del19b,
+          );
+        }
+      }
     }
   }
 
