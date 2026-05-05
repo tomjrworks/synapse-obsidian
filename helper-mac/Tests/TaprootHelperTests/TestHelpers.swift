@@ -10,6 +10,7 @@ import Foundation
 /// callers (SyncEngine) would surface NSLock-from-async warnings under Swift 6.
 /// All reads from test bodies use `await`.
 actor FakeHTTPClient: HTTPClient {
+    private(set) var firstRequest: HTTPRequest?
     private(set) var lastRequest: HTTPRequest?
     private(set) var sendCount: Int = 0
     private var stubbedResponse: Result<HTTPResponse, Error> =
@@ -27,10 +28,13 @@ actor FakeHTTPClient: HTTPClient {
     }
 
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+        if firstRequest == nil { firstRequest = request }
         lastRequest = request
         sendCount += 1
         let stub = stubbedResponse
-        onSend?()
+        let handler = onSend
+        onSend = nil
+        handler?()
         return try stub.get()
     }
 }

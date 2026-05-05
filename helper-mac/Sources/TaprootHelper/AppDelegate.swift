@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var watchers: [UUID: WorkspaceWatcher] = [:]
     /// Internal access so tests can verify poller lifecycle.
     var pullPollers: [UUID: Task<Void, Never>] = [:]
+    /// Internal access so tests can verify heartbeat lifecycle.
+    var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
     /// Internal access so tests can verify cursor advance + clear.
     var pullCursors: [UUID: PullCursor] = [:]
     /// Test seam: the most recent NSMenu produced by `rebuildMenu`. `private(set)`
@@ -263,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startAllWatchers()
         startAllPullPollers()
+        startAllHeartbeats()
 
         // Start the auto-updater AFTER watchers + pollers so a launch-via-
         // deep-link (firstRun window opening, watchers spinning up) settles
@@ -678,6 +681,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startWatcher(for: workspace)
         startPullPoller(for: workspace)
+        startHeartbeat(for: workspace)
         NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")
     }
 
@@ -706,6 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a final pull through a stopped watcher.
     func performSignOut(workspaceID: UUID) {
         stopPullPoller(for: workspaceID)
+        stopHeartbeat(workspaceID: workspaceID)
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
 
@@ -915,6 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             startWatcher(for: workspaces[i])
             startPullPoller(for: workspaces[i])
+            startHeartbeat(for: workspaces[i])
             settingsStore.clearPausedOnLaunch(for: workspaceID)
         } else {
             // Pause. Removing the dict entry lets startWatcher's idempotency
@@ -922,6 +928,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             watchers[workspaceID]?.stop()
             watchers.removeValue(forKey: workspaceID)
             stopPullPoller(for: workspaceID)
+            stopHeartbeat(workspaceID: workspaceID)
             mutateWorkspaces { wks in
                 if let j = wks.firstIndex(where: { $0.id == workspaceID }) {
                     wks[j].syncStatus = .paused
@@ -1038,10 +1045,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaces.forEach { startPullPoller(for: $0) }
     }
 
+    /// Iterates `workspaces` and starts a heartbeat per workspace.
+    func startAllHeartbeats() {
+        workspaces.forEach { startHeartbeat(for: $0) }
+    }
+
     /// Idempotent.
     func stopPullPoller(for workspaceID: UUID) {
         pullPollers[workspaceID]?.cancel()
         pullPollers.removeValue(forKey: workspaceID)
+    }
+
+    /// Idempotent.
+    func stopHeartbeat(workspaceID: UUID) {
+        heartbeatTasks[workspaceID]?.cancel()
+        heartbeatTasks.removeValue(forKey: workspaceID)
+    }
+
+    func startHeartbeat(for workspace: Workspace) {
+        guard heartbeatTasks[workspace.id] == nil else { return }
+        guard workspace.syncStatus != .paused else { return }
+        let id = workspace.id
+        heartbeatTasks[id] = Task { [weak self] in
+            await self?.heartbeatTick(workspaceID: id)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 120_000_000_000) // 2 minutes
+                await self?.heartbeatTick(workspaceID: id)
+            }
+        }
+    }
+
+    func heartbeatTick(workspaceID: UUID) async {
+        guard let ws = workspaces.first(where: { $0.id == workspaceID }) else { return }
+        let url = services.baseURL.appendingPathComponent("api/helper/heartbeat")
+        let req = HTTPRequest(
+            url: url,
+            method: "PUT",
+            headers: [
+                "Content-Type": "application/json",
+                "Authorization": "Bearer \(ws.bearer)"
+            ],
+            body: Data()
+        )
+        _ = try? await services.httpClient.send(req)
     }
 
     /// One pull tick. Pauses watcher, drains up to `maxDrainPagesPerTick`
