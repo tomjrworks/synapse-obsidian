@@ -3,7 +3,7 @@
  *
  * Provisions a test user via the Supabase Auth admin API (bypasses
  * Supabase's MX-record email validation that rejects @example.com etc.),
- * mirrors the /api/signup atomic flow via the same PL/pgSQL function,
+ * mirrors the atomic signup flow via the create_workspace_for_new_user PL/pgSQL function,
  * obtains a real JWT via supabase.auth.signInWithPassword, then exercises every Stage 1
  * onboarding endpoint over HTTP.
  *
@@ -77,9 +77,9 @@ async function http(
     process.exit(2);
   }
 
-  // 1. Provision test user via admin API (mirrors what /api/signup does
-  //    once Supabase auth.signUp has returned a user). This validates the
-  //    bytea + RPC path identically to /api/signup.
+  // 1. Provision test user via admin API + invoke create_workspace_for_new_user
+  //    RPC directly (the same atomic path the live signup uses once
+  //    Supabase auth.signUp has returned a user). Validates the bytea + RPC path.
   const testEmail = `smoke-${Date.now()}@gmail.com`;
   const testPassword = "smoke-password-12345";
 

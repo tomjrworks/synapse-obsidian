@@ -473,7 +473,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let resp = try await services.httpClient.send(req)
             guard resp.status == 200 else {
                 let errCode = (try? JSONSerialization.jsonObject(with: resp.body) as? [String: Any])?["error"] as? String
-                NSLog("[Taproot] /signin/exchange failed: HTTP \(resp.status) error=\(errCode ?? "unknown")")
+                let logCode = String((errCode ?? "unknown").prefix(64))
+                NSLog("[Taproot] /signin/exchange failed: HTTP \(resp.status) error=\(logCode)")
                 presentSigninError(messageForExchangeError(errCode ?? "unknown", status: resp.status))
                 return
             }
@@ -594,7 +595,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let resp = try await services.httpClient.send(req)
             guard resp.status == 200 else {
                 let errCode = (try? JSONSerialization.jsonObject(with: resp.body) as? [String: Any])?["error"] as? String
-                NSLog("[Taproot] /api/helper/pair/redeem failed: HTTP \(resp.status) error=\(errCode ?? "unknown")")
+                let logCode = String((errCode ?? "unknown").prefix(64))
+                NSLog("[Taproot] /api/helper/pair/redeem failed: HTTP \(resp.status) error=\(logCode)")
                 presentPairError(messageForRedeemError(errCode ?? "unknown", status: resp.status))
                 return
             }

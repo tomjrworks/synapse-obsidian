@@ -14,8 +14,6 @@ import { invalidateClaudeMdCache, LOCAL_TENANT_KEY } from "../utils/cache.js";
  * Generate a personalized CLAUDE.md from onboarding answers.
  * This is the single most important file in the vault — it makes Claude proactive.
  *
- * Exported for use by cloud.ts (Drive-based onboarding).
- *
  * Two layers:
  * 1. TABLE STAKES — always included, non-negotiable behaviors that make the brain work
  * 2. PERSONALIZED — shaped by onboarding answers (topic, purpose, folders, conventions)
