@@ -149,9 +149,9 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(app.workspaces.first?.bearer, serverBearer)
 
         // Sent body should carry the verifier (consumed) — sanity check the request shape.
-        let last = await fake.lastRequest
-        XCTAssertEqual(last?.url.path, "/signin/exchange")
-        XCTAssertEqual(last?.method, "POST")
+        let first = await fake.firstRequest
+        XCTAssertEqual(first?.url.path, "/signin/exchange")
+        XCTAssertEqual(first?.method, "POST")
     }
 
     /// Missing verifier (helper restarted between Connect click + deep-link

@@ -155,7 +155,14 @@ export async function startServer(port: number): Promise<void> {
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
 
   app.post("/mcp", async (req, res) => {
-    if (await requireAuth(req, res)) return;
+    if (
+      await requireAuth(
+        req,
+        res,
+        `${baseUrl}/.well-known/oauth-protected-resource`,
+      )
+    )
+      return;
     try {
       const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId, {
@@ -174,7 +181,14 @@ export async function startServer(port: number): Promise<void> {
   });
 
   app.get("/mcp", async (req, res) => {
-    if (await requireAuth(req, res)) return;
+    if (
+      await requireAuth(
+        req,
+        res,
+        `${baseUrl}/.well-known/oauth-protected-resource`,
+      )
+    )
+      return;
     res.status(405).json({ error: "Use POST" });
   });
 

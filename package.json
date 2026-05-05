@@ -32,6 +32,7 @@
     "smoke:oauth-tokens": "tsx scripts/test-oauth-tokens.ts",
     "smoke:signin": "tsx scripts/test-signin.ts",
     "smoke:signin-exchange": "tsx scripts/test-signin-exchange.ts",
+    "smoke:helper-pair": "tsx scripts/smoke-helper-pair.ts",
     "smoke:mcp-e2e": "tsx scripts/test-mcp-end-to-end.ts",
     "smoke:cloud": "tsx scripts/smoke-cloud-suite.ts",
     "smoke:local-backend": "tsx scripts/test-local-backend.ts",

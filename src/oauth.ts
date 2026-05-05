@@ -701,13 +701,22 @@ export interface AuthedMcpRequest extends Request {
 export async function requireAuth(
   req: Request,
   res: Response,
+  resourceMetadataUrl?: string,
 ): Promise<boolean> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).set("WWW-Authenticate", "Bearer").json({
-      error: "unauthorized",
-      error_description: "Bearer token required",
-    });
+    res
+      .status(401)
+      .set(
+        "WWW-Authenticate",
+        resourceMetadataUrl
+          ? `Bearer resource="${resourceMetadataUrl}"`
+          : "Bearer",
+      )
+      .json({
+        error: "unauthorized",
+        error_description: "Bearer token required",
+      });
     return true;
   }
 
@@ -722,9 +731,17 @@ export async function requireAuth(
       .gt("expires_at", new Date().toISOString())
       .maybeSingle();
     if (error || !data) {
-      res.status(401).set("WWW-Authenticate", "Bearer").json({
-        error: "invalid_token",
-      });
+      res
+        .status(401)
+        .set(
+          "WWW-Authenticate",
+          resourceMetadataUrl
+            ? `Bearer resource="${resourceMetadataUrl}"`
+            : "Bearer",
+        )
+        .json({
+          error: "invalid_token",
+        });
       return true;
     }
     (req as AuthedMcpRequest).workspaceId = data.workspace_id as string;
