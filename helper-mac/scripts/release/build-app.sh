@@ -10,6 +10,7 @@
 # Examples:
 #   build-app.sh /tmp/staging-0.1.1
 #   build-app.sh /tmp/staging-0.1.1 --zip
+#   ARCH_MODE=arm64 build-app.sh /tmp/staging-dev      # fast local iteration
 #
 # Inputs:
 #   <output-dir>          Destination for TaprootHelper.app (created if
@@ -18,6 +19,10 @@
 #   --zip                 Also produce TaprootHelper-<short-version>.zip
 #                         alongside the .app via `ditto -c -k --keepParent`
 #                         (NOT `--sequenceNumber` — invalid macOS option).
+#   ARCH_MODE             universal (default) | arm64 | x86_64. Production
+#                         release path always uses universal (G2). Local
+#                         dev iterations can use arm64 or x86_64 to skip
+#                         the cross-arch link step.
 #   TAPROOT_CODESIGN_IDENTITY  Override codesign identity (default: Tom's
 #                              Developer ID Application certificate
 #                              BC24E4A647583D1B567D8A0CD3DFBE74C3A2C522).
@@ -73,6 +78,20 @@ fi
 SHORT_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$INFO_PLIST")"
 BUNDLE_VERSION="$(plutil -extract CFBundleVersion raw -o - "$INFO_PLIST")"
 
+# G2: universal vs single-arch build selection. Production release path
+# always builds universal so a single signed/notarized DMG runs natively on
+# both Apple Silicon and Intel Macs (G-D1).
+ARCH_MODE="${ARCH_MODE:-universal}"
+case "$ARCH_MODE" in
+    universal) SWIFT_ARCH_FLAGS=(--arch arm64 --arch x86_64) ;;
+    arm64)     SWIFT_ARCH_FLAGS=(--arch arm64) ;;
+    x86_64)    SWIFT_ARCH_FLAGS=(--arch x86_64) ;;
+    *)
+        echo "error: ARCH_MODE must be universal|arm64|x86_64 (got: $ARCH_MODE)" >&2
+        exit 1
+        ;;
+esac
+
 if [[ -z "$SHORT_VERSION" || -z "$BUNDLE_VERSION" ]]; then
     echo "error: could not read version keys from $INFO_PLIST" >&2
     exit 1
@@ -84,16 +103,17 @@ echo "    Short version:  $SHORT_VERSION"
 echo "    Bundle version: $BUNDLE_VERSION"
 echo "    Identity:       $IDENTITY"
 echo "    Output dir:     $OUTPUT_DIR"
+echo "    Arch mode:      $ARCH_MODE"
 echo
 
 mkdir -p "$OUTPUT_DIR"
 APP_PATH="$OUTPUT_DIR/TaprootHelper.app"
 rm -rf "$APP_PATH"
 
-echo "==> swift build -c release"
-( cd "$HELPER_MAC_ROOT" && swift build -c release )
+echo "==> swift build -c release ${SWIFT_ARCH_FLAGS[*]}"
+( cd "$HELPER_MAC_ROOT" && swift build -c release "${SWIFT_ARCH_FLAGS[@]}" )
 
-BIN_PATH="$( cd "$HELPER_MAC_ROOT" && swift build -c release --show-bin-path )"
+BIN_PATH="$( cd "$HELPER_MAC_ROOT" && swift build -c release "${SWIFT_ARCH_FLAGS[@]}" --show-bin-path )"
 EXEC_SRC="$BIN_PATH/TaprootHelper"
 SPARKLE_SRC="$BIN_PATH/Sparkle.framework"
 
@@ -104,6 +124,17 @@ fi
 if [[ ! -d "$SPARKLE_SRC" ]]; then
     echo "error: Sparkle.framework not found at $SPARKLE_SRC" >&2
     exit 1
+fi
+
+if [[ "$ARCH_MODE" == "universal" ]]; then
+    # G2 ship-criterion: universal binary contains BOTH arm64 and x86_64
+    # slices. Catches SwiftPM regressions where a slice is silently dropped.
+    ARCHES_LINE="$(lipo -info "$EXEC_SRC")"
+    if [[ "$ARCHES_LINE" != *"arm64"* || "$ARCHES_LINE" != *"x86_64"* ]]; then
+        echo "error: universal build is missing an arch. lipo -info reported: $ARCHES_LINE" >&2
+        exit 1
+    fi
+    echo "==> Universal binary verified: $ARCHES_LINE"
 fi
 
 echo "==> Building .app skeleton at $APP_PATH"
