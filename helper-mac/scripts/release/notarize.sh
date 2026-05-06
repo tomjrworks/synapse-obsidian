@@ -54,12 +54,11 @@ case "$1" in
         xcrun stapler validate "$DMG"
         echo "==> DONE: $DMG is notarized and stapled"
         echo ""
-        echo "Next step: upload both artifacts to R2:"
+        echo "Next step: upload DMG to R2 (DMG-only — appcast switched to DMG in T11.10):"
         DMG_NAME="$(basename "$DMG")"
         VERSION="${DMG_NAME#TaprootHelper-}"
         VERSION="${VERSION%.dmg}"
-        echo "  wrangler r2 object put taproot-downloads/releases/v${VERSION}/${DMG_NAME} --file=\"$DMG\""
-        echo "  wrangler r2 object put taproot-downloads/releases/v${VERSION}/TaprootHelper-${VERSION}.zip --file=\"<path-to-reziped-app.zip>\""
+        echo "  wrangler r2 object put taproot-releases/releases/v${VERSION}/${DMG_NAME} --file=\"$DMG\" --content-type=application/x-apple-diskimage --remote"
         ;;
     *)
         echo "Usage: $(basename "$0") --app <app-path> | --dmg <dmg-path>" >&2

@@ -13,11 +13,11 @@
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <description><![CDATA[__RELEASE_NOTES_HTML__]]></description>
       <enclosure
-        url="https://downloads.taproothq.com/releases/v__SHORT_VERSION__/TaprootHelper-__SHORT_VERSION__.zip"
+        url="https://downloads.taproothq.com/releases/v__SHORT_VERSION__/TaprootHelper-__SHORT_VERSION__.dmg"
         sparkle:version="__BUNDLE_VERSION__"
         sparkle:shortVersionString="__SHORT_VERSION__"
         length="__LENGTH__"
-        type="application/octet-stream"
+        type="application/x-apple-diskimage"
         sparkle:edSignature="__ED_SIGNATURE__"/>
     </item>
   </channel>

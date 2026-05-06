@@ -1,17 +1,17 @@
 #!/bin/bash
-# T11.8 release tooling — signs a packaged TaprootHelper zip with the EdDSA
+# T11.10 release tooling — signs a packaged TaprootHelper DMG with the EdDSA
 # private key Sparkle holds in Keychain (`https://sparkle-project.org` /
 # `ed25519`), substitutes placeholders into appcast-template.xml, and PRINTS
 # the wrangler upload commands. It does NOT execute uploads — Tom runs those
 # by hand so a misfired script can't accidentally publish to prod.
 #
 # Usage:
-#   sign-and-publish.sh <short-version> <bundle-version> <zip-path> [--prod] [--release-notes <html>]
+#   sign-and-publish.sh <short-version> <bundle-version> <dmg-path> [--prod] [--release-notes <html>]
 #
 # Examples:
-#   sign-and-publish.sh 0.1.1 2 /tmp/TaprootHelper-0.1.1.zip
-#   sign-and-publish.sh 0.1.1 2 /tmp/TaprootHelper-0.1.1.zip --prod
-#   sign-and-publish.sh 0.1.1 2 ./out/TaprootHelper-0.1.1.zip --release-notes '<p>Bugfix release.</p>'
+#   sign-and-publish.sh 0.1.2 3 ~/Downloads/taproot-releases/0.1.2/TaprootHelper-0.1.2.dmg
+#   sign-and-publish.sh 0.1.2 3 ~/Downloads/taproot-releases/0.1.2/TaprootHelper-0.1.2.dmg --prod
+#   sign-and-publish.sh 0.1.2 3 ./out/TaprootHelper-0.1.2.dmg --release-notes '<p>Bugfix release.</p>'
 #
 # Output: helper-mac/scripts/release/out/appcast.xml plus the wrangler r2 +
 # pages commands printed to stdout. Single-version mode — multi-version
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $(basename "$0") <short-version> <bundle-version> <zip-path> [--prod] [--release-notes <html>]" >&2
+    echo "Usage: $(basename "$0") <short-version> <bundle-version> <dmg-path> [--prod] [--release-notes <html>]" >&2
     exit 1
 }
 
@@ -31,7 +31,7 @@ fi
 
 SHORT_VERSION="$1"
 BUNDLE_VERSION="$2"
-ZIP_PATH="$3"
+DMG_PATH="$3"
 shift 3
 
 IS_PROD=0
@@ -58,8 +58,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ ! -f "$ZIP_PATH" ]]; then
-    echo "error: zip not found at $ZIP_PATH" >&2
+if [[ ! -f "$DMG_PATH" ]]; then
+    echo "error: DMG not found at $DMG_PATH" >&2
     exit 1
 fi
 
@@ -86,7 +86,7 @@ mkdir -p "$OUT_DIR"
 
 # `sign_update` prints e.g.: sparkle:edSignature="..." length="..."
 # Capture full stdout and pull the signature substring out for substitution.
-SIGN_OUTPUT="$("$SIGN_UPDATE" "$ZIP_PATH")"
+SIGN_OUTPUT="$("$SIGN_UPDATE" "$DMG_PATH")"
 ED_SIGNATURE="$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
 if [[ -z "$ED_SIGNATURE" ]]; then
     echo "error: could not parse edSignature from sign_update output:" >&2
@@ -94,7 +94,7 @@ if [[ -z "$ED_SIGNATURE" ]]; then
     exit 1
 fi
 
-LENGTH="$(stat -f %z "$ZIP_PATH")"
+LENGTH="$(stat -f %z "$DMG_PATH")"
 PUB_DATE="$(date -u "+%a, %d %b %Y %H:%M:%S +0000")"
 
 # Substitute placeholders. Use a delimiter unlikely to appear in HTML
@@ -113,9 +113,9 @@ echo "Wrote: $OUT_FILE"
 echo
 echo "Next — run these by hand (this script does NOT execute them):"
 echo
-echo "  # 1. Upload the signed zip to R2 (--remote required: without it,"
+echo "  # 1. Upload the signed DMG to R2 (--remote required: without it,"
 echo "  #    wrangler writes to the local miniflare simulator only.)"
-echo "  wrangler r2 object put taproot-releases/releases/v$SHORT_VERSION/TaprootHelper-$SHORT_VERSION.zip --file=$ZIP_PATH --content-type=application/octet-stream --remote"
+echo "  wrangler r2 object put taproot-releases/releases/v$SHORT_VERSION/TaprootHelper-$SHORT_VERSION.dmg --file=$DMG_PATH --content-type=application/x-apple-diskimage --remote"
 echo
 if [[ $IS_PROD -eq 1 ]]; then
     echo "  # 2. Deploy the appcast to PROD (updates.taproothq.com)"
