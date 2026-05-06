@@ -586,6 +586,35 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(deletes.count, 0)
     }
 
+    /// §3a S2 regression gate: B changes the vault root's blast radius (a user
+    /// can pick `$HOME` or any sensitive dir via the new vault picker). This
+    /// test asserts that `safeJoin`'s rejection of `..` still holds even when
+    /// the vault root IS a home-equivalent path — i.e. nothing in the pull path
+    /// short-circuits the check for "trusted" roots.
+    func testPullWriteDoesNotEscapeVaultRootEvenWhenRootIsHome() async throws {
+        let fakeHome = URL(fileURLWithPath: NSHomeDirectory())
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"../.ssh/authorized_keys","size":3,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"pwn"}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(folder: fakeHome),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        let deletes = await tracker.snapshotDeletes()
+        XCTAssertEqual(writes.count, 0, "../.ssh/authorized_keys must be rejected even when vault root is $HOME")
+        XCTAssertEqual(deletes.count, 0)
+    }
+
     func testPullAliveEntryWithoutContentIsSkipped() async throws {
         let fake = FakeHTTPClient()
         // Defensive against server bug — alive entries should always carry content
