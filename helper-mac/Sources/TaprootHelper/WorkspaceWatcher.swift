@@ -143,6 +143,10 @@ final class WorkspaceWatcher {
             if flag & UInt32(kFSEventStreamEventFlagItemIsSymlink) != 0 { continue }
             // Drop hidden files (catches .DS_Store and friends).
             if url.lastPathComponent.hasPrefix(".") { continue }
+            // Drop anything inside .obsidian/ (Obsidian configs, plugins,
+            // workspace state). Path-component compare — not substring — so
+            // a sibling folder named "my.obsidian-notes" is NOT dropped.
+            if url.pathComponents.contains(".obsidian") { continue }
 
             if let event = watcher.derive(path: url, flag: flag) {
                 events.append(event)

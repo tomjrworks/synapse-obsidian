@@ -171,6 +171,46 @@ final class WorkspaceWatcherTests: XCTestCase {
         XCTAssertFalse(box.events.contains { $0.path.lastPathComponent == ".DS_Store" })
     }
 
+    func testObsidianFolderFilesDroppedFromEvents() throws {
+        // .obsidian/workspace.json has lastPathComponent "workspace.json" so
+        // the existing hasPrefix(".") filter would NOT catch it. The new
+        // pathComponents.contains(".obsidian") gate must.
+        let dotObsidian = tmpDir.appendingPathComponent(".obsidian")
+        try FileManager.default.createDirectory(at: dotObsidian, withIntermediateDirectories: true)
+
+        let exp = expectation(description: "no event for files inside .obsidian/")
+        exp.isInverted = true
+        let box = EventBox()
+        startWatcher(expectation: exp, predicate: { events in
+            events.contains { $0.path.pathComponents.contains(".obsidian") }
+        }, box: box)
+
+        Thread.sleep(forTimeInterval: 0.5)
+        try Data("{}".utf8).write(to: dotObsidian.appendingPathComponent("workspace.json"))
+        try Data("[]".utf8).write(to: dotObsidian.appendingPathComponent("plugins.json"))
+        wait(for: [exp], timeout: 1.5)
+
+        XCTAssertFalse(box.events.contains { $0.path.pathComponents.contains(".obsidian") })
+    }
+
+    func testLookalikeFolderNotDropped() throws {
+        // Folder literally named "my.obsidian-notes" must NOT be filtered —
+        // path-component compare guards against substring false positives.
+        let lookalike = tmpDir.appendingPathComponent("my.obsidian-notes")
+        try FileManager.default.createDirectory(at: lookalike, withIntermediateDirectories: true)
+
+        let target = lookalike.appendingPathComponent("note.md")
+        let exp = expectation(description: "create event for lookalike-folder file")
+        let box = EventBox()
+        startWatcher(expectation: exp, predicate: { events in
+            events.contains { $0.kind == .created && $0.path.lastPathComponent == "note.md" }
+        }, box: box)
+
+        Thread.sleep(forTimeInterval: 0.5)
+        try "hello".write(to: target, atomically: true, encoding: .utf8)
+        wait(for: [exp], timeout: 3.0)
+    }
+
     func testRenameProducesPairedEvents() throws {
         let oldURL = tmpDir.appendingPathComponent("old.md")
         let newURL = tmpDir.appendingPathComponent("new.md")
