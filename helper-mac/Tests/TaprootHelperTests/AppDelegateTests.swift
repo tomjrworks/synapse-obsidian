@@ -99,6 +99,71 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(app.workspaces.first?.bearer, kBearerB)
     }
 
+    // MARK: - applyBearer skipReauthConfirmation gate (Phase 3)
+
+    /// In-app auth path: `skipReauthConfirmation: true` must rotate the bearer
+    /// on an existing workspace WITHOUT calling `confirmReauth`.
+    func testApplyBearerSkipReauthConfirmationBypassesGate() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
+
+        // Seed the workspace via the first-run path.
+        app.applyBearer(workspaceID: id, bearer: kBearerA)
+
+        // Replace confirmReauth with a trip-wire that fails the test if called.
+        var reauthCalled = false
+        app.confirmReauth = { _ in reauthCalled = true; return false }
+
+        // In-app path: skipReauthConfirmation = true must bypass the gate.
+        app.applyBearer(workspaceID: id, bearer: kBearerB, skipReauthConfirmation: true)
+
+        XCTAssertFalse(reauthCalled, "confirmReauth must NOT be called on the trusted in-app path")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerB)
+        XCTAssertEqual(app.workspaces.first?.bearer, kBearerB)
+    }
+
+    /// Deep-link path: default `skipReauthConfirmation: false` must still trigger
+    /// `confirmReauth` for an existing workspace.
+    func testApplyBearerDeepLinkPathTriggersConfirmReauth() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
+
+        app.applyBearer(workspaceID: id, bearer: kBearerA)
+
+        var reauthCalled = false
+        app.confirmReauth = { _ in reauthCalled = true; return true }
+
+        // Deep-link path uses default (false) → gate must fire.
+        app.applyBearer(workspaceID: id, bearer: kBearerB)
+
+        XCTAssertTrue(reauthCalled, "confirmReauth MUST be called on the deep-link path")
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerB)
+    }
+
+    /// When the user cancels the re-auth gate on the deep-link path, bearer
+    /// must NOT be rotated.
+    func testApplyBearerDeepLinkPathCancelledLeavesOriginalBearer() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
+
+        app.applyBearer(workspaceID: id, bearer: kBearerA)
+        app.confirmReauth = { _ in false }  // user cancels
+
+        app.applyBearer(workspaceID: id, bearer: kBearerB)
+
+        XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerA, "Original bearer must survive a cancelled re-auth")
+        XCTAssertEqual(app.workspaces.first?.bearer, kBearerA)
+    }
+
     func testHandleAuthURLIgnoresMalformedURL() throws {
         let badURL = URL(string: "https://example.com/foo")!
         app.handleAuthURL(badURL)
@@ -942,8 +1007,8 @@ final class AppDelegateTests: XCTestCase {
         let menu = app.buildMenu(for: [workspace])
 
         // Shape: [name (disabled), Open vault folder, Pause sync, Settings…,
-        //         Sign out, separator, Quit] = 7 items.
-        XCTAssertEqual(menu.items.count, 7)
+        //         Sign out, separator, Check for updates…, Quit] = 8 items.
+        XCTAssertEqual(menu.items.count, 8)
 
         XCTAssertEqual(menu.items[0].title, "WS")
         XCTAssertFalse(menu.items[0].isEnabled, "Workspace name row is a disabled label")
@@ -967,7 +1032,8 @@ final class AppDelegateTests: XCTestCase {
 
         XCTAssertTrue(menu.items[5].isSeparatorItem)
 
-        XCTAssertEqual(menu.items[6].title, "Quit")
+        XCTAssertEqual(menu.items[6].title, "Check for updates…")
+        XCTAssertEqual(menu.items[7].title, "Quit")
     }
 
     func testBuildMenuNestedLayoutForTwoWorkspaces() throws {
@@ -992,8 +1058,8 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [ws1, ws2])
 
-        // Nested shape: [ws1 > submenu, ws2 > submenu, separator, Quit] = 4 items.
-        XCTAssertEqual(menu.items.count, 4)
+        // Nested shape: [ws1 > submenu, ws2 > submenu, separator, Check for updates…, Quit] = 5 items.
+        XCTAssertEqual(menu.items.count, 5)
 
         XCTAssertEqual(menu.items[0].title, "Alpha")
         let alphaSubmenu = try XCTUnwrap(menu.items[0].submenu)
@@ -1001,7 +1067,8 @@ final class AppDelegateTests: XCTestCase {
         let betaSubmenu = try XCTUnwrap(menu.items[1].submenu)
 
         XCTAssertTrue(menu.items[2].isSeparatorItem)
-        XCTAssertEqual(menu.items[3].title, "Quit")
+        XCTAssertEqual(menu.items[3].title, "Check for updates…")
+        XCTAssertEqual(menu.items[4].title, "Quit")
 
         // Each submenu carries the 4 per-workspace actions, no name-label
         // (the top-level row already labels which workspace).
@@ -1148,13 +1215,13 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(app, folder: folder)
         app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
         app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
-        XCTAssertEqual(app.currentMenu?.items.count, 4, "Pre-signOut: nested 4-item menu")
+        XCTAssertEqual(app.currentMenu?.items.count, 5, "Pre-signOut: nested 5-item menu")
 
         app.signOut(workspaceID: id2)
 
-        // After sign-out the count drops to 1 → flat 7-item shape.
+        // After sign-out the count drops to 1 → flat 8-item shape.
         let after = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(after.items.count, 7)
+        XCTAssertEqual(after.items.count, 8)
     }
 
     func testRebuildMenuFiresOnHandleAuthURL() throws {
@@ -1167,19 +1234,21 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(app, folder: folder)
         app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
 
-        // After 1 workspace, currentMenu reflects the 7-item flat shape.
+        // After 1 workspace, currentMenu reflects the 8-item flat shape.
         let afterFirst = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(afterFirst.items.count, 7, "Flat layout after first auth")
+        XCTAssertEqual(afterFirst.items.count, 8, "Flat layout after first auth")
 
         app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
+        app.confirmReauth = { _ in true }
 
-        // After 2 workspaces, currentMenu reflects the 4-item nested shape.
+        // After 2 workspaces, currentMenu reflects the 5-item nested shape.
         let afterSecond = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(afterSecond.items.count, 4, "Nested layout after second auth")
+        XCTAssertEqual(afterSecond.items.count, 5, "Nested layout after second auth")
         XCTAssertNotNil(afterSecond.items[0].submenu)
         XCTAssertNotNil(afterSecond.items[1].submenu)
         XCTAssertTrue(afterSecond.items[2].isSeparatorItem)
-        XCTAssertEqual(afterSecond.items[3].title, "Quit")
+        XCTAssertEqual(afterSecond.items[3].title, "Check for updates…")
+        XCTAssertEqual(afterSecond.items[4].title, "Quit")
     }
 
     func testStatusIconPrecedence() {
@@ -1662,16 +1731,30 @@ final class AppDelegateTests: XCTestCase {
     func testConnectAccountMenuItemAppearsWhenWorkspacesEmpty() {
         let menu = app.buildMenu(for: [])
 
-        XCTAssertEqual(menu.items.count, 4, "Empty menu shape: [Connect, PairWithCode, separator, Quit]")
-        let connect = menu.items[0]
-        XCTAssertEqual(connect.title, "Connect your Taproot account")
-        XCTAssertTrue(connect.isEnabled)
-        XCTAssertEqual(connect.action, #selector(AppDelegate.menuConnectAccount(_:)))
+        // Phase 3 empty shape:
+        // [Sign in to Taproot…, Pair with code…, separator,
+        //  Connect via browser…, separator, Check for updates…, Quit] = 7 items.
+        XCTAssertEqual(menu.items.count, 7, "Empty menu shape")
+
+        let signIn = menu.items[0]
+        XCTAssertEqual(signIn.title, "Sign in to Taproot…")
+        XCTAssertTrue(signIn.isEnabled)
+        XCTAssertEqual(signIn.action, #selector(AppDelegate.menuSignIn(_:)))
+
         let pair = menu.items[1]
         XCTAssertEqual(pair.title, "Pair with code…")
         XCTAssertEqual(pair.action, #selector(AppDelegate.menuEnterPairCode(_:)))
+
         XCTAssertTrue(menu.items[2].isSeparatorItem)
-        XCTAssertEqual(menu.items[3].title, "Quit")
+
+        let connectBrowser = menu.items[3]
+        XCTAssertEqual(connectBrowser.title, "Connect via browser…")
+        XCTAssertEqual(connectBrowser.action, #selector(AppDelegate.menuConnectAccount(_:)))
+
+        XCTAssertTrue(menu.items[4].isSeparatorItem)
+
+        XCTAssertEqual(menu.items[5].title, "Check for updates…")
+        XCTAssertEqual(menu.items[6].title, "Quit")
     }
 
     func testMenuConnectAccountOpensSignInURL() async {

@@ -95,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater: makeUpdaterService(),
         settingsStore: settingsStore
     )
+    /// In-app sign-in flow (Phase 3). Same lazy pattern as `firstRun` and
+    /// `updates`. Tests reassign before first access to inject stubs.
+    lazy var auth: AuthCoordinator = makeAuthCoordinator()
     /// PKCE verifier storage for the /signin code-exchange flow (B1).
     /// `menuConnectAccount` calls `beginSignin()` to seed; `handleAuthURL`
     /// calls `consumeVerifier()` on the deep-link callback. Per-instance
@@ -164,6 +167,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.services = services
         self.syncEngine = SyncEngine(httpClient: services.httpClient, baseURL: services.baseURL)
         super.init()
+    }
+
+    /// Constructs the production AuthCoordinator. Called by the lazy `auth`
+    /// initializer on first access. Tests bypass by reassigning `app.auth`.
+    private func makeAuthCoordinator() -> AuthCoordinator {
+        AuthCoordinator(
+            services: services,
+            onAuthSucceeded: { [weak self] workspaceID, bearer in
+                self?.applyBearer(workspaceID: workspaceID, bearer: bearer, skipReauthConfirmation: true)
+            },
+            onCancel: { }
+        )
     }
 
     /// Constructs the production FirstRunCoordinator with bridges back to
@@ -249,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // handleAuthURL very early — every seam it might hit must already be
         // production-wired.
         firstRun.wireDefaults()
+        auth.wireDefaults()
 
         loadWorkspacesFromKeychain()
         // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE
@@ -273,12 +289,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // postpones Sparkle while either the first-run window is up OR a
         // push is in flight (V3 atomic counter on SyncEngine).
         updates.isBusy = { [weak self, syncEngine] in
-            (syncEngine.pushInFlight > 0) || (self?.firstRun.isFirstRunWindowOpen ?? false)
+            (syncEngine.pushInFlight > 0)
+                || (self?.firstRun.isFirstRunWindowOpen ?? false)
+                || (self?.auth.isAuthWindowOpen ?? false)
         }
         updates.diagnosticSnapshot = { [weak self, syncEngine] in
             let pif = syncEngine.pushInFlight
             let frw = self?.firstRun.isFirstRunWindowOpen ?? false
-            return "isBusy=\(pif > 0 || frw); pushInFlight=\(pif); firstRunWindowOpen=\(frw)"
+            let aw = self?.auth.isAuthWindowOpen ?? false
+            return "isBusy=\(pif > 0 || frw || aw); pushInFlight=\(pif); firstRunWindowOpen=\(frw); authWindowOpen=\(aw)"
         }
         updates.start()
 
@@ -503,19 +522,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Persists the exchanged bearer and routes to either the re-auth path
-    /// (existing workspace, requires confirmReauth) or the first-run path
-    /// (new workspace). /security-audit C3 (2026-04-30) gate is preserved
-    /// — a malicious deep-link plus a guessed PKCE pair still can't rotate
-    /// an existing workspace's bearer without explicit user confirmation.
-    /// Internal access so tests can drive the post-exchange logic directly
-    /// without standing up a fake HTTPClient + PKCE round-trip.
-    func applyBearer(workspaceID: UUID, bearer: String) {
+    /// (existing workspace, requires confirmReauth unless trusted in-app path)
+    /// or the first-run path (new workspace). /security-audit C3 (2026-04-30)
+    /// gate is preserved for deep-link callers — only the in-app form passes
+    /// `skipReauthConfirmation: true` since the user just typed their password.
+    /// Internal access so tests can drive the post-exchange logic directly.
+    func applyBearer(workspaceID: UUID, bearer: String, skipReauthConfirmation: Bool = false) {
         do {
             if let idx = workspaces.firstIndex(where: { $0.id == workspaceID }) {
                 let existing = workspaces[idx]
-                guard confirmReauth(existing) else {
-                    NSLog("[Taproot] Re-auth cancelled by user for workspace \(workspaceID.uuidString)")
-                    return
+                if !skipReauthConfirmation {
+                    guard confirmReauth(existing) else {
+                        NSLog("[Taproot] Re-auth cancelled by user for workspace \(workspaceID.uuidString)")
+                        return
+                    }
                 }
                 try services.keychain.store(workspaceID: workspaceID, bearer: bearer)
                 mutateWorkspaces { $0[idx].bearer = bearer }
@@ -656,6 +676,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openPairWindow()
     }
 
+    @objc func menuSignIn(_ sender: NSMenuItem) {
+        auth.presentSignIn()
+    }
+
     /// Persists workspace name + vault folder, appends the workspace to the
     /// in-memory list, and starts the watcher + pull poller. Called from the
     /// FirstRunWindowController's Get started callback (commit 5+).
@@ -787,13 +811,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu(for workspaces: [Workspace]) -> NSMenu {
         let menu = NSMenu()
         if workspaces.isEmpty {
-            let connect = NSMenuItem(
-                title: "Connect your Taproot account",
-                action: #selector(menuConnectAccount(_:)),
+            let signIn = NSMenuItem(
+                title: "Sign in to Taproot…",
+                action: #selector(menuSignIn(_:)),
                 keyEquivalent: ""
             )
-            connect.target = self
-            menu.addItem(connect)
+            signIn.target = self
+            menu.addItem(signIn)
             let pair = NSMenuItem(
                 title: "Pair with code…",
                 action: #selector(menuEnterPairCode(_:)),
@@ -801,6 +825,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             pair.target = self
             menu.addItem(pair)
+            menu.addItem(.separator())
+            let connectBrowser = NSMenuItem(
+                title: "Connect via browser…",
+                action: #selector(menuConnectAccount(_:)),
+                keyEquivalent: ""
+            )
+            connectBrowser.target = self
+            menu.addItem(connectBrowser)
             menu.addItem(.separator())
             appendCheckForUpdatesItem(to: menu)
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))

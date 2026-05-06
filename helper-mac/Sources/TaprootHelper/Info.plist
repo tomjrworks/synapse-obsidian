@@ -16,6 +16,10 @@
     <true/>
     <key>TaprootBaseURL</key>
     <string>https://connect.taproothq.com</string>
+    <key>TaprootSupabaseURL</key>
+    <string>https://bbkvpmqrjobkquxteoes.supabase.co</string>
+    <key>TaprootSupabaseAnonKey</key>
+    <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJia3ZwbXFyam9ia3F1eHRlb2VzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcyNjc1OTQsImV4cCI6MjA5Mjg0MzU5NH0.KrhkONS8HoLjASJmWyFvQtrl4GbLgjL5021yufvPLq8</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
