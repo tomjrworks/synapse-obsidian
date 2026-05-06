@@ -405,6 +405,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func defaultLocalFolder(for workspaceID: UUID, slug: String? = nil) -> URL {
+        // Post-B (Obsidian-required pivot): no longer the production path for
+        // *new* connects — FirstRunWindowController auto-detects the user's
+        // Obsidian vault via ObsidianVaultResolver. Retained as the
+        // fallback for `loadWorkspacesFromKeychain` when a stored
+        // vaultFolder is missing (legacy ~/Documents/Taproot/<slug>
+        // workspaces still resolve here until the user re-pairs).
         // `TAPROOT_LOCAL_FOLDER_BASE` is a smoke-test seam (T11.3 §7); inert in
         // production unless set, in which case the base directory is rooted
         // wherever the smoke driver chose. Always logged at launch via the

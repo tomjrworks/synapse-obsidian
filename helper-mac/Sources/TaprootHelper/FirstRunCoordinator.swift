@@ -143,6 +143,11 @@ final class FirstRunCoordinator {
                         }
                     )
                     self.firstRunWindowController = controller
+                    // Run the auto-detect state machine BEFORE the window is
+                    // shown so the user sees the correct picker state on
+                    // first paint. Tests bypass this by constructing the
+                    // controller directly and never invoking the coordinator.
+                    (controller as? FirstRunWindowController)?.enterInitialState()
                     NSApp.activate(ignoringOtherApps: true)
                     controller.showWindow(nil)
                 case .failure(let err):
