@@ -1,0 +1,304 @@
+# T11-G — Universal Binary (Apple Silicon + Intel) Smoke Test
+
+Manual end-to-end acceptance checklist for shipping a single universal-binary
+DMG that runs natively on both Apple Silicon (arm64) and Intel (x86_64) Macs.
+Run in order. All assertions must pass before marking the universal release
+SHIPPED on prod R2.
+
+**Plan reference:** [[2026-05-06-workstream-g-plan]] · companion to T11.10.
+**Coverage gap explicitly accepted (G-D4):** native Intel hardware validation
+is skipped; Rosetta-on-Apple-Silicon is used as a partial proxy. Document
+the gap in the sign-off footer.
+
+---
+
+## Step 1 — Prep checks
+
+```bash
+# Cert in Keychain
+security find-identity -v -p codesigning | grep "Developer ID Application"
+# Expected: BC24E4A647583D1B567D8A0CD3DFBE74C3A2C522 (5ALAY5V34U)
+
+# Notary profile works
+xcrun notarytool history --keychain-profile taproot-notary
+# Expected: list of prior submissions — no auth error
+
+# create-dmg installed
+create-dmg --version
+# Expected: version string
+
+# Sparkle EdDSA key + R2 wrangler auth current (G6 hotfix readiness)
+ls -1 ~/.sparkle-private-key.pem 2>&1   # exists
+wrangler whoami 2>&1                     # authenticated to Cloudflare account
+```
+
+---
+
+## Step 2 — Bump version
+
+```bash
+cd ~/Documents/obsidian-brain
+git checkout -b t11-G-smoke-0.1.4
+```
+
+Edit `helper-mac/Sources/TaprootHelper/Info.plist` — bump both keys:
+
+```
+CFBundleShortVersionString  0.1.3 → 0.1.4
+CFBundleVersion             4 → 5
+```
+
+---
+
+## Step 3 — Build universal binary
+
+```bash
+mkdir -p /tmp/staging-0.1.4
+bash helper-mac/scripts/release/build-app.sh /tmp/staging-0.1.4 --zip
+```
+
+**Assert — universal binary verified:**
+
+```bash
+lipo -info /tmp/staging-0.1.4/TaprootHelper.app/Contents/MacOS/TaprootHelper
+# Expected: Architectures in the fat file: ... are: x86_64 arm64
+
+# Sparkle framework should also be universal (already universal upstream).
+lipo -info /tmp/staging-0.1.4/TaprootHelper.app/Contents/Frameworks/Sparkle.framework/Sparkle
+# Expected: Architectures: x86_64 arm64
+
+# Each slice has its own embedded Info.plist.
+lipo /tmp/staging-0.1.4/TaprootHelper.app/Contents/MacOS/TaprootHelper -thin arm64 -output /tmp/h-arm64
+lipo /tmp/staging-0.1.4/TaprootHelper.app/Contents/MacOS/TaprootHelper -thin x86_64 -output /tmp/h-x86_64
+otool -X -s __TEXT __info_plist /tmp/h-arm64 | xxd -r -p | strings | grep CFBundleShortVersionString
+otool -X -s __TEXT __info_plist /tmp/h-x86_64 | xxd -r -p | strings | grep CFBundleShortVersionString
+# Both must report CFBundleShortVersionString.
+rm /tmp/h-arm64 /tmp/h-x86_64
+```
+
+**Assert — timestamped signatures present (codesign signed both slices in one invocation):**
+
+```bash
+codesign -dvvv --verbose=2 /tmp/staging-0.1.4/TaprootHelper.app 2>&1 | grep -E "(Signed Time|Identifier|Authority)"
+# Expected: "Signed Time=..." with a real ISO timestamp (NOT "absent")
+```
+
+---
+
+## Step 4 — DMG creation + signing (T11.10 step 4 — unchanged)
+
+```bash
+bash helper-mac/scripts/release/package-dmg.sh /tmp/staging-0.1.4
+```
+
+Asserts the DMG was created and code-signed. Same flow as T11.10; no
+arch-specific change. The DMG wraps a single `.app` whose `Contents/MacOS/*`
+binary is universal — no per-arch DMG forking.
+
+**Assert — DMG size sanity-check:**
+
+```bash
+ls -lh /tmp/staging-0.1.4/*.dmg
+# Universal DMG is ~50% larger than the arm64-only 0.1.3 DMG (both arches
+# embedded). 4–6 MB is the expected ballpark for v0.1.x; if the DMG is
+# >50 MB something is wrong (likely Sparkle dupe).
+```
+
+---
+
+## Step 5 — Notarize
+
+```bash
+bash helper-mac/scripts/release/notarize.sh /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
+```
+
+Identical to T11.10. Notarization treats universal binaries identically to
+single-arch — Apple notarizes the Mach-O regardless of slice count.
+
+**Assert — stapled:**
+
+```bash
+xcrun stapler validate /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
+# Expected: The validate action worked!
+```
+
+---
+
+## Step 6 — Sparkle sign + appcast generate
+
+```bash
+bash helper-mac/scripts/release/sign-and-publish.sh /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
+```
+
+Same flow as T11.10. The appcast template's single `<enclosure>` works for
+universal DMGs — no per-arch filtering needed (G-D1).
+
+**Assert — appcast XML produced:**
+
+```bash
+grep "<enclosure" /tmp/staging-0.1.4/appcast.xml
+# Expected: single enclosure pointing at TaprootHelper-0.1.4.dmg with
+# sparkle:edSignature attribute populated.
+```
+
+---
+
+## Step 7 — Rosetta proxy smoke (Apple Silicon host) — NEW vs. T11.10
+
+Native Intel hardware is unavailable per G-D4. Rosetta is a partial proxy
+that catches the most likely Intel-slice failure modes; what it covers and
+what it doesn't is documented below — both go into the sign-off footer.
+
+```bash
+# Mount the DMG so we run from the actual installable artifact.
+hdiutil attach /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
+APP="/Volumes/TaprootHelper-0.1.4/TaprootHelper.app"
+
+# Verify Mach-O slice composition straight from the mounted DMG.
+file "$APP/Contents/MacOS/TaprootHelper"
+# Expected: "Mach-O universal binary with 2 architectures: [arm64:...] [x86_64:...]"
+
+# Force-launch the x86_64 slice via Rosetta.
+arch -x86_64 "$APP/Contents/MacOS/TaprootHelper" &
+HELPER_PID=$!
+sleep 3
+
+# Activity Monitor should show the helper as Kind="Intel" under Rosetta.
+ps -o pid,arch,comm -p "$HELPER_PID"
+# Expected: arch column reports "i386" (Rosetta translation marker).
+
+# URL-scheme handler must respond.
+open "taproot://noop?source=t11-g-rosetta-smoke"
+# Expected: helper logs an "ignoring unknown URL action" line and stays alive.
+
+# Settings → Version reads correctly from the x86_64 slice's Info.plist.
+# (Manual: open menubar → Settings → Version row should read "0.1.4 (5)")
+
+# Cleanup.
+kill "$HELPER_PID" 2>/dev/null
+hdiutil detach "/Volumes/TaprootHelper-0.1.4"
+```
+
+**Coverage this proxy GIVES you:**
+
+- x86_64 slice is well-formed Mach-O (slice missing → `arch -x86_64` errors at exec).
+- Codesigning landed correctly on the x86_64 slice (Gatekeeper would block).
+- Framework linking resolves on x86_64 (dyld would fail at launch).
+- `__info_plist` section embedded in the x86_64 slice (Bundle.main version read).
+- AppKit/Cocoa init path runs on x86_64 (menubar item appears).
+- URL-scheme handler registers and dispatches on x86_64.
+
+**Coverage this proxy does NOT give you:**
+
+- Intel-native syscall paths — Rosetta retranslates x86_64 syscalls.
+- Intel-CPU-specific codegen bugs (rare for our pure-Swift workload).
+- Hardware differences in IOKit / display / power on real Intel Macs.
+
+These are the residual risk class accepted in G-D4. Mitigation is post-ship
+monitoring (G6) + 2-hour hotfix readiness, not pre-ship validation.
+
+---
+
+## Step 8 — Apple Silicon native regression smoke
+
+Re-walk the relevant T11.9 + T11.8 happy-path steps on the M-series host
+running native arm64. The universal binary must not regress arm64.
+
+Minimum:
+
+- Install from DMG → menubar icon appears.
+- Sign in via OAuth (T11.9 step 4 / T11.8 step 5 equivalent).
+- Confirm first-run vault picker (Workstream B) renders correctly.
+- Receive a Sparkle update notification (point appcast at this build's
+  signature, observe Sparkle dialog appearing in-app).
+- Sync 1 file from the connected Obsidian vault → server confirms write.
+
+Any regression here is a P0 — universal binary must not break the existing
+arm64 ship path.
+
+---
+
+## Step 9 — Promote to prod R2 + appcast
+
+Identical to T11.10:
+
+```bash
+# Per the wrangler commands sign-and-publish.sh prints in step 6.
+wrangler r2 object put taproot-downloads/releases/v0.1.4/TaprootHelper-0.1.4.dmg --file=...
+wrangler pages deploy ... # appcast
+```
+
+**Assert — prod URLs serve the universal DMG:**
+
+```bash
+curl -sI https://downloads.taproothq.com/releases/v0.1.4/TaprootHelper-0.1.4.dmg | head -1
+# Expected: HTTP/2 200
+
+curl -s https://updates.taproothq.com/appcast.xml | grep enclosure
+# Expected: enclosure pointing at v0.1.4 DMG.
+
+# Sanity: download once and verify lipo on the wire bytes.
+curl -L https://downloads.taproothq.com/releases/v0.1.4/TaprootHelper-0.1.4.dmg -o /tmp/wire.dmg
+hdiutil attach /tmp/wire.dmg -nobrowse -quiet -mountpoint /tmp/wire-mnt
+lipo -info /tmp/wire-mnt/TaprootHelper.app/Contents/MacOS/TaprootHelper
+# Expected: Architectures: x86_64 arm64
+hdiutil detach /tmp/wire-mnt -quiet
+rm /tmp/wire.dmg
+```
+
+---
+
+## Step 10 — SITE coordination (G7)
+
+Re-enable the Intel button on `taproothq.com` onboarding:
+
+1. Locate the disabled button in `~/Documents/agency/taproothq/` (commit
+   `7810225` disabled it).
+2. Re-enable; verify the download URL points at the same
+   `downloads.taproothq.com/releases/v0.1.4/TaprootHelper-0.1.4.dmg`
+   pattern as the Apple Silicon button (single artifact per G-D1).
+3. Deploy SITE to prod.
+
+**Assert — both buttons on onboarding download the same bytes:**
+
+```bash
+# The two button download URLs should be identical (single universal
+# artifact). Confirm by visiting both, checking the request URL, and
+# verifying byte-equality with sha256 if curious.
+```
+
+No further smoke gate per G-D5 — Intel users come online; G6 monitoring picks
+up any issues that surface.
+
+---
+
+## Step 11 — Rollback procedure (document, do not execute)
+
+If a clearly broken Intel build hits prod, fastest mitigation is to revert
+the appcast `<enclosure>` URL to the prior known-good arm64-only DMG (0.1.3)
+and disable the Intel button on SITE again:
+
+```bash
+# Edit appcast.xml back to the 0.1.3 enclosure URL.
+wrangler pages deploy ... # appcast revert
+# Edit SITE to re-disable Intel button; redeploy.
+```
+
+Total rollback time target: ≤10 min. Document the rollback test in the
+sign-off footer so anyone reading the audit trail knows it's been planned.
+
+---
+
+## Sign-off footer
+
+```
+Walked: <date>
+Operator: <name>
+Build: <commit hash>
+Universal binary verified: yes / no
+Rosetta proxy smoke: PASS / FAIL (notes: ...)
+Apple Silicon regression smoke: PASS / FAIL (notes: ...)
+Native Intel hardware validation: SKIPPED per G-D4
+Rollback procedure: documented / tested
+G6 monitoring posture: CREDS-OK / NEEDS-SETUP
+```
