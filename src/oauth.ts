@@ -215,10 +215,13 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
 <head>
   <title>Taproot \u2014 Authorize</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
       background: #F2F0EB;
       color: #3D3529;
       min-height: 100vh;
@@ -228,102 +231,117 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       padding: 20px;
     }
     .card {
-      background: white;
+      background: #FAF8F3;
       border-radius: 12px;
-      padding: 40px;
-      max-width: 400px;
+      padding: 44px 40px 36px;
+      max-width: 440px;
       width: 100%;
-      box-shadow: 0 2px 12px rgba(61,53,41,0.08);
-      border: 1px solid rgba(61,53,41,0.06);
+      box-shadow: 0 2px 16px rgba(61,53,41,0.06);
+      border: 1px solid rgba(61,53,41,0.08);
     }
-    .logo {
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 4px;
+    .wordmark {
       display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .logo-dot { width: 8px; height: 8px; background: #2ECC71; border-radius: 50%; }
-    .by { font-size: 12px; color: #8B9490; margin-bottom: 28px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.15em; }
-    .request {
-      background: rgba(26,92,50,0.05);
-      border: 1px solid rgba(26,92,50,0.1);
-      border-radius: 8px;
-      padding: 16px;
+      align-items: baseline;
+      gap: 6px;
       margin-bottom: 24px;
     }
-    .request p { font-size: 14px; line-height: 1.6; color: #3D3529; }
-    .app-name { font-weight: 600; color: #1A5C32; }
-    .permissions { margin-bottom: 24px; }
-    .permissions p { font-size: 12px; color: #8B9490; margin-bottom: 8px; font-family: monospace; text-transform: uppercase; letter-spacing: 0.1em; }
+    .wordmark-text {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 22px;
+      font-weight: 600;
+      color: #3D3529;
+      letter-spacing: -0.01em;
+    }
+    .wordmark-leaf { font-size: 18px; }
+    .request { margin-bottom: 28px; }
+    .request h1 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 26px;
+      font-weight: 400;
+      line-height: 1.25;
+      color: #3D3529;
+      letter-spacing: -0.01em;
+    }
+    .request h1 em {
+      font-style: italic;
+      color: #1A5C32;
+    }
+    .app-name { font-weight: 600; color: #1A5C32; font-style: normal; }
+    .permissions { margin-bottom: 28px; }
+    .permissions p { font-size: 11px; color: rgba(61,53,41,0.45); margin-bottom: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.18em; }
     .permissions ul { list-style: none; }
     .permissions li {
       font-size: 14px;
-      padding: 6px 0;
-      color: rgba(61,53,41,0.7);
+      padding: 5px 0;
+      color: rgba(61,53,41,0.78);
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
-    .permissions li::before { content: ''; width: 6px; height: 6px; background: #2ECC71; border-radius: 50%; flex-shrink: 0; }
+    .permissions li::before { content: ''; width: 5px; height: 5px; background: #1A5C32; border-radius: 50%; flex-shrink: 0; }
     input[type=email],
     input[type=password] {
       width: 100%;
-      padding: 14px 16px;
+      padding: 13px 16px;
       border: 1px solid rgba(61,53,41,0.15);
       border-radius: 6px;
-      font-size: 15px;
-      margin-bottom: 12px;
+      font-size: 14px;
+      font-family: inherit;
+      margin-bottom: 10px;
       background: #F2F0EB;
       color: #3D3529;
       outline: none;
       transition: border-color 0.2s;
     }
     input[type=email]:focus,
-    input[type=password]:focus { border-color: #1A5C32; }
+    input[type=password]:focus { border-color: rgba(26,92,50,0.6); }
     input[type=email]::placeholder,
-    input[type=password]::placeholder { color: #8B9490; }
+    input[type=password]::placeholder { color: rgba(61,53,41,0.35); }
     button {
       width: 100%;
-      padding: 14px;
+      margin-top: 4px;
+      padding: 13px;
       background: #1A5C32;
       color: #F2F0EB;
       border: none;
       border-radius: 6px;
-      font-size: 13px;
-      font-family: monospace;
+      font-size: 12px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
       text-transform: uppercase;
-      letter-spacing: 0.15em;
+      letter-spacing: 0.18em;
       cursor: pointer;
       transition: all 0.2s;
     }
-    button:hover { background: #16472a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(26,92,50,0.2); }
+    button:hover { background: #16472a; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(26,92,50,0.22); }
     .security {
-      margin-top: 20px;
-      padding-top: 16px;
-      border-top: 1px solid rgba(61,53,41,0.06);
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid rgba(61,53,41,0.08);
       font-size: 12px;
-      color: #8B9490;
-      line-height: 1.6;
+      color: rgba(61,53,41,0.5);
+      line-height: 1.65;
       text-align: center;
     }
-    .security a { color: #1A5C32; text-decoration: none; }
+    .security em { font-family: 'Fraunces', Georgia, serif; font-style: italic; color: #1A5C32; }
+    .security a { color: rgba(61,53,41,0.65); text-decoration: underline; text-decoration-color: rgba(61,53,41,0.2); text-underline-offset: 2px; }
+    .security a:hover { color: #1A5C32; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo"><span class="logo-dot"></span> Taproot</div>
-    <div class="by">by Main Loop Systems</div>
+    <div class="wordmark">
+      <span class="wordmark-text">Taproot</span>
+      <span class="wordmark-leaf">🌱</span>
+    </div>
     <div class="request">
-      <p><span class="app-name">${escapeHtml(client.name)}</span> is requesting access to your vault.</p>
+      <h1><span class="app-name">${escapeHtml(client.name)}</span> wants to <em>tend your garden.</em></h1>
     </div>
     <div class="permissions">
-      <p>This will allow</p>
+      <p>This will let it</p>
       <ul>
-        <li>Read files in your vault</li>
-        <li>Write and create new files</li>
-        <li>Search across your notes</li>
+        <li>Read what you&apos;ve planted</li>
+        <li>Add new notes</li>
+        <li>Search across your garden</li>
       </ul>
     </div>
     <form method="POST" action="/authorize">
@@ -334,12 +352,11 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       <input type="hidden" name="state" value="${escapeHtml(state || "")}">
       <input type="email" name="email" placeholder="Email" autofocus required>
       <input type="password" name="password" placeholder="Password" required>
-      <button type="submit">Approve Access</button>
+      <button type="submit">Let it grow →</button>
     </form>
     <div class="security">
-      Encrypted at rest. Open source &mdash; check what we do.<br>
-      Leave any time and we delete your mirror with one click.<br>
-      <a href="https://github.com/tomjrworks/synapse-obsidian">Open source</a> &middot; <a href="https://taproothq.com">Taproot</a>
+      Encrypted at rest. <em>Leave any time</em> and the mirror disappears.<br>
+      <a href="https://taproothq.com">taproothq.com</a> &middot; <a href="https://taproothq.com/privacy">privacy</a>
     </div>
   </div>
 </body>
