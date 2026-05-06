@@ -802,6 +802,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pair.target = self
             menu.addItem(pair)
             menu.addItem(.separator())
+            appendCheckForUpdatesItem(to: menu)
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
             return menu
         }
@@ -812,6 +813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(nameLabel)
             appendActionItems(for: workspaces[0], to: menu)
             menu.addItem(.separator())
+            appendCheckForUpdatesItem(to: menu)
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
             return menu
         }
@@ -824,8 +826,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(row)
         }
         menu.addItem(.separator())
+        appendCheckForUpdatesItem(to: menu)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         return menu
+    }
+
+    private func appendCheckForUpdatesItem(to menu: NSMenu) {
+        let item = NSMenuItem(
+            title: "Check for updates…",
+            action: #selector(menuCheckForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        menu.addItem(item)
     }
 
     /// SF Symbol name for the menubar icon. Worst-status precedence:
@@ -942,6 +955,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func menuOpenSettings(_ sender: NSMenuItem) {
         presentSettings()
+    }
+
+    @objc func menuCheckForUpdates(_ sender: NSMenuItem) {
+        updates.checkForUpdates()
     }
 
     @objc func menuSignOut(_ sender: NSMenuItem) {
