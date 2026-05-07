@@ -154,6 +154,16 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       }
 
       const { workspaceId } = req as AuthedOAuthRequest;
+
+      // 0.1.7 Phase 0 — DEBUG_SYNC_TIMING probe (gated; env-flip to disable
+      // without redeploy). Captures per-op + request-level timing so we can
+      // anchor candidate selection on measured throughput, not timeout-window
+      // math artifacts. Remove the gate (and this block) once probe is done.
+      const debugTiming = process.env.DEBUG_SYNC_TIMING === "1";
+      const requestStart = debugTiming ? Date.now() : 0;
+      const opTimings: { path: string; ms: number; ok: boolean }[] = [];
+      const resolveStart = debugTiming ? Date.now() : 0;
+
       let backend: Pick<StorageBackend, "writeFile" | "delete">;
       try {
         backend = await resolveBackend(workspaceId);
@@ -161,12 +171,15 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
         respondError(res, 500, "server_error", err, { logPrefix: "sync/push" });
         return;
       }
+      const resolveMs = debugTiming ? Date.now() - resolveStart : 0;
 
       // Sequential ops: predictable Supabase backpressure, isolatable
       // per-op failures. Stage 1 keeps sequential — revisit if push-side
       // throughput surfaces a need.
       const results: PushResultEntry[] = [];
       for (const op of parsed.data.ops) {
+        const opStart = debugTiming ? Date.now() : 0;
+        let opOk = true;
         try {
           if (op.kind === "upsert") {
             await backend.writeFile(op.path, op.content);
@@ -179,12 +192,20 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
               if (err instanceof NotFoundError) {
                 // Idempotent delete: already absent counts as success.
                 results.push({ path: op.path, ok: true });
+                if (debugTiming) {
+                  opTimings.push({
+                    path: op.path,
+                    ms: Date.now() - opStart,
+                    ok: true,
+                  });
+                }
                 continue;
               }
               throw err;
             }
           }
         } catch (err) {
+          opOk = false;
           const error =
             err instanceof NotFoundError
               ? "not_found"
@@ -199,9 +220,51 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
             request_id,
           });
         }
+        if (debugTiming) {
+          opTimings.push({
+            path: op.path,
+            ms: Date.now() - opStart,
+            ok: opOk,
+          });
+        }
       }
 
       const response: PushResponse = { results };
+
+      if (debugTiming) {
+        const totalMs = Date.now() - requestStart;
+        const sortedMs = [...opTimings].map((t) => t.ms).sort((a, b) => a - b);
+        const p50 = sortedMs[Math.floor(sortedMs.length * 0.5)] ?? 0;
+        const p95 = sortedMs[Math.floor(sortedMs.length * 0.95)] ?? 0;
+        const maxOp = opTimings.reduce((m, t) => (t.ms > m.ms ? t : m), {
+          path: "",
+          ms: 0,
+          ok: true,
+        });
+        const firstOpMs = opTimings[0]?.ms ?? 0;
+        const lastOpMs = opTimings[opTimings.length - 1]?.ms ?? 0;
+        console.log(
+          JSON.stringify({
+            type: "sync/push.timing",
+            workspaceId,
+            opsCount: parsed.data.ops.length,
+            totalMs,
+            resolveMs,
+            loopMs: totalMs - resolveMs,
+            avgMs: opTimings.length
+              ? Math.round((totalMs - resolveMs) / opTimings.length)
+              : 0,
+            p50,
+            p95,
+            maxMs: maxOp.ms,
+            maxPath: maxOp.path,
+            firstOpMs,
+            lastOpMs,
+            failedCount: opTimings.filter((t) => !t.ok).length,
+          }),
+        );
+      }
+
       res.json(response);
     }),
   );
