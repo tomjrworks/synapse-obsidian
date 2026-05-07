@@ -93,8 +93,10 @@ codesign -dvvv --verbose=2 /tmp/staging-0.1.4/TaprootHelper.app 2>&1 | grep -E "
 ## Step 4 — DMG creation + signing (T11.10 step 4 — unchanged)
 
 ```bash
-bash helper-mac/scripts/release/package-dmg.sh /tmp/staging-0.1.4
+bash helper-mac/scripts/release/package-dmg.sh /tmp/staging-0.1.4/TaprootHelper.app /tmp/staging-0.1.4
 ```
+
+Note: `package-dmg.sh` requires two positional args: `<app-path> <output-dir>`.
 
 Asserts the DMG was created and code-signed. Same flow as T11.10; no
 arch-specific change. The DMG wraps a single `.app` whose `Contents/MacOS/*`
@@ -104,9 +106,11 @@ binary is universal — no per-arch DMG forking.
 
 ```bash
 ls -lh /tmp/staging-0.1.4/*.dmg
-# Universal DMG is ~50% larger than the arm64-only 0.1.3 DMG (both arches
-# embedded). 4–6 MB is the expected ballpark for v0.1.x; if the DMG is
-# >50 MB something is wrong (likely Sparkle dupe).
+# Empirical: 0.1.4 universal DMG ~1.4 MB vs. 0.1.3 arm64-only at ~1.16 MB.
+# The helper Mach-O is the only thing that doubles; Sparkle.framework was
+# already universal, so the +250 KB delta is just the duplicated helper
+# slice + UDZO compression overhead. If the DMG is >50 MB something is
+# wrong (likely Sparkle dupe).
 ```
 
 ---
@@ -132,8 +136,13 @@ xcrun stapler validate /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
 ## Step 6 — Sparkle sign + appcast generate
 
 ```bash
-bash helper-mac/scripts/release/sign-and-publish.sh /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
+bash helper-mac/scripts/release/sign-and-publish.sh 0.1.4 5 /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg --prod
 ```
+
+Note: `sign-and-publish.sh` requires three positional args: `<short-version>
+<bundle-version> <dmg-path>` plus optional `--prod` to use prod URLs in the
+appcast `<enclosure>`. Script writes the appcast to
+`helper-mac/scripts/release/out/appcast.xml`.
 
 Same flow as T11.10. The appcast template's single `<enclosure>` works for
 universal DMGs — no per-arch filtering needed (G-D1).
@@ -141,9 +150,10 @@ universal DMGs — no per-arch filtering needed (G-D1).
 **Assert — appcast XML produced:**
 
 ```bash
-grep "<enclosure" /tmp/staging-0.1.4/appcast.xml
-# Expected: single enclosure pointing at TaprootHelper-0.1.4.dmg with
-# sparkle:edSignature attribute populated.
+grep -E "<title>|<sparkle:version>|enclosure|edSignature" \
+    helper-mac/scripts/release/out/appcast.xml
+# Expected: title "Version 0.1.4", sparkle:version 5, single enclosure
+# pointing at TaprootHelper-0.1.4.dmg with sparkle:edSignature populated.
 ```
 
 ---
@@ -157,7 +167,9 @@ what it doesn't is documented below — both go into the sign-off footer.
 ```bash
 # Mount the DMG so we run from the actual installable artifact.
 hdiutil attach /tmp/staging-0.1.4/TaprootHelper-0.1.4.dmg
-APP="/Volumes/TaprootHelper-0.1.4/TaprootHelper.app"
+# package-dmg.sh sets the volume name from the app's CFBundleDisplayName,
+# which renders as "Taproot Helper <version>" (with spaces, no hyphen).
+APP="/Volumes/Taproot Helper 0.1.4/TaprootHelper.app"
 
 # Verify Mach-O slice composition straight from the mounted DMG.
 file "$APP/Contents/MacOS/TaprootHelper"
@@ -168,9 +180,13 @@ arch -x86_64 "$APP/Contents/MacOS/TaprootHelper" &
 HELPER_PID=$!
 sleep 3
 
-# Activity Monitor should show the helper as Kind="Intel" under Rosetta.
-ps -o pid,arch,comm -p "$HELPER_PID"
-# Expected: arch column reports "i386" (Rosetta translation marker).
+# Verify the helper is alive. macOS does NOT expose per-PID
+# proc_translated via sysctl (only the calling process's status).
+# The reliable Rosetta marker is Activity Monitor's "Kind" column —
+# the launched PID should show Kind="Intel" (vs Apple for native arm64).
+ps -p "$HELPER_PID" -o pid,command
+# Manual: open Activity Monitor → search "TaprootHelper" → Kind="Intel"
+# for the PID printed above.
 
 # URL-scheme handler must respond.
 open "taproot://noop?source=t11-g-rosetta-smoke"
@@ -181,7 +197,7 @@ open "taproot://noop?source=t11-g-rosetta-smoke"
 
 # Cleanup.
 kill "$HELPER_PID" 2>/dev/null
-hdiutil detach "/Volumes/TaprootHelper-0.1.4"
+hdiutil detach "/Volumes/Taproot Helper 0.1.4"
 ```
 
 **Coverage this proxy GIVES you:**
@@ -306,4 +322,33 @@ Apple Silicon regression smoke: PASS / FAIL (notes: ...)
 Native Intel hardware validation: SKIPPED per G-D4
 Rollback procedure: documented / tested
 G6 monitoring posture: CREDS-OK / NEEDS-SETUP
+```
+
+---
+
+## Walk log
+
+### 0.1.4 — 2026-05-07 (cfd510d) — SHIPPED
+
+```
+Walked:                              2026-05-07
+Operator:                            Tom + Claude (Sonnet, autonomous drive)
+Build:                               cfd510d (obsidian-brain) + 16635c6 (agency)
+Notarization submission ID:          dc92bd3e-0837-4c88-bd9e-7dc1922211a5 (Accepted)
+Universal binary verified:           YES — lipo: x86_64 + arm64 (helper Mach-O + Sparkle.framework)
+Rosetta proxy smoke:                 PASS — Activity Monitor Kind=Intel for forced-arch launch (PID 12491);
+                                     keychain bearer loaded, watcher fired on real vault under x86_64 slice.
+Apple Silicon regression smoke:      PASS — drag-install clean (no Gatekeeper); Settings reads 0.1.4;
+                                     Sparkle "Check for updates" reads prod feed correctly ("you're up to date,
+                                     newest is 0.1.3, you're on 0.1.4"); "Open in Obsidian" menu item lands
+                                     correct URL (`obsidian://open?path=...`) — Obsidian receives + parses
+                                     cleanly, errored only because corrupted-account vault path isn't a real
+                                     Obsidian vault (expected, not 0.1.4 regression).
+Native Intel hardware validation:    SKIPPED per G-D4
+Rollback procedure:                  documented (Step 11), not tested
+G6 monitoring posture:               CREDS-OK — Sparkle EdDSA in Keychain, wrangler authed (tomjrworks@gmail.com)
+Prod URLs verified:                  https://downloads.taproothq.com/releases/v0.1.4/TaprootHelper-0.1.4.dmg
+                                     (HTTP/2 200, sha256 byte-equal local↔remote)
+                                     https://updates.taproothq.com/appcast.xml
+                                     (sparkle:version=5, valid edSignature)
 ```
