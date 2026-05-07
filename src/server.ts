@@ -11,6 +11,7 @@ import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerRulesTool } from "./tools/rules.js";
 import { registerIndexTool } from "./tools/index-tool.js";
+import { assembleInstructions } from "./utils/instructions.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
 import {
@@ -28,11 +29,20 @@ const pkg = JSON.parse(
   readFileSync(resolve(__dirname, "../package.json"), "utf-8"),
 );
 
-function createMcpServer(backend: StorageBackend): McpServer {
-  const server = new McpServer({
-    name: "taproot",
-    version: pkg.version,
+async function createMcpServer(
+  backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
+): Promise<McpServer> {
+  const instructions = await assembleInstructions(backend, {
+    workspaceId: opts.workspaceId,
   });
+  const server = new McpServer(
+    {
+      name: "taproot",
+      version: pkg.version,
+    },
+    { instructions },
+  );
   registerVaultTools(server, backend);
   registerKnowledgeTools(server, backend);
   registerInitTools(server, backend);
@@ -178,7 +188,7 @@ export async function startServer(port: number): Promise<void> {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined as any,
       });
-      const server = createMcpServer(mcpBackend);
+      const server = await createMcpServer(mcpBackend, { workspaceId });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {

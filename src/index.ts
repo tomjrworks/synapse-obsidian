@@ -5,11 +5,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
+import { registerRulesTool } from "./tools/rules.js";
+import { registerIndexTool } from "./tools/index-tool.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
 import { LocalBackend } from "./utils/storage.js";
 import { parseArgs } from "./utils/args.js";
 import { printBanner } from "./banner.js";
+import { assembleInstructions } from "./utils/instructions.js";
 
 printBanner();
 const args = parseArgs();
@@ -20,14 +23,20 @@ async function main() {
     await startServer(args.port);
   } else {
     const backend = new LocalBackend(args.vaultPath);
-    const server = new McpServer({
-      name: "taproot",
-      version: "0.4.0",
-    });
+    const instructions = await assembleInstructions(backend);
+    const server = new McpServer(
+      {
+        name: "taproot",
+        version: "0.4.0",
+      },
+      { instructions },
+    );
 
     registerVaultTools(server, backend);
     registerKnowledgeTools(server, backend);
     registerInitTools(server, backend);
+    registerRulesTool(server, backend);
+    registerIndexTool(server, backend);
     registerPrompts(server, backend);
     registerResources(server, backend);
 
