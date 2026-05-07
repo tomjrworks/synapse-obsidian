@@ -15,6 +15,7 @@
     "build": "tsc && chmod +x dist/index.js",
     "start": "node dist/server.js",
     "dev": "tsx src/index.ts",
+    "test": "vitest run",
     "prepare": "npm run build && husky",
     "smoke:crypto": "tsx scripts/test-content-crypto.ts",
     "smoke:forworkspace": "tsx scripts/test-forworkspace.ts",
@@ -75,7 +76,8 @@
     "@types/node": "^22.0.0",
     "husky": "^9.1.7",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.9"
   },
   "engines": {
     "node": ">=18.0.0"
