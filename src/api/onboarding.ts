@@ -9,7 +9,7 @@ import {
 import { patchWorkspaceSettings } from "./workspace.js";
 import { respondError } from "./respond-error.js";
 
-const ONBOARDING_STEPS = [
+export const ONBOARDING_STEPS = [
   "persona",
   "clients",
   "obsidian",
@@ -21,7 +21,7 @@ const ONBOARDING_STEPS = [
   "done",
   "complete",
 ] as const;
-type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
 // Compat shim: workspaces created before the Obsidian-required pivot
 // (2026-05-06) may have onboarding_step="vault" stuck in settings.
