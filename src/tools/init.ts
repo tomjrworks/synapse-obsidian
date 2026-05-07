@@ -465,9 +465,135 @@ export function registerInitTools(
   server: McpServer,
   backend: StorageBackend,
 ): void {
-  // ── taproot_plant ────────────────────────────────────────────────────
+  // ── taproot_setup_scan (was taproot_plant) ───────────────────────────
+  // F8 (2026-05-07): renamed from `taproot_plant` to resolve the name
+  // collision with `garden_plant` (save a note). Both ended in `_plant`
+  // and confused AI clients. The legacy `taproot_plant` is registered
+  // below as a shim with a [deprecated] prefix so already-paired clients
+  // don't break.
+  const setupScanHandler = async () => {
+    try {
+      // Check if already configured
+      const existingConfig = await loadConfig(backend);
+
+      const detection = await detectConventions(backend);
+
+      const output: string[] = ["## Taproot Vault Setup", ""];
+
+      if (existingConfig) {
+        output.push(
+          `> **Note:** Taproot is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
+          "",
+        );
+      }
+
+      output.push(
+        "### Vault Scan Results",
+        "",
+        `- **Total files:** ${detection.totalFiles}`,
+        `- **Top folders:** ${detection.topFolders.length > 0 ? detection.topFolders.join(", ") : "(empty vault)"}`,
+        `- **CLAUDE.md:** ${detection.hasClaudeMd ? "Yes" : "No"}`,
+        `- **Uses [[wikilinks]]:** ${detection.usesWikilinks ? "Yes" : "No"}`,
+        `- **Uses frontmatter:** ${detection.usesFrontmatter ? "Yes" : "No"}`,
+        `- **File naming:** ${detection.fileNaming}`,
+        "",
+      );
+
+      if (detection.hasClaudeMd && detection.claudeMdSummary) {
+        output.push(
+          "### Detected CLAUDE.md",
+          "```",
+          detection.claudeMdSummary,
+          "```",
+          "",
+        );
+      }
+
+      // Option A
+      output.push(
+        "---",
+        "",
+        "### Option A: Use My Existing Vault",
+        "",
+        "Taproot adapts to your current structure. No folders created, no files moved.",
+        "",
+        `- Sources saved to: \`${detection.suggestedSourcesFolder}\``,
+        `- Outputs saved to: \`${detection.suggestedOutputsFolder}\``,
+        `- Wikilinks: ${detection.usesWikilinks ? "enabled (detected)" : "disabled (not detected)"}`,
+        `- Frontmatter: ${detection.usesFrontmatter ? "enabled (detected)" : "disabled (not detected)"}`,
+        `- File naming: ${detection.fileNaming}`,
+        "",
+        "To choose this, call:",
+        "```",
+        `taproot_till({ mode: "existing" })`,
+        "```",
+        "",
+      );
+
+      // Option B
+      output.push(
+        "### Option B: Set Up Structured Knowledge Base",
+        "",
+        "Creates an organized vault: `sources/` for raw material, organized folders for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
+        "",
+        "To choose this, call:",
+        "```",
+        `taproot_till({ mode: "structured", topic: "your topic here" })`,
+        "```",
+        "",
+      );
+
+      // Option C
+      output.push(
+        "### Option C: Start Fresh (Custom)",
+        "",
+        "Tell Taproot exactly how you want your vault organized. Specify your own folder names and conventions.",
+        "",
+        "To choose this, call:",
+        "```",
+        `taproot_till({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
+        "```",
+        "",
+      );
+
+      output.push(
+        "---",
+        "",
+        "### Also ask: What will you use this vault for?",
+        "",
+        "This helps Taproot tailor how it saves and organizes content:",
+        "",
+        '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
+        '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
+        '- **"academic"** — Papers, literature review, citations, coursework',
+        '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
+        '- **"custom"** — Something else (ask them to describe it)',
+        "",
+        "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `taproot_till`.",
+        "",
+        "---",
+        "",
+        "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `taproot_till` with both.",
+      );
+
+      return {
+        content: [{ type: "text" as const, text: output.join("\n") }],
+      };
+    } catch (err: any) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error scanning vault: ${err.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  };
+
   server.registerTool(
-    "taproot_plant",
+    "taproot_setup_scan",
     {
       title: "Set up Taproot",
       description: `Use this the FIRST time a user wants to set up, configure, or initialize Taproot for their vault. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns three options (A: adapt to existing, B: structured knowledge base, C: custom). After the user picks, call \`taproot_till\` with their selection. Triggers: 'set up Taproot', 'set up my brain', 'configure my vault', 'get started', 'initialize Taproot', 'first time setup'. Safe to re-run — won't overwrite existing config without explicit approval.`,
@@ -479,126 +605,27 @@ export function registerInitTools(
         openWorldHint: false,
       },
     },
-    async () => {
-      try {
-        // Check if already configured
-        const existingConfig = await loadConfig(backend);
+    setupScanHandler,
+  );
 
-        const detection = await detectConventions(backend);
-
-        const output: string[] = ["## Taproot Vault Setup", ""];
-
-        if (existingConfig) {
-          output.push(
-            `> **Note:** Taproot is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
-            "",
-          );
-        }
-
-        output.push(
-          "### Vault Scan Results",
-          "",
-          `- **Total files:** ${detection.totalFiles}`,
-          `- **Top folders:** ${detection.topFolders.length > 0 ? detection.topFolders.join(", ") : "(empty vault)"}`,
-          `- **CLAUDE.md:** ${detection.hasClaudeMd ? "Yes" : "No"}`,
-          `- **Uses [[wikilinks]]:** ${detection.usesWikilinks ? "Yes" : "No"}`,
-          `- **Uses frontmatter:** ${detection.usesFrontmatter ? "Yes" : "No"}`,
-          `- **File naming:** ${detection.fileNaming}`,
-          "",
-        );
-
-        if (detection.hasClaudeMd && detection.claudeMdSummary) {
-          output.push(
-            "### Detected CLAUDE.md",
-            "```",
-            detection.claudeMdSummary,
-            "```",
-            "",
-          );
-        }
-
-        // Option A
-        output.push(
-          "---",
-          "",
-          "### Option A: Use My Existing Vault",
-          "",
-          "Taproot adapts to your current structure. No folders created, no files moved.",
-          "",
-          `- Sources saved to: \`${detection.suggestedSourcesFolder}\``,
-          `- Outputs saved to: \`${detection.suggestedOutputsFolder}\``,
-          `- Wikilinks: ${detection.usesWikilinks ? "enabled (detected)" : "disabled (not detected)"}`,
-          `- Frontmatter: ${detection.usesFrontmatter ? "enabled (detected)" : "disabled (not detected)"}`,
-          `- File naming: ${detection.fileNaming}`,
-          "",
-          "To choose this, call:",
-          "```",
-          `taproot_till({ mode: "existing" })`,
-          "```",
-          "",
-        );
-
-        // Option B
-        output.push(
-          "### Option B: Set Up Structured Knowledge Base",
-          "",
-          "Creates an organized vault: `sources/` for raw material, organized folders for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
-          "",
-          "To choose this, call:",
-          "```",
-          `taproot_till({ mode: "structured", topic: "your topic here" })`,
-          "```",
-          "",
-        );
-
-        // Option C
-        output.push(
-          "### Option C: Start Fresh (Custom)",
-          "",
-          "Tell Taproot exactly how you want your vault organized. Specify your own folder names and conventions.",
-          "",
-          "To choose this, call:",
-          "```",
-          `taproot_till({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
-          "```",
-          "",
-        );
-
-        output.push(
-          "---",
-          "",
-          "### Also ask: What will you use this vault for?",
-          "",
-          "This helps Taproot tailor how it saves and organizes content:",
-          "",
-          '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
-          '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
-          '- **"academic"** — Papers, literature review, citations, coursework',
-          '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
-          '- **"custom"** — Something else (ask them to describe it)',
-          "",
-          "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `taproot_till`.",
-          "",
-          "---",
-          "",
-          "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `taproot_till` with both.",
-        );
-
-        return {
-          content: [{ type: "text", text: output.join("\n") }],
-        };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error scanning vault: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
-      }
+  // F8 deprecation shim. Resolves taproot_plant ↔ garden_plant collision.
+  // Same handler, [deprecated] prefix on description so the AI prefers
+  // the new name when both are visible. Remove after telemetry confirms
+  // no client invokes the old name (TBD V1.5+).
+  server.registerTool(
+    "taproot_plant",
+    {
+      title: "Set up Taproot (deprecated alias)",
+      description: `[deprecated — use taproot_setup_scan; this alias remains for clients paired before the rename] Use this the FIRST time a user wants to set up, configure, or initialize Taproot for their vault. Scans the vault to detect existing structure, conventions, and CLAUDE.md, then returns three options (A: adapt to existing, B: structured knowledge base, C: custom). After the user picks, call \`taproot_till\` with their selection.`,
+      inputSchema: {},
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
+    setupScanHandler,
   );
 
   // ── taproot_till ─────────────────────────────────────────────────────
