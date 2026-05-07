@@ -29,6 +29,12 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     /// Get-started is gated on this in addition to `!isInConflict`.
     private(set) var hasObsidianMarker: Bool = true
 
+    /// Phase 1 (0.1.5): live progress for the initial-sync run that AppDelegate
+    /// kicks off after Get-Started. nil until the first progress callback
+    /// fires; ".completed" means AppDelegate is about to dismiss the window;
+    /// ".failed" surfaces a retry button.
+    private(set) var initialSyncProgress: InitialSyncCoordinator.Progress?
+
     /// The picker's current top-level state. Drives which content view is
     /// rendered when `enterInitialState` runs.
     enum PickerState: Equatable {
@@ -120,10 +126,65 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
 
     func handleGetStarted() {
         guard isGetStartedEnabled else { return }
+        guard !isSyncing else { return }
+        // Do NOT set didFinish or close the window yet. AppDelegate runs the
+        // initial sync via a Task and calls back with progress; on success it
+        // calls `dismissAfterInitialSync()` which sets didFinish + closes the
+        // window. If the user closes the window during sync, didFinish stays
+        // false and `windowWillClose` fires `onCancel` so AppDelegate can
+        // unwind the partially-paired workspace.
+        pollTask?.cancel()
+        // Seed an indeterminate ".walking" progress so the UI flips into the
+        // sync state immediately — otherwise there's a perceptible blank
+        // window between click and the first real progress callback.
+        initialSyncProgress = .init(synced: 0, total: 0, phase: .walking)
+        rebuildContentView()
+        onConfirm(workspaceID, bearer, currentURL)
+    }
+
+    /// True while the initial-sync run is queued or in flight. Drives the
+    /// Cancel-vs-Retry vs Get-Started button rendering and disables the
+    /// existing Cancel button from re-firing.
+    var isSyncing: Bool {
+        guard let p = initialSyncProgress else { return false }
+        switch p.phase {
+        case .walking, .pushing: return true
+        case .completed, .failed: return false
+        }
+    }
+
+    /// True only after AppDelegate's initial-sync Task reports `.failed`.
+    /// Drives the retry button.
+    var showsInitialSyncRetry: Bool {
+        guard let p = initialSyncProgress else { return false }
+        if case .failed = p.phase { return true }
+        return false
+    }
+
+    /// Called by AppDelegate to push a progress update into the controller.
+    /// MUST be called on the main actor.
+    func setInitialSyncProgress(_ progress: InitialSyncCoordinator.Progress) {
+        initialSyncProgress = progress
+        rebuildContentView()
+    }
+
+    /// Called by AppDelegate after a successful initial-sync run. Sets the
+    /// internal "user finished" flag so `windowWillClose` doesn't fire
+    /// `onCancel`, then closes the window.
+    func dismissAfterInitialSync() {
         didFinish = true
         pollTask?.cancel()
-        onConfirm(workspaceID, bearer, currentURL)
         window?.close()
+    }
+
+    /// Retry button handler — re-fires onConfirm so AppDelegate can rerun the
+    /// initial-sync coordinator. Workspace is already added; AppDelegate's
+    /// dedup guard makes the re-append a no-op.
+    @objc func handleRetryInitialSync() {
+        guard showsInitialSyncRetry else { return }
+        initialSyncProgress = .init(synced: 0, total: 0, phase: .walking)
+        rebuildContentView()
+        onConfirm(workspaceID, bearer, currentURL)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -262,6 +323,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     @objc private func vaultRowSelected(_ sender: NSButton) {
         selectVault(id: sender.identifier?.rawValue ?? "")
     }
+    @objc private func retryClicked(_ sender: NSButton) { handleRetryInitialSync() }
 
     // MARK: - view construction
 
@@ -277,6 +339,23 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         let header = NSTextField(labelWithString: "Welcome to Taproot")
         header.font = .boldSystemFont(ofSize: 14)
         stack.addArrangedSubview(header)
+
+        // Phase 1: once the user has clicked Get-Started, the window is
+        // dedicated to the initial-sync progress UI. The picker state is
+        // frozen at that point.
+        if let progress = initialSyncProgress {
+            buildInitialSyncState(progress: progress, into: stack)
+            let container = NSView()
+            container.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
+                stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
+                stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
+                stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -24),
+            ])
+            window?.contentView = container
+            return
+        }
 
         switch pickerState {
         case .obsidianNotInstalled:
@@ -358,6 +437,72 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         let row = NSStackView(views: [cancel, openObs, pickManual])
         row.spacing = 8
         stack.addArrangedSubview(row)
+    }
+
+    private func buildInitialSyncState(progress: InitialSyncCoordinator.Progress, into stack: NSStackView) {
+        let title: String
+        switch progress.phase {
+        case .walking:   title = "Scanning your vault…"
+        case .pushing:   title = "Syncing your vault to the cloud"
+        case .completed: title = "All set — \(progress.total) files synced"
+        case .failed:    title = "Couldn't finish syncing your vault"
+        }
+        let titleLabel = NSTextField(wrappingLabelWithString: title)
+        titleLabel.maximumNumberOfLines = 0
+        stack.addArrangedSubview(titleLabel)
+
+        let bar = NSProgressIndicator()
+        bar.style = .bar
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.widthAnchor.constraint(equalToConstant: 480).isActive = true
+        switch progress.phase {
+        case .walking:
+            bar.isIndeterminate = true
+            bar.startAnimation(nil)
+        case .pushing:
+            bar.isIndeterminate = false
+            bar.minValue = 0
+            bar.maxValue = Double(max(progress.total, 1))
+            bar.doubleValue = Double(progress.synced)
+        case .completed:
+            bar.isIndeterminate = false
+            bar.minValue = 0
+            bar.maxValue = Double(max(progress.total, 1))
+            bar.doubleValue = Double(max(progress.total, 1))
+        case .failed:
+            bar.isIndeterminate = false
+            bar.minValue = 0
+            bar.maxValue = 1
+            bar.doubleValue = 0
+        }
+        stack.addArrangedSubview(bar)
+
+        let counter: String
+        switch progress.phase {
+        case .walking:
+            counter = "Looking through your vault…"
+        case .pushing:
+            counter = "\(progress.synced) / \(progress.total) files"
+        case .completed:
+            counter = "Finishing up…"
+        case .failed(let msg):
+            counter = "Sync failed: \(msg)"
+        }
+        let counterLabel = NSTextField(wrappingLabelWithString: counter)
+        counterLabel.textColor = .secondaryLabelColor
+        counterLabel.maximumNumberOfLines = 0
+        stack.addArrangedSubview(counterLabel)
+
+        if showsInitialSyncRetry {
+            let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked(_:)))
+            cancel.bezelStyle = .rounded
+            let retry = NSButton(title: "Retry sync", target: self, action: #selector(retryClicked(_:)))
+            retry.bezelStyle = .rounded
+            retry.keyEquivalent = "\r"
+            let row = NSStackView(views: [cancel, retry])
+            row.spacing = 8
+            stack.addArrangedSubview(row)
+        }
     }
 
     private func buildManualPickState(into stack: NSStackView) {

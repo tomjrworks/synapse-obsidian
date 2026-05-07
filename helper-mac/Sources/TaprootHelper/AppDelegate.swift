@@ -138,6 +138,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Internal access so tests can drive push-side wire-in checks.
     let syncEngine: SyncEngine
 
+    /// Phase 1 (0.1.5) test seam: when true, `confirmFirstRun` skips the
+    /// initial-sync coordinator and starts the watcher / poller / heartbeat
+    /// synchronously (preserves pre-0.1.5 test ergonomics). Production stays
+    /// false; the helper test that exercises sync-before-watcher ordering
+    /// flips it off explicitly.
+    var skipInitialSyncForTesting: Bool = false
+
+    /// Phase 1 (0.1.5): live coordinator handle so cancel-during-sync (user
+    /// closes the FirstRun window mid-walk) can stop the in-flight run. Reset
+    /// when the run completes (success or failure).
+    var currentInitialSyncCoordinator: InitialSyncCoordinator?
+
     /// Polling interval in ms. `TAPROOT_PULL_INTERVAL_MS` env-var seam matches
     /// the existing `TAPROOT_BASE_URL` / `TAPROOT_LOCAL_FOLDER_BASE` test
     /// pattern. Read at instance construction; tests set the env before init.
@@ -695,8 +707,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Persists workspace name + vault folder, appends the workspace to the
-    /// in-memory list, and starts the watcher + pull poller. Called from the
-    /// FirstRunWindowController's Get started callback (commit 5+).
+    /// in-memory list, runs the Phase 1 (0.1.5) initial-sync coordinator
+    /// (unless `skipInitialSyncForTesting`), then starts the watcher + pull
+    /// poller + heartbeat. Called from the FirstRunWindowController's Get
+    /// started callback. Synchronous on the way in so existing call sites
+    /// keep working; the sync run + downstream watcher start happens on a
+    /// background Task that survives this method's return.
     func confirmFirstRun(workspaceID: UUID, bearer: String, name: String, vaultFolder: URL) {
         settingsStore.setWorkspaceName(name, for: workspaceID)
         settingsStore.setVaultFolder(vaultFolder, for: workspaceID)
@@ -723,18 +739,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 wks.append(workspace)
             }
         }
-        startWatcher(for: workspace)
-        startPullPoller(for: workspace)
-        startHeartbeat(for: workspace)
-        NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")
+
+        if skipInitialSyncForTesting {
+            startWatcher(for: workspace)
+            startPullPoller(for: workspace)
+            startHeartbeat(for: workspace)
+            NSLog("[Taproot] First-run complete (sync skipped) for \(workspaceID.uuidString) at \(canonical.path)")
+            return
+        }
+
+        // Phase 1: walk the existing files and push them BEFORE attaching
+        // FSEvents, so a freshly-paired user has a populated cloud mirror
+        // when they open Claude Desktop. Watcher + poller + heartbeat start
+        // only after the walk completes; the watcher-after-walk ordering
+        // eliminates the modify-during-walk race.
+        let coordinator = InitialSyncCoordinator(syncEngine: syncEngine)
+        currentInitialSyncCoordinator = coordinator
+        let snapshot = WorkspaceSnapshot(id: workspaceID, bearer: bearer, localFolder: canonical)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let progressHandler: @MainActor (InitialSyncCoordinator.Progress) -> Void = { [weak self] p in
+                self?.firstRun.currentFirstRunWindowController?.setInitialSyncProgress(p)
+            }
+            do {
+                try await coordinator.run(workspace: snapshot, onProgress: progressHandler)
+                // Sync completed — start watcher / poller / heartbeat and
+                // dismiss the first-run window. Re-fetch the workspace from
+                // the in-memory list in case it was already removed by a
+                // concurrent sign-out.
+                guard self.workspaces.contains(where: { $0.id == workspaceID }) else {
+                    NSLog("[Taproot] First-run sync completed but workspace gone — skipping watcher start")
+                    self.currentInitialSyncCoordinator = nil
+                    return
+                }
+                self.startWatcher(for: workspace)
+                self.startPullPoller(for: workspace)
+                self.startHeartbeat(for: workspace)
+                self.firstRun.currentFirstRunWindowController?.dismissAfterInitialSync()
+                self.currentInitialSyncCoordinator = nil
+                NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")
+            } catch is CancellationError {
+                // User closed the FirstRun window mid-sync. cancelFirstRun
+                // already unwound state; nothing more to do here.
+                self.currentInitialSyncCoordinator = nil
+                NSLog("[Taproot] First-run sync cancelled for \(workspaceID.uuidString)")
+            } catch SyncEngine.BatchError.unauthorized {
+                // 401 path: SyncEngine's onUnauthorized hook already triggers
+                // signOut. Surface a localized message anyway in case the
+                // window is still up.
+                self.firstRun.currentFirstRunWindowController?.setInitialSyncProgress(
+                    .init(synced: 0, total: 0, phase: .failed("Sign-in expired."))
+                )
+                self.currentInitialSyncCoordinator = nil
+            } catch {
+                // Permanent failure after retries — surface to UI so the user
+                // can hit "Retry sync" (or Cancel to fully unwind).
+                self.firstRun.currentFirstRunWindowController?.setInitialSyncProgress(
+                    .init(synced: 0, total: 0, phase: .failed(error.localizedDescription))
+                )
+                self.currentInitialSyncCoordinator = nil
+                NSLog("[Taproot] First-run sync failed for \(workspaceID.uuidString): \(error)")
+            }
+        }
+        NSLog("[Taproot] First-run sync started for \(workspaceID.uuidString) at \(canonical.path)")
     }
 
-    /// Aborts a first-run flow before the workspace was appended. Deletes the
-    /// Keychain bearer (handleAuthURL stored it pre-window) and clears any
-    /// SettingsStore entries that may have been written. Distinct from
-    /// `performSignOut` because the workspace was never added to the
-    /// in-memory list, so no `mutateWorkspaces` removal is needed.
+    /// Aborts a first-run flow. Pre-0.1.5 the workspace was always appended
+    /// AFTER the user clicked Get-Started, so cancel meant "delete the
+    /// Keychain bearer + clear settings". Phase 1 (0.1.5) keeps the same
+    /// behavior for the picker-state cancel path BUT also handles
+    /// cancel-during-initial-sync: if the workspace is already in the
+    /// in-memory list (Get-Started clicked, sync mid-walk), cancel the
+    /// coordinator and route through the full sign-out.
     func cancelFirstRun(workspaceID: UUID) {
+        if workspaces.contains(where: { $0.id == workspaceID }) {
+            // Initial-sync was kicked off and the workspace is partially
+            // paired. Cancel the in-flight walk and do a full sign-out so
+            // we don't leave an orphaned Keychain bearer + Supabase rows.
+            if let coordinator = currentInitialSyncCoordinator {
+                Task { await coordinator.cancel() }
+            }
+            currentInitialSyncCoordinator = nil
+            performSignOut(workspaceID: workspaceID)
+            NSLog("[Taproot] First-run cancelled mid-sync for \(workspaceID.uuidString)")
+            return
+        }
         do {
             try services.keychain.delete(workspaceID: workspaceID)
         } catch {

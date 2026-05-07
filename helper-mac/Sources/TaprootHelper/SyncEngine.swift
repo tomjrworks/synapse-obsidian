@@ -129,6 +129,19 @@ actor SyncEngine {
         pushInFlightLock.withLock { $0 }
     }
 
+    /// Bumps `pushInFlight`. Used by `InitialSyncCoordinator` to hold the
+    /// gate for the duration of a multi-batch initial sync — see the comment
+    /// on `pushInFlightLock` and the InitialSyncCoordinator preamble.
+    nonisolated func incrementPushInFlight() {
+        pushInFlightLock.withLock { $0 += 1 }
+    }
+
+    /// Decrements `pushInFlight`. Symmetric with `incrementPushInFlight`;
+    /// callers MUST decrement once per increment (use `defer`).
+    nonisolated func decrementPushInFlight() {
+        pushInFlightLock.withLock { $0 -= 1 }
+    }
+
     init(httpClient: HTTPClient, baseURL: URL) {
         self.httpClient = httpClient
         self.baseURL = baseURL
@@ -331,6 +344,78 @@ actor SyncEngine {
         if relative.hasPrefix("/") { return nil }
         if relative.split(separator: "/").contains("..") { return nil }
         return folder.appendingPathComponent(relative)
+    }
+
+    /// Errors surfaced by `pushBatch` to the `InitialSyncCoordinator`. Maps
+    /// the same status branches `push()` handles internally to typed cases so
+    /// the coordinator can decide retry-vs-halve-vs-propagate per batch.
+    enum BatchError: Error, Sendable {
+        case unauthorized
+        case payloadTooLarge
+        case http(Int)
+        case transport(any Error)
+        case encodingFailed(any Error)
+    }
+
+    /// Pre-built-ops sibling of `push(workspace:events:)`. Used by
+    /// `InitialSyncCoordinator` which builds ops from a directory walk rather
+    /// than FSEvents. Reuses the same wire format, request signing, and
+    /// 401 onUnauthorized hook; deliberately does NOT touch
+    /// `pushInFlightLock` — the coordinator holds the gate for the whole
+    /// multi-batch run (per-batch toggling would race Sparkle's relaunch
+    /// postpone hook).
+    func pushBatch(workspace: WorkspaceSnapshot, ops: [PushOp]) async throws -> [PushResultEntry] {
+        guard !ops.isEmpty else { return [] }
+
+        let url = baseURL.appendingPathComponent("api/sync/push")
+        let body: Data
+        do {
+            body = try JSONEncoder().encode(PushRequestBody(ops: ops))
+        } catch {
+            throw BatchError.encodingFailed(error)
+        }
+
+        let request = HTTPRequest(
+            url: url,
+            method: "POST",
+            headers: [
+                "Content-Type": "application/json",
+                "Authorization": "Bearer \(workspace.bearer)",
+            ],
+            body: body
+        )
+
+        let response: HTTPResponse
+        do {
+            response = try await httpClient.send(request)
+        } catch {
+            throw BatchError.transport(error)
+        }
+
+        switch response.status {
+        case 200..<300:
+            if let decoded = try? JSONDecoder().decode(PushResponseBody.self, from: response.body) {
+                for r in decoded.results where !r.ok {
+                    NSLog("[Taproot] pushBatch: op failed path=\(r.path) error=\(r.error ?? "?") detail=\(r.detail ?? "-")")
+                }
+                return decoded.results
+            }
+            NSLog("[Taproot] pushBatch: 2xx but body decode failed; treating as success")
+            return []
+        case 401:
+            NSLog("[Taproot] pushBatch: 401 — signing out workspace \(workspace.id)")
+            let id = workspace.id
+            let handler = onUnauthorized
+            Task { @MainActor in handler(id) }
+            throw BatchError.unauthorized
+        case 413:
+            NSLog("[Taproot] pushBatch: 413 — caller will halve and retry")
+            throw BatchError.payloadTooLarge
+        default:
+            let bodyStr = String(data: response.body, encoding: .utf8) ?? "<binary>"
+            NSLog("[Taproot] pushBatch: HTTP \(response.status) body=\(bodyStr.prefix(200))")
+            throw BatchError.http(response.status)
+        }
     }
 
     /// Maps a `FileChangeEvent` to a `PushOp`, relativizing the path against

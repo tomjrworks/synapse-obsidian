@@ -495,6 +495,11 @@ final class AppDelegateTests: XCTestCase {
     /// expectations. Retargeted in T11.8 commit 2 to the extracted
     /// `firstRun` Coordinator seam.
     private func wireFirstRunForTest(_ app: AppDelegate, folder: URL) {
+        // Phase 1 (0.1.5): keep the synchronous test-mode path so existing
+        // tests that assert workspace state immediately after applyBearer
+        // keep working. Tests that exercise the InitialSyncCoordinator path
+        // explicitly leave skipInitialSyncForTesting at its default (false).
+        app.skipInitialSyncForTesting = true
         app.firstRun.presentFirstRun = { id, bearer in
             app.confirmFirstRun(workspaceID: id, bearer: bearer, name: "Workspace", vaultFolder: folder)
             app.stopPullPoller(for: id)
@@ -1627,6 +1632,10 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
+        // Phase 1 (0.1.5): existing assertion shape requires the synchronous
+        // test path. The InitialSyncCoordinator-aware test lives in
+        // InitialSyncCoordinatorTests.
+        app.skipInitialSyncForTesting = true
         app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
         defer {
             app.watchers[id]?.stop()
@@ -1660,6 +1669,7 @@ final class AppDelegateTests: XCTestCase {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
+        app.skipInitialSyncForTesting = true
         app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
         app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
         defer {

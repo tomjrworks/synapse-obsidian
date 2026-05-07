@@ -54,6 +54,14 @@ final class FirstRunCoordinator {
         firstRunWindowController?.window?.isVisible == true
     }
 
+    /// Phase 1 (0.1.5): typed accessor for the current first-run window so
+    /// AppDelegate can push initial-sync progress updates and call
+    /// `dismissAfterInitialSync` on completion. nil when the window is not
+    /// currently presented.
+    var currentFirstRunWindowController: FirstRunWindowController? {
+        firstRunWindowController as? FirstRunWindowController
+    }
+
     init(
         services: Services,
         onCancelFirstRun: @escaping (UUID) -> Void,
