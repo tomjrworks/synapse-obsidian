@@ -12,6 +12,44 @@ the gap in the sign-off footer.
 
 ---
 
+## Step 0 — Verify PRODUCT server is on current main commit
+
+Locked 2026-05-08 after the F V1 incident: helper Sparkle releases ship
+ahead of the server they depend on, because Railway does NOT auto-deploy
+on git push (per `reference_taproot_deploy.md`). If the helper expects
+F V1 endpoints (rules-preview, garden_index, garden_rules, etc.) and
+PRODUCT is running pre-F V1 code, the fresh-user walk breaks silently.
+
+```bash
+# 1. Local main HEAD
+cd ~/Documents/obsidian-brain
+LOCAL=$(git rev-parse origin/main)
+echo "Local origin/main: $LOCAL"
+
+# 2. Currently-deployed Railway commit (via service health + agent OR
+#    inspect Railway dashboard). If health returns a different version
+#    string than expected for the current commit, OR if a route added
+#    in the last 24h returns 404 to an unauthenticated probe (rather
+#    than 401 "auth required"), PRODUCT is stale.
+curl -sI https://connect.taproothq.com/api/onboarding/rules-preview \
+  | grep "HTTP/"
+# Expected: HTTP/2 401  (route exists, auth required)
+# Bad:      HTTP/2 404  (route missing — PRODUCT is stale)
+```
+
+**If PRODUCT is stale, deploy first:**
+
+```bash
+cd ~/Documents/obsidian-brain
+railway up --service determined-clarity --detach
+# Build takes ~3-5 min. Re-run the curl probe to confirm the new endpoint
+# returns 401 (or 200 if it's a no-auth route).
+```
+
+Only proceed to Step 1 once PRODUCT and helper-mac repos are in sync.
+
+---
+
 ## Step 1 — Prep checks
 
 ```bash
