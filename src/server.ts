@@ -10,6 +10,7 @@ import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerRulesTool } from "./tools/rules.js";
+import { registerIndexTool } from "./tools/index-tool.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
 import {
@@ -36,6 +37,7 @@ function createMcpServer(backend: StorageBackend): McpServer {
   registerKnowledgeTools(server, backend);
   registerInitTools(server, backend);
   registerRulesTool(server, backend);
+  registerIndexTool(server, backend);
   registerPrompts(server, backend);
   registerResources(server, backend);
   return server;
