@@ -267,6 +267,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         auth.wireDefaults()
 
         loadWorkspacesFromKeychain()
+        // F0: rename legacy `.synapse/` → `.taproot/` for each restored
+        // workspace BEFORE startAllWatchers fires. Otherwise FSEvents
+        // would report `.synapse/` paths in the brief window before the
+        // rename, leaking the legacy directory name into push events.
+        // Idempotent — no-ops when the rename has already happened.
+        for workspace in workspaces {
+            SynapseMigration.migrate(in: workspace.localFolder)
+        }
         // T11.6: mark workspaces flagged paused-on-launch as `.paused` BEFORE
         // startAllWatchers/startAllPullPollers run. The early-return guards
         // in those methods then no-op for `.paused` workspaces.
@@ -693,6 +701,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.setWorkspaceName(name, for: workspaceID)
         settingsStore.setVaultFolder(vaultFolder, for: workspaceID)
         let canonical = vaultFolder.canonicalPath
+        // F0: migrate legacy `.synapse/` → `.taproot/` BEFORE startWatcher
+        // attaches FSEvents to this vault. Same rationale as the launch-time
+        // pass in applicationDidFinishLaunching; idempotent.
+        SynapseMigration.migrate(in: canonical)
         let workspace = Workspace(
             id: workspaceID,
             name: name,
