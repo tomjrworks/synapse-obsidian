@@ -366,6 +366,49 @@ G6 monitoring posture: CREDS-OK / NEEDS-SETUP
 
 ## Walk log
 
+### 0.1.5 — 2026-05-07 evening (0304731) — SHIPPED
+
+```
+Walked:                              2026-05-07 evening
+Operator:                            Tom + Claude (Opus 4.7, 1M context)
+Build:                               0304731 (obsidian-brain) + 3196f14 (agency)
+Notarization submission ID:          3ef70734-7b9e-40b6-b017-3192aa3edb48 (Accepted)
+Step 0 deploy gate:                  GREEN — Railway deploy 09b34014 (2026-05-07 19:07 UTC)
+                                     newer than latest src/ commit cfd510d (17:53 UTC); today's
+                                     commits helper-mac only with no src/ changes; skip-ahead
+                                     allowed for this walk per Step 0 fallback.
+Universal binary verified:           YES — lipo: x86_64 + arm64 (helper Mach-O + Sparkle.framework);
+                                     Info.plist 0.1.5 (6) per slice; Timestamp=May 7 17:00:34
+                                     fresh signature.
+Rosetta proxy smoke:                 PASS — Activity Monitor Kind=Intel for forced-arch launch
+                                     (PID 35954); Keychain workspace loaded under x86_64 slice;
+                                     Watcher fired on real vault under x86_64 slice (6 + 2 events).
+                                     Settings/Version menubar check skipped (existing 0.1.4
+                                     installed copy at PID 33281 owns LaunchServices URL-scheme +
+                                     menubar registration; per-slice version already verified via
+                                     Step 3 otool extraction).
+Apple Silicon regression smoke:      PASS — drag-install over 0.1.4 clean (no Gatekeeper);
+                                     menubar icon visible; Settings reads 0.1.5; paired
+                                     tomgirgashjr@ workspace preserved across upgrade; CLAUDE.md
+                                     edit pushed within ~15s, dashboard rendered "JUST NOW"
+                                     (validates 0.1.5 watcher + push pipeline end-to-end).
+Native Intel hardware validation:    SKIPPED per G-D4
+Rollback procedure:                  documented (Step 11), not tested
+G6 monitoring posture:               CREDS-OK — Sparkle EdDSA in Keychain, wrangler authed
+                                     (tomjrworks@gmail.com)
+Prod URLs verified:                  https://downloads.taproothq.com/releases/v0.1.5/TaprootHelper-0.1.5.dmg
+                                     (HTTP/2 200, 1.5 MB, wire-bytes lipo confirms x86_64 + arm64)
+                                     https://updates.taproothq.com/appcast.xml
+                                     (sparkle:version=6, valid edSignature)
+SITE bump:                           agency 3196f14 — MAC_DMG_URL 0.1.4 → 0.1.5 in
+                                     src/app/onboarding/helper/page.tsx; Vercel auto-deploys.
+0.1.5 scope:                         InitialSyncCoordinator (existing-files backfill on pair) +
+                                     Info.plist version bump only. Initial-sync UI not exercised
+                                     in this walk because pair survived from previous session;
+                                     deferred to Phase 1 acceptance smoke (delete tomgirgashjr@
+                                     + fresh sign-up against installed 0.1.5).
+```
+
 ### 0.1.4 — 2026-05-07 (cfd510d) — SHIPPED
 
 ```
