@@ -316,6 +316,8 @@ Every vault ships with these folders. Trait sections below add more on top.
 - \`ideas/\` — half-baked thoughts, future work.
 - \`inbox/\` — fallback for stuff that doesn't have a home yet. File here when no other folder fits.
 
+**Vault root.** Only \`CLAUDE.md\` and \`index.md\` live at vault root. **NEVER create files at vault root** — file under one of the folders above (or a new sub-folder, per the decision tree).
+
 ## Filing decision tree
 
 When the user asks you to save something, decide the path in this order:

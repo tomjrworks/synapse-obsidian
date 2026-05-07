@@ -39,6 +39,13 @@ import type {
 import { ConflictError, NotFoundError } from "./storage.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
+import {
+  computeFlagsUpdate,
+  getRulesForBackend,
+  invalidateRulesCache,
+  mergeFlags,
+  type FlagsUpdate,
+} from "./drift.js";
 
 const VAULT_BLOBS_BUCKET = "vault-blobs";
 const PG_UNIQUE_VIOLATION = "23505";
@@ -156,11 +163,22 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     const sha256Param = `\\x${sha256.toString("hex")}`;
     const nowIso = new Date().toISOString();
 
+    // F5: drift detection writer. CLAUDE.md writes invalidate the
+    // rules cache BEFORE we read it (so subsequent non-CLAUDE writes
+    // see the new rules). Then compute the flags delta for THIS path
+    // so the upsert below applies it in a single round trip.
+    if (normalized === "CLAUDE.md") {
+      invalidateRulesCache(this.workspaceId);
+    }
+    const rules = await getRulesForBackend(this, this.workspaceId);
+    const flagsUpdate = computeFlagsUpdate(normalized, rules);
+
     const { fileId, storageObject } = await this.upsertMetadata(
       normalized,
       plaintext.length,
       sha256Param,
       nowIso,
+      flagsUpdate,
     );
 
     const { error: uploadErr } = await this.supabase.storage
@@ -187,10 +205,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     plaintextSize: number,
     sha256Param: string,
     nowIso: string,
+    flagsUpdate: FlagsUpdate | null = null,
   ): Promise<{ fileId: string; storageObject: string }> {
     const { data: existing, error: selectErr } = await this.supabase
       .from("vault_files")
-      .select("id, storage_object")
+      .select("id, storage_object, flags")
       .eq("workspace_id", this.workspaceId)
       .eq("path", filePath)
       .is("deleted_at", null)
@@ -200,13 +219,19 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     if (existing) {
+      const newFlags = mergeFlags(
+        (existing as { flags?: Record<string, unknown> }).flags ?? {},
+        flagsUpdate,
+      );
+      const updateRow: Record<string, unknown> = {
+        size_bytes: plaintextSize,
+        plaintext_sha256: sha256Param,
+        modified_at: nowIso,
+      };
+      if (newFlags) updateRow.flags = newFlags;
       const { error: updateErr } = await this.supabase
         .from("vault_files")
-        .update({
-          size_bytes: plaintextSize,
-          plaintext_sha256: sha256Param,
-          modified_at: nowIso,
-        })
+        .update(updateRow)
         .eq("id", existing.id);
       if (updateErr) {
         throw new Error(`vault_files UPDATE failed: ${updateErr.message}`);
@@ -219,18 +244,25 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     const fileId = randomUUID();
     const storageObject = `${this.workspaceId}/${fileId}`;
 
+    // F5: fresh INSERT starts with empty flags; apply delta (set only —
+    // remove is a no-op against an empty object).
+    const insertFlags = mergeFlags({}, flagsUpdate);
+
+    const insertRow: Record<string, unknown> = {
+      id: fileId,
+      workspace_id: this.workspaceId,
+      path: filePath,
+      size_bytes: plaintextSize,
+      plaintext_sha256: sha256Param,
+      mime_type: "text/markdown",
+      storage_object: storageObject,
+      modified_at: nowIso,
+    };
+    if (insertFlags) insertRow.flags = insertFlags;
+
     const { error: insertErr } = await this.supabase
       .from("vault_files")
-      .insert({
-        id: fileId,
-        workspace_id: this.workspaceId,
-        path: filePath,
-        size_bytes: plaintextSize,
-        plaintext_sha256: sha256Param,
-        mime_type: "text/markdown",
-        storage_object: storageObject,
-        modified_at: nowIso,
-      });
+      .insert(insertRow);
 
     if (insertErr) {
       // Race lost: another writer inserted at the same path between our
@@ -240,7 +272,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       if (code === PG_UNIQUE_VIOLATION) {
         const { data: race, error: raceErr } = await this.supabase
           .from("vault_files")
-          .select("id, storage_object")
+          .select("id, storage_object, flags")
           .eq("workspace_id", this.workspaceId)
           .eq("path", filePath)
           .is("deleted_at", null)
@@ -250,13 +282,19 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
             `vault_files race resolve failed: ${raceErr?.message ?? "row vanished"}`,
           );
         }
+        const raceFlags = mergeFlags(
+          (race as { flags?: Record<string, unknown> }).flags ?? {},
+          flagsUpdate,
+        );
+        const raceUpdateRow: Record<string, unknown> = {
+          size_bytes: plaintextSize,
+          plaintext_sha256: sha256Param,
+          modified_at: nowIso,
+        };
+        if (raceFlags) raceUpdateRow.flags = raceFlags;
         const { error: updateErr } = await this.supabase
           .from("vault_files")
-          .update({
-            size_bytes: plaintextSize,
-            plaintext_sha256: sha256Param,
-            modified_at: nowIso,
-          })
+          .update(raceUpdateRow)
           .eq("id", race.id);
         if (updateErr) {
           throw new Error(
