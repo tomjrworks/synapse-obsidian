@@ -21,6 +21,13 @@ const BEHAVIOR = [
   "`status: killed` in frontmatter rather than deleting them.",
 ].join("\n");
 
+const CURATION = [
+  'Curate as you go. After 3+ saves with a consistent pattern, ASK once: "Want me to add',
+  'this as a CLAUDE.md filing rule?" On yes, splice the rule between the TAPROOT-MANAGED',
+  'markers and save via garden_plant({ path: "CLAUDE.md", acknowledgeRoot: true }) — the',
+  "merge logic preserves user edits. Never propose more than once per session.",
+].join("\n");
+
 export interface AssembleOptions {
   /** Workspace ID for cloud-mode multi-tenant cache scoping. Optional in stdio mode. */
   workspaceId?: string;
@@ -44,7 +51,7 @@ export async function assembleInstructions(
   backend: StorageBackend,
   opts: AssembleOptions = {},
 ): Promise<string> {
-  const sections: string[] = [PREAMBLE, POINTERS, BEHAVIOR];
+  const sections: string[] = [PREAMBLE, POINTERS, BEHAVIOR, CURATION];
 
   const context = await safeBuildWorkspaceContext(backend);
   if (context) sections.push(context);

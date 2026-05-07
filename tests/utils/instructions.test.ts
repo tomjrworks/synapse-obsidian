@@ -67,6 +67,15 @@ describe("assembleInstructions", () => {
     expect(out).toContain("activity in the last");
   });
 
+  it("includes curation guidance — proactive CLAUDE.md rule proposal pattern", async () => {
+    const out = await assembleInstructions(makeBackend());
+    expect(out).toContain("Curate as you go");
+    expect(out).toContain("3+ saves");
+    expect(out).toContain("CLAUDE.md filing rule");
+    expect(out).toContain("acknowledgeRoot: true");
+    expect(out).toContain("Never propose more than once per session");
+  });
+
   it("degrades gracefully (no context line) when recentFiles is empty or throws", async () => {
     const empty = await assembleInstructions(makeBackend({}));
     expect(empty).not.toContain("most active folder");
