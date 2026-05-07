@@ -407,11 +407,56 @@ If the user expresses a preference about how they like work done — file naming
  * - Trait order is preserved in the rendered output.
  * - Duplicate traits are dropped (only the first occurrence renders).
  */
-export function composePersonaClaudeMd(opts: {
+/**
+ * Restored "Write AUTOMATICALLY" section the legacy generateClaudeMd in
+ * init.ts had but the persona path dropped (L6). Persona-flavored to use
+ * the universal folder skeleton from COMMON_PREAMBLE rather than the
+ * config-specific sources/notes/outputs folders the legacy version
+ * referenced.
+ */
+const WRITE_AUTOMATICALLY_PERSONA = `## Write AUTOMATICALLY (don't wait to be asked)
+
+Don't wait until the end of a conversation to save things. Write to the vault **after each meaningful exchange**:
+
+- **Research answers:** When you synthesize an answer worth keeping, save it to \`research/<subfolder>/\`.
+- **New insights or decisions:** Log decisions in \`decisions/\` with a YYYY-MM-DD prefix; log half-baked ideas in \`ideas/\`.
+- **Session logs:** After major milestones (research completed, decision made, milestone shipped), write a daily note in \`daily/YYYY-MM-DD-<topic>.md\`.
+- **Update the index:** After creating any new note, update \`index.md\` with a one-line summary under the matching \`## <Folder>\` section.
+- **Connect ideas:** Add \`[[wikilinks]]\` to link related notes whenever you create or update content.
+
+**Don't log:** trivial questions, quick fixes, or exchanges with no lasting value.`;
+
+export type ManagedSectionId = "filing" | "traits" | "conventions";
+
+export const MANAGED_SECTION_ORDER: ManagedSectionId[] = [
+  "filing",
+  "traits",
+  "conventions",
+];
+
+export interface ManagedSections {
+  filing: string;
+  traits: string;
+  conventions: string;
+}
+
+export const SECTION_MARKER_START = (id: ManagedSectionId) =>
+  `<!-- TAPROOT-MANAGED:${id} START -->`;
+export const SECTION_MARKER_END = (id: ManagedSectionId) =>
+  `<!-- TAPROOT-MANAGED:${id} END -->`;
+
+/**
+ * Build the F-managed section bodies (without markers). Splitting render
+ * from marker-wrap lets the merge path (claudemd-merge.ts) splice fresh
+ * section bodies into an existing CLAUDE.md without re-rendering header
+ * scaffolding the user may have changed.
+ */
+export function composePersonaSections(opts: {
   traits: string[];
   personaFreetext?: string;
-}): string {
-  const today = new Date().toISOString().split("T")[0];
+  today?: string;
+}): ManagedSections {
+  const today = opts.today ?? new Date().toISOString().split("T")[0];
 
   const seen = new Set<string>();
   const orderedTraits: TraitId[] = [];
@@ -422,22 +467,40 @@ export function composePersonaClaudeMd(opts: {
     orderedTraits.push(t);
   }
 
-  const parts: string[] = [];
-  parts.push(`# CLAUDE.md\n\n> Created ${today} | Taproot brain`);
-  parts.push(COMMON_PREAMBLE);
+  const filingParts: string[] = [
+    `# CLAUDE.md\n\n> Created ${today} | Taproot brain`,
+    COMMON_PREAMBLE,
+  ];
 
   const freetext = opts.personaFreetext?.trim();
   if (freetext) {
-    parts.push(
+    filingParts.push(
       `## User's stated context\n\n> ${freetext.replace(/\n/g, "\n> ")}`,
     );
   }
 
-  for (const t of orderedTraits) {
-    parts.push(TRAIT_SECTIONS[t]);
-  }
+  filingParts.push(WRITE_AUTOMATICALLY_PERSONA);
 
-  parts.push(UNIVERSAL_TAIL);
+  const traitsBody =
+    orderedTraits.length === 0
+      ? "<!-- no persona traits selected -->"
+      : orderedTraits.map((t) => TRAIT_SECTIONS[t]).join("\n\n");
 
-  return parts.join("\n\n") + "\n";
+  return {
+    filing: filingParts.join("\n\n"),
+    traits: traitsBody,
+    conventions: UNIVERSAL_TAIL,
+  };
+}
+
+export function composePersonaClaudeMd(opts: {
+  traits: string[];
+  personaFreetext?: string;
+  today?: string;
+}): string {
+  const sections = composePersonaSections(opts);
+  const blocks = MANAGED_SECTION_ORDER.map((id) =>
+    [SECTION_MARKER_START(id), sections[id], SECTION_MARKER_END(id)].join("\n"),
+  );
+  return blocks.join("\n\n") + "\n";
 }
