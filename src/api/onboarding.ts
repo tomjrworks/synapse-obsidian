@@ -18,6 +18,7 @@ const ONBOARDING_STEPS = [
   "permissions",
   "connect",
   "first-wow",
+  "rules-review",
   "done",
   "complete",
 ] as const;

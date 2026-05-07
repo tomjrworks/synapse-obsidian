@@ -5,6 +5,7 @@ import { clientsRouter } from "./clients.js";
 import { helperRouter } from "./helper.js";
 import { firstWowRouter } from "./first-wow.js";
 import { personaRouter } from "./persona.js";
+import { onboardingRulesRouter } from "./onboarding-rules.js";
 import { syncRouter } from "./sync.js";
 import { workspaceCreateRouter } from "./workspace-create.js";
 
@@ -21,6 +22,7 @@ export function mountApiRoutes(app: Express): void {
   api.use("/", helperRouter());
   api.use("/", firstWowRouter());
   api.use("/", personaRouter());
+  api.use("/", onboardingRulesRouter());
   api.use("/", syncRouter());
   api.use("/", workspaceCreateRouter());
 
