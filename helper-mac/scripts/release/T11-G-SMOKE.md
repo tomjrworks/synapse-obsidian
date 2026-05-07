@@ -28,7 +28,12 @@ create-dmg --version
 # Expected: version string
 
 # Sparkle EdDSA key + R2 wrangler auth current (G6 hotfix readiness)
-ls -1 ~/.sparkle-private-key.pem 2>&1   # exists
+# Sparkle key lives in macOS Keychain (`https://sparkle-project.org` / `ed25519`),
+# read by `sign_update` automatically — no .pem file required for signing.
+# A `.pem` backup is OPTIONAL (recovery convenience only).
+security find-generic-password -s "https://sparkle-project.org" -a "ed25519" >/dev/null 2>&1 \
+    && echo "Sparkle EdDSA key in Keychain ✓" \
+    || echo "Sparkle EdDSA key MISSING in Keychain — sign_update will fail"
 wrangler whoami 2>&1                     # authenticated to Cloudflare account
 ```
 

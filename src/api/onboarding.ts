@@ -12,7 +12,6 @@ import { respondError } from "./respond-error.js";
 const ONBOARDING_STEPS = [
   "persona",
   "clients",
-  "vault",
   "obsidian",
   "helper",
   "permissions",
@@ -23,6 +22,14 @@ const ONBOARDING_STEPS = [
   "complete",
 ] as const;
 type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+
+// Compat shim: workspaces created before the Obsidian-required pivot
+// (2026-05-06) may have onboarding_step="vault" stuck in settings.
+// Treat as "obsidian" on read; forward-bumps on next /onboarding/step write.
+// See projects/taproot/build/2026-05-07-workstream-a-onboarding-rewrite-task.md
+export function coerceLegacyStep(step: string): OnboardingStep {
+  return step === "vault" ? "obsidian" : (step as OnboardingStep);
+}
 
 const PERSONA_TRAITS = [
   "founder",
@@ -63,8 +70,9 @@ export function onboardingRouter(): Router {
       // Note: forward-or-equal allows skip-ahead (e.g. persona → complete).
       // The /onboarding/done bypass is closed at the SITE proxy by a
       // precondition that requires current_step === "done".
-      const currentStep = (membership.settings?.onboarding_step ??
-        "persona") as OnboardingStep;
+      const currentStep = coerceLegacyStep(
+        membership.settings?.onboarding_step ?? "persona",
+      );
       const currentIdx = ONBOARDING_STEPS.indexOf(currentStep);
       const nextIdx = ONBOARDING_STEPS.indexOf(step as OnboardingStep);
 

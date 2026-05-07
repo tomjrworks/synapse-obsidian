@@ -839,8 +839,8 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [pausedWS])
 
-        // Flat layout: name, Open vault folder, Pause/Resume, Settings…, Sign out, sep, Quit.
-        XCTAssertEqual(menu.items[2].title, "Resume sync")
+        // Flat layout: name, Open vault folder, Open in Obsidian, Pause/Resume, Settings…, Sign out, sep, Check for updates…, Quit.
+        XCTAssertEqual(menu.items[3].title, "Resume sync")
     }
 
     func testBuildMenuShowsLastErrorWhenStatusIsError() {
@@ -1006,9 +1006,10 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [workspace])
 
-        // Shape: [name (disabled), Open vault folder, Pause sync, Settings…,
-        //         Sign out, separator, Check for updates…, Quit] = 8 items.
-        XCTAssertEqual(menu.items.count, 8)
+        // Shape: [name (disabled), Open vault folder, Open in Obsidian,
+        //         Pause sync, Settings…, Sign out, separator,
+        //         Check for updates…, Quit] = 9 items.
+        XCTAssertEqual(menu.items.count, 9)
 
         XCTAssertEqual(menu.items[0].title, "WS")
         XCTAssertFalse(menu.items[0].isEnabled, "Workspace name row is a disabled label")
@@ -1017,23 +1018,28 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(openFolder.title, "Open vault folder")
         XCTAssertEqual(openFolder.representedObject as? UUID, id)
 
-        let pauseSync = menu.items[2]
+        let openInObsidian = menu.items[2]
+        XCTAssertEqual(openInObsidian.title, "Open in Obsidian")
+        XCTAssertEqual(openInObsidian.representedObject as? UUID, id)
+        XCTAssertEqual(openInObsidian.action, #selector(AppDelegate.menuOpenInObsidian(_:)))
+
+        let pauseSync = menu.items[3]
         XCTAssertEqual(pauseSync.title, "Pause sync")
         XCTAssertEqual(pauseSync.representedObject as? UUID, id)
 
-        let settings = menu.items[3]
+        let settings = menu.items[4]
         XCTAssertEqual(settings.title, "Settings…")
         XCTAssertTrue(settings.isEnabled, "Settings… enabled in T11.6")
         XCTAssertEqual(settings.action, #selector(AppDelegate.menuOpenSettings(_:)))
 
-        let signOut = menu.items[4]
+        let signOut = menu.items[5]
         XCTAssertEqual(signOut.title, "Sign out")
         XCTAssertEqual(signOut.representedObject as? UUID, id)
 
-        XCTAssertTrue(menu.items[5].isSeparatorItem)
+        XCTAssertTrue(menu.items[6].isSeparatorItem)
 
-        XCTAssertEqual(menu.items[6].title, "Check for updates…")
-        XCTAssertEqual(menu.items[7].title, "Quit")
+        XCTAssertEqual(menu.items[7].title, "Check for updates…")
+        XCTAssertEqual(menu.items[8].title, "Quit")
     }
 
     func testBuildMenuNestedLayoutForTwoWorkspaces() throws {
@@ -1070,21 +1076,23 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(menu.items[3].title, "Check for updates…")
         XCTAssertEqual(menu.items[4].title, "Quit")
 
-        // Each submenu carries the 4 per-workspace actions, no name-label
+        // Each submenu carries the 5 per-workspace actions, no name-label
         // (the top-level row already labels which workspace).
-        XCTAssertEqual(alphaSubmenu.items.count, 4)
+        XCTAssertEqual(alphaSubmenu.items.count, 5)
         XCTAssertEqual(alphaSubmenu.items[0].title, "Open vault folder")
         XCTAssertEqual(alphaSubmenu.items[0].representedObject as? UUID, id1)
-        XCTAssertEqual(alphaSubmenu.items[1].title, "Pause sync")
+        XCTAssertEqual(alphaSubmenu.items[1].title, "Open in Obsidian")
         XCTAssertEqual(alphaSubmenu.items[1].representedObject as? UUID, id1)
-        XCTAssertEqual(alphaSubmenu.items[2].title, "Settings…")
-        XCTAssertTrue(alphaSubmenu.items[2].isEnabled)
-        XCTAssertEqual(alphaSubmenu.items[3].title, "Sign out")
-        XCTAssertEqual(alphaSubmenu.items[3].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[2].title, "Pause sync")
+        XCTAssertEqual(alphaSubmenu.items[2].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[3].title, "Settings…")
+        XCTAssertTrue(alphaSubmenu.items[3].isEnabled)
+        XCTAssertEqual(alphaSubmenu.items[4].title, "Sign out")
+        XCTAssertEqual(alphaSubmenu.items[4].representedObject as? UUID, id1)
 
         // Beta submenu items are pinned to ws2.id.
         XCTAssertEqual(betaSubmenu.items[0].representedObject as? UUID, id2)
-        XCTAssertEqual(betaSubmenu.items[3].representedObject as? UUID, id2)
+        XCTAssertEqual(betaSubmenu.items[4].representedObject as? UUID, id2)
     }
 
     func testPullTickFlipsSyncStatusToSyncingThenIdle() async throws {
@@ -1219,9 +1227,9 @@ final class AppDelegateTests: XCTestCase {
 
         app.signOut(workspaceID: id2)
 
-        // After sign-out the count drops to 1 → flat 8-item shape.
+        // After sign-out the count drops to 1 → flat 9-item shape.
         let after = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(after.items.count, 8)
+        XCTAssertEqual(after.items.count, 9)
     }
 
     func testRebuildMenuFiresOnHandleAuthURL() throws {
@@ -1234,9 +1242,9 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(app, folder: folder)
         app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
 
-        // After 1 workspace, currentMenu reflects the 8-item flat shape.
+        // After 1 workspace, currentMenu reflects the 9-item flat shape.
         let afterFirst = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(afterFirst.items.count, 8, "Flat layout after first auth")
+        XCTAssertEqual(afterFirst.items.count, 9, "Flat layout after first auth")
 
         app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
         app.confirmReauth = { _ in true }

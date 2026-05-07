@@ -907,9 +907,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "leaf.fill"
     }
 
-    /// Adds the 4 per-workspace action items (Open vault folder, Pause/Resume
-    /// sync, Settings…, Sign out) plus an optional "Last error" row to `menu`.
-    /// Used by both flat and nested layouts.
+    /// Adds the per-workspace action items (Open vault folder, Open in
+    /// Obsidian, Pause/Resume sync, Settings…, Sign out) plus an optional
+    /// "Last error" row to `menu`. Used by both flat and nested layouts.
     private func appendActionItems(for workspace: Workspace, to menu: NSMenu) {
         let openFolder = NSMenuItem(
             title: "Open vault folder",
@@ -919,6 +919,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openFolder.target = self
         openFolder.representedObject = workspace.id
         menu.addItem(openFolder)
+
+        let openInObsidian = NSMenuItem(
+            title: "Open in Obsidian",
+            action: #selector(menuOpenInObsidian(_:)),
+            keyEquivalent: ""
+        )
+        openInObsidian.target = self
+        openInObsidian.representedObject = workspace.id
+        menu.addItem(openInObsidian)
 
         let pauseTitle = workspace.syncStatus == .paused ? "Resume sync" : "Pause sync"
         let pauseSync = NSMenuItem(
@@ -961,6 +970,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let workspace = workspaces.first(where: { $0.id == id })
         else { return }
         NSWorkspace.shared.open(workspace.localFolder)
+    }
+
+    @objc func menuOpenInObsidian(_ sender: NSMenuItem) {
+        guard
+            let id = sender.representedObject as? UUID,
+            let workspace = workspaces.first(where: { $0.id == id })
+        else { return }
+        ObsidianAppDetector.openObsidian(at: workspace.localFolder)
     }
 
     @objc func menuTogglePauseSync(_ sender: NSMenuItem) {

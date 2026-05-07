@@ -45,7 +45,13 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     var checkConflict: (URL) -> Bool = { ObsidianSyncCheck.hasConflict(at: $0) }
     var resolver: () -> [DetectedVault] = { ObsidianVaultResolver.detect() }
     var isObsidianInstalled: () -> Bool = { ObsidianAppDetector.isInstalled() }
-    var openObsidian: () -> Void = { ObsidianAppDetector.openObsidian() }
+    /// Open Obsidian; pass a vault URL to deep-link Obsidian to that folder
+    /// as a registered vault (`obsidian://open?path=...`). Pass nil to fall
+    /// back to bare `obsidian://`. The waitingForVaultCreation button passes
+    /// nil because the user is being prompted to create a vault — no
+    /// committed vault path yet. Tests can override the seam to capture the
+    /// passed URL?.
+    var openObsidian: (URL?) -> Void = { ObsidianAppDetector.openObsidian(at: $0) }
     var openDownloadPage: () -> Void = {
         if let url = URL(string: "https://obsidian.md/download") {
             NSWorkspace.shared.open(url)
@@ -247,7 +253,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         }
     }
     @objc private func iveInstalledClicked(_ sender: NSButton) { enterInitialState() }
-    @objc private func openObsidianClicked(_ sender: NSButton) { openObsidian() }
+    @objc private func openObsidianClicked(_ sender: NSButton) { openObsidian(nil) }
     @objc private func openDownloadClicked(_ sender: NSButton) { openDownloadPage() }
     @objc private func manualPickClicked(_ sender: NSButton) {
         transition(to: .manualPickOnly)
