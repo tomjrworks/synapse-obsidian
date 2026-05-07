@@ -55,7 +55,7 @@ actor InitialSyncCoordinator {
     init(
         syncEngine: SyncEngine,
         fileManager: FileManager = .default,
-        maxBatchSize: Int = 500,
+        maxBatchSize: Int = 100,
         maxRetriesPerBatch: Int = 3,
         backoffNanoseconds: @Sendable @escaping (Int) -> UInt64 = defaultInitialSyncBackoff
     ) {

@@ -230,6 +230,34 @@ final class InitialSyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(lastSynced.last, 6)
     }
 
+    func testDefaultMaxBatchSizeIs100() async throws {
+        // Regression test for 0.1.6 (Phase 1.5) — client URLRequest 30s timeout
+        // vs. server sequential-loop throughput. 100 ops * ~64ms server time
+        // ≈ 6.4s, ~5x margin under timeout. Bumping this default without
+        // moving the URLRequest timeout would re-introduce the 0.1.5 bug.
+        //
+        // Asserts via chunking behavior since `maxBatchSize` is `private let`
+        // on the actor: 250 files with the production default must produce
+        // exactly 3 sends (100/100/50). Default 500 would produce 1 send.
+        for i in 0..<250 {
+            _ = try makeFile("f\(i).md", contents: "x")
+        }
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(okResponse()))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        // Construct with NO maxBatchSize argument — must use production default.
+        let coordinator = InitialSyncCoordinator(
+            syncEngine: engine,
+            backoffNanoseconds: { _ in 0 }
+        )
+
+        try await coordinator.run(workspace: snapshot()) { _ in }
+
+        let count = await fake.sendCount
+        XCTAssertEqual(count, 3,
+            "250 files with default batchSize 100 must produce 3 sends (100/100/50)")
+    }
+
     // MARK: - retry
 
     func testRunRetriesTransportFailureUpToThreeTimes() async throws {
