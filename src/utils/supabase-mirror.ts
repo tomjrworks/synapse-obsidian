@@ -593,8 +593,26 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         .from(VAULT_BLOBS_BUCKET)
         .download(row.storage_object as string);
       if (dlErr || !blob) {
-        // Metadata says alive but blob missing — same posture as readFile:
-        // surface as deleted to the helper so it removes any stale local copy.
+        // Distinguish transient failures (5xx / timeout) from a truly missing
+        // blob (404). A timeout does NOT mean the file is gone — treating it as
+        // deleted would silently wipe the user's local copy. Skip transient
+        // errors so the local file is preserved; the cursor still advances past
+        // this row so the next pull tick won't retry it. A genuine 404 still
+        // signals deletion to clean up stale local copies.
+        const statusCode = String(
+          (dlErr as { statusCode?: unknown })?.statusCode ?? "",
+        );
+        const msg = dlErr?.message?.toLowerCase() ?? "";
+        const isTransient =
+          ["500", "502", "503", "504"].includes(statusCode) ||
+          msg.includes("timeout") ||
+          msg.includes("gateway");
+        if (isTransient) {
+          console.error(
+            `[listChanged] transient storage error for ${row.path}, skipping: ${dlErr?.message ?? "no body"}`,
+          );
+          continue;
+        }
         console.error(
           `[listChanged] storage object missing for ${row.path}: ${dlErr?.message ?? "no body"}`,
         );
