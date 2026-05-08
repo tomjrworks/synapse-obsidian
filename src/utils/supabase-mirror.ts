@@ -46,6 +46,14 @@ import {
   mergeFlags,
   type FlagsUpdate,
 } from "./drift.js";
+import { withRetry } from "./retry.js";
+
+const TRANSIENT_HTTP_STATUSES = [429, 500, 502, 503, 504];
+
+function isTransientHttpStatus(status: unknown): boolean {
+  if (status === undefined || status === null) return false;
+  return TRANSIENT_HTTP_STATUSES.includes(Number(status));
+}
 
 const VAULT_BLOBS_BUCKET = "vault-blobs";
 const PG_UNIQUE_VIOLATION = "23505";
@@ -181,17 +189,27 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       flagsUpdate,
     );
 
-    const { error: uploadErr } = await this.supabase.storage
-      .from(VAULT_BLOBS_BUCKET)
-      .upload(storageObject, ciphertext, {
-        upsert: true,
-        contentType: "application/octet-stream",
-      });
-    if (uploadErr) {
+    // 0.1.7 Phase 2: wrap with withRetry. supabase-js Storage returns
+    // errors via { error } rather than throwing, so the callback inspects
+    // the returned error and re-throws — transient-tagged for 429/5xx (so
+    // withRetry retries), or the user-facing error for non-transient (so
+    // withRetry's isTransient check fails fast and re-throws unchanged).
+    await withRetry(async () => {
+      const { error: uploadErr } = await this.supabase.storage
+        .from(VAULT_BLOBS_BUCKET)
+        .upload(storageObject, ciphertext, {
+          upsert: true,
+          contentType: "application/octet-stream",
+        });
+      if (!uploadErr) return;
+      const status = (uploadErr as { statusCode?: number | string }).statusCode;
+      if (isTransientHttpStatus(status)) {
+        throw Object.assign(new Error(uploadErr.message), { status });
+      }
       throw new Error(
         `Storage upload failed for ${storageObject} (file_id=${fileId}): ${uploadErr.message}`,
       );
-    }
+    });
   }
 
   // SELECT → UPDATE-or-INSERT for vault_files. Returns the file_id so the
@@ -207,16 +225,26 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     nowIso: string,
     flagsUpdate: FlagsUpdate | null = null,
   ): Promise<{ fileId: string; storageObject: string }> {
-    const { data: existing, error: selectErr } = await this.supabase
-      .from("vault_files")
-      .select("id, storage_object, flags")
-      .eq("workspace_id", this.workspaceId)
-      .eq("path", filePath)
-      .is("deleted_at", null)
-      .maybeSingle();
-    if (selectErr) {
-      throw new Error(`vault_files lookup failed: ${selectErr.message}`);
-    }
+    // 0.1.7 Phase 2: each PostgREST round-trip wrapped in withRetry. The
+    // callback inspects the returned `error` object, throws transient-tagged
+    // for 429/5xx HTTP statuses (so withRetry retries), or the user-facing
+    // error for non-transient (so withRetry's isTransient check fails fast
+    // and re-throws unchanged).
+    const existing = await withRetry(async () => {
+      const { data, error } = await this.supabase
+        .from("vault_files")
+        .select("id, storage_object, flags")
+        .eq("workspace_id", this.workspaceId)
+        .eq("path", filePath)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!error) return data;
+      const status = (error as { status?: number | string }).status;
+      if (isTransientHttpStatus(status)) {
+        throw Object.assign(new Error(error.message), { status });
+      }
+      throw new Error(`vault_files lookup failed: ${error.message}`);
+    });
 
     if (existing) {
       const newFlags = mergeFlags(
@@ -229,13 +257,18 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         modified_at: nowIso,
       };
       if (newFlags) updateRow.flags = newFlags;
-      const { error: updateErr } = await this.supabase
-        .from("vault_files")
-        .update(updateRow)
-        .eq("id", existing.id);
-      if (updateErr) {
+      await withRetry(async () => {
+        const { error: updateErr } = await this.supabase
+          .from("vault_files")
+          .update(updateRow)
+          .eq("id", existing.id);
+        if (!updateErr) return;
+        const status = (updateErr as { status?: number | string }).status;
+        if (isTransientHttpStatus(status)) {
+          throw Object.assign(new Error(updateErr.message), { status });
+        }
         throw new Error(`vault_files UPDATE failed: ${updateErr.message}`);
-      }
+      });
       return { fileId: existing.id, storageObject: existing.storage_object };
     }
 
@@ -260,28 +293,58 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     };
     if (insertFlags) insertRow.flags = insertFlags;
 
-    const { error: insertErr } = await this.supabase
-      .from("vault_files")
-      .insert(insertRow);
+    // INSERT: wrapped in withRetry. PG_UNIQUE_VIOLATION (23505) is NOT
+    // transient — it signals the race-resolve path below, so the callback
+    // captures the PG code on the thrown Error and the outer try/catch
+    // routes accordingly. supabase-js exposes the PG code at `error.code`.
+    let insertCode: string | undefined;
+    let insertMessage: string | undefined;
+    let insertFailed = false;
+    try {
+      await withRetry(async () => {
+        const { error } = await this.supabase
+          .from("vault_files")
+          .insert(insertRow);
+        if (!error) return;
+        const status = (error as { status?: number | string }).status;
+        if (isTransientHttpStatus(status)) {
+          throw Object.assign(new Error(error.message), { status });
+        }
+        throw Object.assign(new Error(error.message), {
+          code: (error as { code?: string }).code,
+        });
+      });
+    } catch (err) {
+      insertFailed = true;
+      insertCode = (err as { code?: string }).code;
+      insertMessage = (err as Error).message;
+    }
 
-    if (insertErr) {
+    if (insertFailed) {
       // Race lost: another writer inserted at the same path between our
       // SELECT and our INSERT. Re-resolve and UPDATE through the existing
       // row exactly once. A second 23505 surfaces.
-      const code = (insertErr as { code?: string }).code;
-      if (code === PG_UNIQUE_VIOLATION) {
-        const { data: race, error: raceErr } = await this.supabase
-          .from("vault_files")
-          .select("id, storage_object, flags")
-          .eq("workspace_id", this.workspaceId)
-          .eq("path", filePath)
-          .is("deleted_at", null)
-          .single();
-        if (raceErr || !race) {
+      if (insertCode === PG_UNIQUE_VIOLATION) {
+        const race = await withRetry(async () => {
+          const { data, error: raceErr } = await this.supabase
+            .from("vault_files")
+            .select("id, storage_object, flags")
+            .eq("workspace_id", this.workspaceId)
+            .eq("path", filePath)
+            .is("deleted_at", null)
+            .single();
+          if (!raceErr && data) return data;
+          const status = (raceErr as { status?: number | string } | null)
+            ?.status;
+          if (isTransientHttpStatus(status)) {
+            throw Object.assign(new Error(raceErr?.message ?? "row vanished"), {
+              status,
+            });
+          }
           throw new Error(
             `vault_files race resolve failed: ${raceErr?.message ?? "row vanished"}`,
           );
-        }
+        });
         const raceFlags = mergeFlags(
           (race as { flags?: Record<string, unknown> }).flags ?? {},
           flagsUpdate,
@@ -292,18 +355,23 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           modified_at: nowIso,
         };
         if (raceFlags) raceUpdateRow.flags = raceFlags;
-        const { error: updateErr } = await this.supabase
-          .from("vault_files")
-          .update(raceUpdateRow)
-          .eq("id", race.id);
-        if (updateErr) {
+        await withRetry(async () => {
+          const { error: updateErr } = await this.supabase
+            .from("vault_files")
+            .update(raceUpdateRow)
+            .eq("id", race.id);
+          if (!updateErr) return;
+          const status = (updateErr as { status?: number | string }).status;
+          if (isTransientHttpStatus(status)) {
+            throw Object.assign(new Error(updateErr.message), { status });
+          }
           throw new Error(
             `vault_files UPDATE after race failed: ${updateErr.message}`,
           );
-        }
+        });
         return { fileId: race.id, storageObject: race.storage_object };
       }
-      throw new Error(`vault_files INSERT failed: ${insertErr.message}`);
+      throw new Error(`vault_files INSERT failed: ${insertMessage}`);
     }
 
     return { fileId, storageObject };

@@ -173,25 +173,36 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
       }
       const resolveMs = debugTiming ? Date.now() - resolveStart : 0;
 
-      // Sequential ops: predictable Supabase backpressure, isolatable
-      // per-op failures. Stage 1 keeps sequential — revisit if push-side
-      // throughput surfaces a need.
-      const results: PushResultEntry[] = [];
-      for (const op of parsed.data.ops) {
+      // 0.1.7 Phase 2: chunked Promise.all parallelism. Per-op failures are
+      // absorbed inside processOp and returned as PushResultEntry, so the
+      // Promise.all chunks never reject. Concurrency is read at handler
+      // start from SYNC_PARALLELISM (default 10) so Railway env-flips take
+      // effect on the next request without redeploy. =1 degenerates to
+      // sequential (chunk size 1) — equivalent to pre-(c) behavior.
+      const parallelismRaw = parseInt(process.env.SYNC_PARALLELISM ?? "10", 10);
+      const concurrency = Math.max(
+        1,
+        isNaN(parallelismRaw) ? 10 : parallelismRaw,
+      );
+
+      type PushOp = (typeof parsed.data.ops)[number];
+      const processOp = async (op: PushOp): Promise<PushResultEntry> => {
         const opStart = debugTiming ? Date.now() : 0;
         let opOk = true;
+        let entry: PushResultEntry;
         try {
           if (op.kind === "upsert") {
             await backend.writeFile(op.path, op.content);
-            results.push({ path: op.path, ok: true });
+            entry = { path: op.path, ok: true };
           } else {
             try {
               await backend.delete(op.path);
-              results.push({ path: op.path, ok: true });
+              entry = { path: op.path, ok: true };
             } catch (err) {
               if (err instanceof NotFoundError) {
                 // Idempotent delete: already absent counts as success.
-                results.push({ path: op.path, ok: true });
+                // Push timing BEFORE early-return to mirror the pre-(c)
+                // pattern at sync.ts:195-201 (no end-of-function duplicate).
                 if (debugTiming) {
                   opTimings.push({
                     path: op.path,
@@ -199,7 +210,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
                     ok: true,
                   });
                 }
-                continue;
+                return { path: op.path, ok: true };
               }
               throw err;
             }
@@ -213,12 +224,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
                 ? "conflict"
                 : "internal";
           const request_id = logErrorWithId(err, error, "sync/push");
-          results.push({
-            path: op.path,
-            ok: false,
-            error,
-            request_id,
-          });
+          entry = { path: op.path, ok: false, error, request_id };
         }
         if (debugTiming) {
           opTimings.push({
@@ -227,6 +233,16 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
             ok: opOk,
           });
         }
+        return entry;
+      };
+
+      const results: PushResultEntry[] = [];
+      for (let i = 0; i < parsed.data.ops.length; i += concurrency) {
+        const chunk = parsed.data.ops.slice(i, i + concurrency);
+        const chunkResults = await Promise.all(
+          chunk.map((op) => processOp(op)),
+        );
+        results.push(...chunkResults);
       }
 
       const response: PushResponse = { results };
