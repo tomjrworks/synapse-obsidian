@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { supabaseService } from "./supabase.js";
 import {
   getMembershipForUser,
@@ -82,6 +83,63 @@ export const requireOAuthAuth: RequestHandler = async (req, res, next) => {
   if (await requireAuth(req, res)) return;
   next();
 };
+
+/**
+ * Workspace-keyed rate limiter for use INSIDE routers, AFTER the auth
+ * middleware has run. Works for both OAuth routes (req.workspaceId set by
+ * oauth.ts) and Supabase-JWT routes (req.membership.workspaceId set by
+ * requireWorkspace). Falls back to IP keying if neither is present.
+ *
+ * Rollback: TAPROOT_DISABLE_RATE_LIMIT=1 skips all workspace limits.
+ */
+export function workspaceLimitMiddleware(max: number, windowSec = 60) {
+  return rateLimit({
+    windowMs: windowSec * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const wsId =
+        (req as AuthedMcpRequest).workspaceId ??
+        (req as AuthedWorkspaceRequest).membership?.workspaceId;
+      if (wsId) return `ws:${wsId}`;
+      const xff = req.headers["x-forwarded-for"];
+      const rawIp =
+        typeof xff === "string"
+          ? xff.split(",")[0].trim()
+          : (req.ip ?? "unknown");
+      return `ip:${ipKeyGenerator(rawIp)}`;
+    },
+    skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
+  });
+}
+
+/**
+ * User-ID-keyed rate limiter. Use on endpoints where workspaceId is not yet
+ * available at call time (e.g. POST /api/workspace — workspace doesn't exist
+ * yet, but Supabase JWT carries user.id).
+ *
+ * Rollback: TAPROOT_DISABLE_RATE_LIMIT=1 skips.
+ */
+export function userIdLimitMiddleware(max: number, windowSec = 60) {
+  return rateLimit({
+    windowMs: windowSec * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const userId = (req as AuthedRequest).user?.id;
+      if (userId) return `user:${userId}`;
+      const xff = req.headers["x-forwarded-for"];
+      const rawIp =
+        typeof xff === "string"
+          ? xff.split(",")[0].trim()
+          : (req.ip ?? "unknown");
+      return `ip:${ipKeyGenerator(rawIp)}`;
+    },
+    skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
+  });
+}
 
 // Mount AFTER requireOAuthAuth. Resolves membership by workspaceId (from the
 // OAuth token row) and synthesizes req.user from the workspace owner. Use on

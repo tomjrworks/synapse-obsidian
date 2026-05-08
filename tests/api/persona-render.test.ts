@@ -20,6 +20,12 @@ vi.mock("../../src/api/middleware.js", () => ({
   asyncHandler: vi.fn(
     (fn: (req: unknown, res: unknown, next: () => void) => Promise<void>) => fn,
   ),
+  workspaceLimitMiddleware: vi.fn(() =>
+    vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
+  ),
+  userIdLimitMiddleware: vi.fn(() =>
+    vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
+  ),
 }));
 
 import { getBackend } from "../../src/utils/backend-cache.js";

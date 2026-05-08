@@ -176,6 +176,26 @@ export async function startServer(port: number): Promise<void> {
       },
     });
 
+  // Workspace-keyed limiter for the /mcp transport endpoint. Mounted inside
+  // the handler (not via app.use) so it fires AFTER requireAuth has attached
+  // req.workspaceId. Falls back to IP keying when workspaceId is absent.
+  // Rollback: TAPROOT_DISABLE_RATE_LIMIT=1.
+  const makeWorkspaceLimit = (max: number, windowSec = 60) =>
+    rateLimit({
+      windowMs: windowSec * 1000,
+      max,
+      standardHeaders: true,
+      legacyHeaders: false,
+      keyGenerator: (req) => {
+        const wsId = (req as AuthedMcpRequest).workspaceId;
+        return wsId ? `ws:${wsId}` : `ip:${proxyIp(req)}`;
+      },
+      skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
+    });
+
+  // Create the /mcp limiter once so the in-memory store persists across requests.
+  const mcpLimit = makeWorkspaceLimit(120);
+
   // Email limiter stacked BEFORE IP limiter on credential-check endpoints.
   app.use("/authorize", makeEmailLimit(5));
   app.use("/signin", makeEmailLimit(5));
@@ -219,6 +239,11 @@ export async function startServer(port: number): Promise<void> {
       )
     )
       return;
+    // requireAuth has attached req.workspaceId — apply workspace-keyed limit.
+    await new Promise<void>((resolve, reject) =>
+      mcpLimit(req, res, (err) => (err ? reject(err) : resolve())),
+    );
+    if (res.headersSent) return; // 429 already sent by the limiter
     try {
       const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId, {

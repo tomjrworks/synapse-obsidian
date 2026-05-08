@@ -28,6 +28,7 @@ import { logErrorWithId, respondError } from "./respond-error.js";
 import {
   asyncHandler,
   requireOAuthAuth,
+  workspaceLimitMiddleware,
   type AuthedOAuthRequest,
 } from "./middleware.js";
 import { getBackend as defaultGetBackend } from "../utils/backend-cache.js";
@@ -144,6 +145,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
   router.post(
     "/sync/push",
     authMiddleware,
+    workspaceLimitMiddleware(60), // 60 push batches/min/workspace; 825-file initial sync = 9 batches → 6× headroom
     asyncHandler(async (req, res) => {
       const parsed = pushSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -288,6 +290,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
   router.get(
     "/sync/pull",
     authMiddleware,
+    workspaceLimitMiddleware(60), // helper polls every 30s ≈ 2/min → 30× headroom
     asyncHandler(async (req, res) => {
       const parsed = pullQuerySchema.safeParse(req.query);
       if (!parsed.success) {

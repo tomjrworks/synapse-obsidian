@@ -5,6 +5,7 @@ import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -17,6 +18,7 @@ export function firstWowRouter(): Router {
     "/first-wow",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10, 3600), // 10/hour/workspace — vault write
     asyncHandler(async (req, res) => {
       const { remembered_text } = (req.body ?? {}) as {
         remembered_text?: unknown;
@@ -65,6 +67,7 @@ export function firstWowRouter(): Router {
     "/leave",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(5, 3600), // 5/hour/workspace — destructive nuke; low cap intentional
     asyncHandler(async (req, res) => {
       const { user, membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();

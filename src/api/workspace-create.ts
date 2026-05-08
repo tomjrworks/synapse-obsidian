@@ -4,6 +4,7 @@ import { supabaseService } from "./supabase.js";
 import { generateDek, wrapDek } from "./crypto.js";
 import {
   requireSupabaseAuth,
+  userIdLimitMiddleware,
   asyncHandler,
   type AuthedRequest,
 } from "./middleware.js";
@@ -19,6 +20,7 @@ export function workspaceCreateRouter(): Router {
   router.post(
     "/workspace",
     requireSupabaseAuth,
+    userIdLimitMiddleware(3, 3600), // 3/hour/user — keyed by user.id (workspace doesn't exist yet)
     asyncHandler(async (req, res) => {
       const { user } = req as AuthedRequest;
       const sb = supabaseService();

@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -32,6 +33,7 @@ export function personaRenderRouter(): Router {
     "/persona/render",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10, 3600), // 10/hour/workspace — LLM write; abuse cap
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const workspaceId = membership.workspaceId;

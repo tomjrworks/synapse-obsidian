@@ -4,6 +4,7 @@ import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -41,6 +42,7 @@ export function onboardingRulesRouter(): Router {
     "/onboarding/rules-preview",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30), // 30/min/workspace — read-only preview, generous cap
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const persona = membership.settings.persona ?? {};
@@ -77,6 +79,7 @@ export function onboardingRulesRouter(): Router {
     "/onboarding/rules-review",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10, 3600), // 10/hour/workspace — vault write + step advance
     asyncHandler(async (req, res) => {
       const body = (req.body ?? {}) as { accept?: unknown; edits?: unknown };
       if (typeof body.accept !== "boolean") {
