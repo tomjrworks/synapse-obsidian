@@ -318,6 +318,8 @@ Every vault ships with these folders. Trait sections below add more on top.
 
 **Vault root.** Only \`CLAUDE.md\` and \`index.md\` live at vault root. **NEVER create files at vault root** — file under one of the folders above (or a new sub-folder, per the decision tree).
 
+**Structured records.** Files in \`leads/\`, \`contacts/\`, \`customers/\`, \`companies/\`, \`prospects/\`, \`accounts/\` are structured records — CRM-style rows, not narrative notes. They are exempt from narrative filing rules.
+
 ## Filing decision tree
 
 When the user asks you to save something, decide the path in this order:

@@ -2,11 +2,17 @@ import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
 import { parseFrontmatter } from "../utils/vault.js";
+import {
+  extractCardinality,
+  renderCardinalityLine,
+  MANAGED_INDEX_MARKER,
+} from "../utils/frontmatter.js";
 
 const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
 const FILES_PER_FOLDER_LIMIT = 20;
 const TOTAL_FILE_LIMIT = 1000;
+const INDEX_CHAR_BUDGET = 8000;
 
 interface IndexCacheEntry {
   rendered: string;
@@ -20,6 +26,114 @@ const indexCache = new WeakMap<StorageBackend, IndexCacheEntry>();
  * fresh backend so this is rarely needed. Exported for future suites. */
 export function _clearIndexCache(backend: StorageBackend): void {
   indexCache.delete(backend);
+}
+
+// Per-workspace debouncer for event-driven cache invalidation (V1.5a.1-C).
+// Keyed on workspaceId; stores timer + backend reference for the flush.
+interface DebounceEntry {
+  timer: ReturnType<typeof setTimeout>;
+  backend: StorageBackend;
+}
+
+const WORKSPACE_DEBOUNCERS = new Map<string, DebounceEntry>();
+
+/**
+ * Invalidate the index cache for a workspace, debounced at 500ms. Multiple
+ * upserts within the window collapse to a single regeneration. On flush,
+ * evicts the in-memory cache, synthesizes a fresh index, and writes back to
+ * `index.md` (unless a user-authored file is present and fresh).
+ *
+ * Per-workspace isolation: workspace A's upsert ONLY invalidates workspace A.
+ */
+export function invalidateIndexForWorkspace(
+  workspaceId: string,
+  backend: StorageBackend,
+  debounceMs = 500,
+): void {
+  if (process.env.INDEX_INVALIDATION_DISABLED === "1") return;
+
+  const existing = WORKSPACE_DEBOUNCERS.get(workspaceId);
+  if (existing) {
+    clearTimeout(existing.timer);
+  }
+
+  const timer = setTimeout(() => {
+    WORKSPACE_DEBOUNCERS.delete(workspaceId);
+    void flushIndexForWorkspace(workspaceId, backend);
+  }, debounceMs);
+
+  WORKSPACE_DEBOUNCERS.set(workspaceId, { timer, backend });
+}
+
+/** Export for tests and for backend disposal cleanup. */
+export function disposeWorkspaceDebouncer(workspaceId: string): void {
+  const existing = WORKSPACE_DEBOUNCERS.get(workspaceId);
+  if (existing) {
+    clearTimeout(existing.timer);
+    WORKSPACE_DEBOUNCERS.delete(workspaceId);
+  }
+}
+
+async function flushIndexForWorkspace(
+  workspaceId: string,
+  backend: StorageBackend,
+): Promise<void> {
+  // 1. Evict in-memory cache
+  indexCache.delete(backend);
+
+  // 2. Synthesize fresh index
+  let rendered: string;
+  try {
+    rendered = await synthesizeIndex(backend);
+  } catch (err) {
+    console.error(
+      `[index-tool] synthesis failed for workspace ${workspaceId}: ${err}`,
+    );
+    return;
+  }
+
+  // 3. Write-back to index.md if permitted
+  if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
+    try {
+      await maybeWriteIndexMd(backend, rendered);
+    } catch (err) {
+      console.error(
+        `[index-tool] write-back failed for workspace ${workspaceId}: ${err}`,
+      );
+    }
+  }
+
+  // 4. Populate cache with fresh result
+  const wrapped = wrap(rendered, "synthesized");
+  indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
+}
+
+/**
+ * Write index.md with TAPROOT-MANAGED:index marker, unless a fresh
+ * user-authored index.md (no marker, ≤7 days old) is present.
+ */
+async function maybeWriteIndexMd(
+  backend: StorageBackend,
+  rendered: string,
+): Promise<void> {
+  if (await backend.exists("index.md")) {
+    const existing = await backend.readFile("index.md");
+    const hasMarker = existing.includes(MANAGED_INDEX_MARKER);
+    if (!hasMarker) {
+      const fm = parseFrontmatter(existing);
+      const raw = fm.date_modified ?? fm.modified ?? fm.last_updated;
+      const ts = parseDateValue(raw);
+      if (ts !== null) {
+        const ageMs = Date.now() - ts;
+        if (ageMs >= 0 && ageMs <= INDEX_FRESHNESS_DAYS * 24 * 60 * 60 * 1000) {
+          return; // user-authored and fresh — don't clobber
+        }
+      }
+    }
+  }
+
+  const content = `---\n${MANAGED_INDEX_MARKER}: true\n---\n\n${rendered}`;
+  await backend.writeFile("index.md", content);
 }
 
 export function registerIndexTool(
@@ -42,6 +156,7 @@ export function registerIndexTool(
     },
     async () => {
       try {
+        // 1. In-memory cache (1h TTL)
         const cached = indexCache.get(backend);
         if (cached && Date.now() - cached.cachedAt < INDEX_TTL_MS) {
           return {
@@ -49,6 +164,7 @@ export function registerIndexTool(
           };
         }
 
+        // 2+3. Read index.md: managed marker → verbatim; user-authored fresh → verbatim
         const existing = await tryReadFreshIndex(backend);
         if (existing) {
           const wrapped = wrap(existing, "index.md");
@@ -56,16 +172,25 @@ export function registerIndexTool(
           return { content: [{ type: "text", text: wrapped }] };
         }
 
+        // 4. Synthesize transient + populate cache + queue write-back
         const synthesized = await synthesizeIndex(backend);
         const wrapped = wrap(synthesized, "synthesized");
         indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
+
+        if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
+          void maybeWriteIndexMd(backend, synthesized).catch((err) =>
+            console.error(`[index-tool] write-back error: ${err}`),
+          );
+        }
+
         return { content: [{ type: "text", text: wrapped }] };
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
         return {
           content: [
             {
               type: "text",
-              text: `Error building vault index: ${err.message}`,
+              text: `Error building vault index: ${msg}`,
             },
           ],
           isError: true,
@@ -79,11 +204,24 @@ function wrap(body: string, source: string): string {
   return `<vault-index source="${source}">\n${body}\n</vault-index>`;
 }
 
+/**
+ * Read index.md if it should be served verbatim.
+ *
+ * Priority:
+ *   1. Has TAPROOT-MANAGED:index marker → return verbatim (always fresh)
+ *   2. No marker, ≤7 days old → return verbatim (user-authored honored)
+ *   3. Otherwise null → caller synthesizes
+ */
 async function tryReadFreshIndex(
   backend: StorageBackend,
 ): Promise<string | null> {
   if (!(await backend.exists("index.md"))) return null;
   const content = await backend.readFile("index.md");
+
+  // Managed index — always serve it (freshness determined by write-back logic)
+  if (content.includes(MANAGED_INDEX_MARKER)) return content;
+
+  // User-authored — serve if within freshness window
   const fm = parseFrontmatter(content);
   const raw = fm.date_modified ?? fm.modified ?? fm.last_updated;
   if (raw == null) return null;
@@ -138,27 +276,152 @@ async function synthesizeIndex(backend: StorageBackend): Promise<string> {
   }
 
   if (root.length > 0) {
-    lines.push(`## (root)`, ...renderFolderSlice(root), "");
+    const rendered = await renderFolderSlice(backend, root.sort());
+    lines.push(`## (root)`, ...rendered, "");
   }
 
   for (const folder of folders) {
     const files = (groups.get(folder) ?? []).sort();
-    lines.push(`## ${folder}/`, ...renderFolderSlice(files), "");
+    const rendered = await renderFolderSlice(backend, files);
+    lines.push(`## ${folder}/`, ...rendered, "");
   }
 
-  return lines.join("\n").trimEnd() + "\n";
+  const raw = lines.join("\n").trimEnd() + "\n";
+  return applyCharBudget(raw, groups);
 }
 
-function renderFolderSlice(files: string[]): string[] {
+async function renderFolderSlice(
+  backend: StorageBackend,
+  files: string[],
+): Promise<string[]> {
   const sliced = files.slice(0, FILES_PER_FOLDER_LIMIT);
-  const rendered = sliced.map((f) => {
-    const base = path.basename(f, ".md");
-    return `- [[${base}]] — \`${f}\``;
-  });
+  const rendered: string[] = [];
+
+  for (const f of sliced) {
+    let content: string | undefined;
+    try {
+      content = await backend.readFile(f);
+    } catch {
+      content = undefined;
+    }
+    rendered.push(buildFileEntry(f, content));
+  }
+
   if (files.length > FILES_PER_FOLDER_LIMIT) {
+    const folder = files[0].includes("/") ? path.dirname(files[0]) : ".";
     rendered.push(
-      `- _(${files.length - FILES_PER_FOLDER_LIMIT} more in this folder — call \`garden_survey({ path: "${path.dirname(files[0])}" })\`)_`,
+      `- _(${files.length - FILES_PER_FOLDER_LIMIT} more in this folder — call \`garden_survey({ path: "${folder}" })\`)_`,
     );
   }
+
   return rendered;
+}
+
+function buildFileEntry(filePath: string, content: string | undefined): string {
+  const base = path.basename(filePath, ".md");
+  let cardLine = "";
+  let summaryText = "(no description)";
+
+  if (content !== undefined && content.trim()) {
+    const card = extractCardinality(content);
+    const rendered = renderCardinalityLine(card);
+    if (rendered) cardLine = rendered;
+
+    summaryText =
+      card.summary ??
+      extractFirstH1(content) ??
+      truncateText(stripFrontmatter(content), 80) ??
+      "(no description)";
+  }
+
+  const parts: string[] = [`- [[${base}]] — \`${filePath}\``];
+  if (cardLine) parts.push(cardLine);
+  parts.push(`— ${summaryText}`);
+
+  return parts.join(" ");
+}
+
+function extractFirstH1(content: string): string | undefined {
+  const match = /^#\s+(.+)$/m.exec(content);
+  return match ? match[1].trim() : undefined;
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---[\s\S]*?---\n/, "").trim();
+}
+
+function truncateText(text: string, maxLen: number): string | undefined {
+  if (!text) return undefined;
+  const normalized = text.replace(/\n+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.length > maxLen
+    ? normalized.slice(0, maxLen) + "…"
+    : normalized;
+}
+
+/**
+ * Apply 8000-char budget. If the rendered index exceeds the cap, drop the
+ * deepest-nested folder sections first until it fits.
+ */
+function applyCharBudget(
+  rendered: string,
+  groups: Map<string, string[]>,
+): string {
+  if (rendered.length <= INDEX_CHAR_BUDGET) return rendered;
+
+  // Split into preamble + per-folder sections
+  const lines = rendered.split("\n");
+  const preamble: string[] = [];
+
+  interface Section {
+    header: string;
+    body: string[];
+    depth: number;
+  }
+
+  const sections: Section[] = [];
+  let cur: Section | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      if (cur) sections.push(cur);
+      const label = line.slice(3).replace(/\/$/, "");
+      const depth = label === "(root)" ? 0 : label.split("/").length;
+      cur = { header: line, body: [], depth };
+    } else if (cur) {
+      cur.body.push(line);
+    } else {
+      preamble.push(line);
+    }
+  }
+  if (cur) sections.push(cur);
+
+  const build = (secs: Section[]): string => {
+    const parts = [...preamble];
+    for (const s of secs) {
+      parts.push(s.header, ...s.body);
+    }
+    return parts.join("\n").trimEnd() + "\n";
+  };
+
+  const dropped: string[] = [];
+  const remaining = [...sections];
+
+  while (remaining.length > 0) {
+    const attempt = build(remaining);
+    if (attempt.length <= INDEX_CHAR_BUDGET) break;
+    // Drop the deepest section (last occurrence of max depth)
+    const maxDepth = Math.max(...remaining.map((s) => s.depth));
+    const idx = remaining.map((s) => s.depth).lastIndexOf(maxDepth);
+    const [gone] = remaining.splice(idx, 1);
+    dropped.push(gone.header.slice(3).trim());
+  }
+
+  let result = build(remaining);
+  if (dropped.length > 0) {
+    result =
+      result.trimEnd() +
+      `\n\n<truncated: deepest-${dropped.length} folders dropped: ${dropped.join(", ")}>\n`;
+  }
+  return result;
 }

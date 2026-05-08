@@ -72,7 +72,10 @@ describe("garden_index", () => {
     const staleIndex = `---\ndate_modified: ${isoDaysAgo(30)}\n---\n\n# Stale Index`;
     const backend = makeBackend({
       exists: vi.fn(async (p: string) => p === "index.md"),
-      readFile: vi.fn(async () => staleIndex),
+      readFile: vi.fn(async (p: string) => {
+        if (p === "index.md") return staleIndex;
+        return ""; // vault files return empty content
+      }),
       listFiles: vi.fn(async () => [
         "daily/2026-05-07-foo.md",
         "decisions/2026-05-06-bar.md",
@@ -112,7 +115,8 @@ describe("garden_index", () => {
     expect(result.content[0].text).toContain('source="synthesized"');
     expect(result.content[0].text).toContain("## ideas/");
     expect(result.content[0].text).toContain("## research/");
-    expect(backend.readFile).not.toHaveBeenCalled();
+    // readFile is called per-file for cardinality/summary extraction
+    expect(backend.readFile).not.toHaveBeenCalledWith("index.md");
   });
 
   it("includes the truncation note when listFiles returns the cap (1000)", async () => {
@@ -147,7 +151,54 @@ describe("garden_index", () => {
     await handler();
     await handler();
 
+    // listFiles called once — cache prevents subsequent calls
     expect(backend.listFiles).toHaveBeenCalledTimes(1);
-    expect(backend.exists).toHaveBeenCalledTimes(1);
+    // exists called for index.md check on first call; background write-back may
+    // call it again but the second + third handler calls hit the in-memory cache
+    expect(backend.listFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders per-entry lines with cardinality and summary when content is available", async () => {
+    const fileContent = [
+      "---",
+      "tags: [ai, research]",
+      "status: active",
+      "summary: A test note about AI",
+      "---",
+      "# My AI Note",
+      "Some body text here.",
+    ].join("\n");
+
+    const backend = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => fileContent),
+      listFiles: vi.fn(async () => ["research/ai-note.md"]),
+    });
+
+    registerIndexTool(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("garden_index")!;
+    const result = await handler();
+
+    const text = result.content[0].text;
+    expect(text).toContain("[[ai-note]]");
+    // Cardinality line rendered
+    expect(text).toContain("[tags: ai, research | status: active");
+    // Summary from frontmatter
+    expect(text).toContain("A test note about AI");
+  });
+
+  it("falls back to H1 then truncated body when no frontmatter summary", async () => {
+    const noSummaryContent = "# Great Title\n\nSome body content here.";
+    const backend = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => noSummaryContent),
+      listFiles: vi.fn(async () => ["notes/great-note.md"]),
+    });
+
+    registerIndexTool(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("garden_index")!;
+    const result = await handler();
+
+    expect(result.content[0].text).toContain("Great Title");
   });
 });

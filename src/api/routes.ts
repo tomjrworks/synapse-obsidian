@@ -8,6 +8,7 @@ import { personaRouter } from "./persona.js";
 import { onboardingRulesRouter } from "./onboarding-rules.js";
 import { syncRouter } from "./sync.js";
 import { workspaceCreateRouter } from "./workspace-create.js";
+import { personaRenderRouter } from "./persona-render.js";
 
 export function mountApiRoutes(app: Express): void {
   const api = Router();
@@ -25,6 +26,7 @@ export function mountApiRoutes(app: Express): void {
   api.use("/", onboardingRulesRouter());
   api.use("/", syncRouter());
   api.use("/", workspaceCreateRouter());
+  api.use("/", personaRenderRouter());
 
   app.use("/api", api);
 }

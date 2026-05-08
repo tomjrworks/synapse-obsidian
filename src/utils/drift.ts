@@ -1,8 +1,16 @@
+import matter from "gray-matter";
 import {
   SECTION_MARKER_END,
   SECTION_MARKER_START,
 } from "../tools/persona-claudemd.js";
 import type { StorageBackend } from "./storage.js";
+
+export type DriftReason =
+  | "wrong_folder"
+  | "missing_filename_pattern"
+  | "missing_required_frontmatter"
+  | "structured_record"
+  | "multiple";
 
 /**
  * v1 rule kinds. The plan originally specified two rule types
@@ -179,16 +187,102 @@ export interface FlagsUpdate {
   remove?: string[];
 }
 
+const STRUCTURED_RECORD_TYPES = new Set([
+  "lead",
+  "contact",
+  "customer",
+  "company",
+  "prospect",
+  "account",
+]);
+
+function isStructuredRecordByFrontmatter(content: string): boolean {
+  try {
+    const fm = matter(content).data as Record<string, unknown>;
+    const typeVal = fm["type"];
+    if (typeof typeVal === "string") {
+      return STRUCTURED_RECORD_TYPES.has(typeVal.toLowerCase().trim());
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return false;
+}
+
+function classifyViolationReason(
+  filePath: string,
+  rule: string | undefined,
+): { reason: DriftReason; context: string } {
+  if (rule === "no-root-files") {
+    return {
+      reason: "wrong_folder",
+      context: "file at vault root; expected subfolder",
+    };
+  }
+  // Future rule kinds (missing_filename_pattern, missing_required_frontmatter)
+  // will add their own branches here.
+  return { reason: "wrong_folder", context: "" };
+}
+
+/**
+ * Compute the flags JSONB delta for a vault_files row given a write.
+ *
+ * CRITICAL: `flags.outside_rules` must be the STRING "true" — the
+ * dashboard's getOutsideRulesCount query in agency/taproothq filters
+ * `flags->>outside_rules eq 'true'` (string comparison via jsonb ->>
+ * operator). A boolean true would never match. Compliance REMOVES the
+ * key entirely (rather than writing "false") to keep the C0 partial
+ * index `WHERE (flags ? 'outside_rules')` lean.
+ *
+ * V1.5a.1: extended with `outside_rules_reason` and `outside_rules_context`
+ * for richer drift classification. Legacy `outside_rules: "true"` continues
+ * to emit on all violations for backward compat with the dashboard banner.
+ * Structured-record folders get an informational `structured_record` reason
+ * WITHOUT setting `outside_rules` (they are exempt from violation rules).
+ *
+ * Returns:
+ * - violation delta on rule violation
+ * - structured-record delta for CRM folders / frontmatter-detected records
+ * - compliance delta on clean files
+ * - `null` for exempt paths (no flags update needed)
+ */
 export function computeFlagsUpdate(
   filePath: string,
+  content: string | undefined,
   rules: Rule[],
 ): FlagsUpdate | null {
   if (isExempt(filePath)) return null;
+
+  // Structured-record folders: informational reason, no violation flag.
+  if (isStructuredRecord(filePath)) {
+    return {
+      remove: ["outside_rules"],
+      set: { outside_rules_reason: "structured_record" },
+    };
+  }
+
+  // Frontmatter-detected structured records (type: lead/contact/etc.)
+  if (content !== undefined && isStructuredRecordByFrontmatter(content)) {
+    return {
+      remove: ["outside_rules"],
+      set: { outside_rules_reason: "structured_record" },
+    };
+  }
+
   const check = checkPathAgainstRules(filePath, rules);
   if (check.violates) {
-    return { set: { outside_rules: "true" } };
+    const { reason, context } = classifyViolationReason(filePath, check.rule);
+    const setObj: Record<string, string> = {
+      outside_rules: "true",
+      outside_rules_reason: reason,
+    };
+    if (context) setObj.outside_rules_context = context.slice(0, 200);
+    return { set: setObj };
   }
-  return { remove: ["outside_rules"] };
+
+  return {
+    remove: ["outside_rules", "outside_rules_reason", "outside_rules_context"],
+  };
 }
 
 /**

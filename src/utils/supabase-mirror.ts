@@ -46,6 +46,7 @@ import {
   mergeFlags,
   type FlagsUpdate,
 } from "./drift.js";
+import { invalidateIndexForWorkspace } from "../tools/index-tool.js";
 import { withRetry } from "./retry.js";
 
 const TRANSIENT_HTTP_STATUSES = [429, 500, 502, 503, 504];
@@ -179,7 +180,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       invalidateRulesCache(this.workspaceId);
     }
     const rules = await getRulesForBackend(this, this.workspaceId);
-    const flagsUpdate = computeFlagsUpdate(normalized, rules);
+    const flagsUpdate = computeFlagsUpdate(normalized, content, rules);
 
     const { fileId, storageObject } = await this.upsertMetadata(
       normalized,
@@ -188,6 +189,13 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       nowIso,
       flagsUpdate,
     );
+
+    // V1.5a.1: Invalidate the index cache on any write except index.md itself
+    // (writing index.md is the write-back path — triggering invalidation there
+    // would create an infinite regeneration loop).
+    if (normalized !== "index.md") {
+      invalidateIndexForWorkspace(this.workspaceId, this);
+    }
 
     // 0.1.7 Phase 2: wrap with withRetry. supabase-js Storage returns
     // errors via { error } rather than throwing, so the callback inspects

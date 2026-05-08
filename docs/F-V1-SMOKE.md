@@ -209,6 +209,38 @@ After cleanup in step 11, the banner returns to hidden on next dashboard
 visit (file is soft-deleted, partial index `WHERE flags ? 'outside_rules'`
 no longer matches).
 
+## 13. Persona vault-write contract (TOM)
+
+With a workspace that has `settings.persona` set (at least one trait or non-empty freetext):
+
+```sh
+# First call — should write CLAUDE.md fresh or merge into existing
+curl -s -X POST https://connect.taproothq.com/api/persona/render \
+  -H "Authorization: Bearer <supabase-jwt>"
+# Expect: {"written":true,"path":"CLAUDE.md"}
+```
+
+Verify the write landed:
+
+```sql
+select length(content) > 0
+from vault_files
+where workspace_id = '<id>' and path = 'CLAUDE.md' and deleted_at is null;
+```
+
+Inspect vault (wait ~30s for helper pull) — `CLAUDE.md` should contain
+`<!-- TAPROOT-MANAGED:filing START -->` and persona-rendered content.
+
+```sh
+# Second call — idempotent, content unchanged
+curl -s -X POST https://connect.taproothq.com/api/persona/render \
+  -H "Authorization: Bearer <supabase-jwt>"
+# Expect: {"written":false,"reason":"no_change","path":"CLAUDE.md"}
+```
+
+**Failure mode:** `{"written":false,"reason":"no_persona_set"}` — workspace has no
+persona in settings. Set one via `/api/persona` first.
+
 ---
 
 ## Acceptance criteria

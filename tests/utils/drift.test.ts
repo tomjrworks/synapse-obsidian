@@ -8,6 +8,7 @@ import {
   parseRulesFromClaudeMd,
   type Rule,
 } from "../../src/utils/drift.js";
+
 import {
   composePersonaClaudeMd,
   SECTION_MARKER_END,
@@ -117,23 +118,41 @@ describe("checkPathAgainstRules", () => {
 
 describe("computeFlagsUpdate", () => {
   it('writes outside_rules as the STRING "true" (not boolean) on violation', () => {
-    const result = computeFlagsUpdate("foo.md", [NO_ROOT_RULE]);
-    expect(result).toEqual({ set: { outside_rules: "true" } });
+    const result = computeFlagsUpdate("foo.md", undefined, [NO_ROOT_RULE]);
+    // Legacy field still present for dashboard compat
+    expect(result?.set?.outside_rules).toBe("true");
     // Critical: not a boolean
     expect(result?.set?.outside_rules).not.toBe(true);
     expect(typeof result?.set?.outside_rules).toBe("string");
+    // V1.5a.1: reason is also emitted
+    expect(result?.set?.outside_rules_reason).toBe("wrong_folder");
   });
 
-  it("REMOVES outside_rules on compliance (rather than writing 'false')", () => {
-    const result = computeFlagsUpdate("notes/foo.md", [NO_ROOT_RULE]);
-    expect(result).toEqual({ remove: ["outside_rules"] });
+  it("REMOVES outside_rules + reason fields on compliance", () => {
+    const result = computeFlagsUpdate("notes/foo.md", undefined, [
+      NO_ROOT_RULE,
+    ]);
+    expect(result?.remove).toContain("outside_rules");
+    expect(result?.remove).toContain("outside_rules_reason");
+    expect(result?.remove).toContain("outside_rules_context");
   });
 
   it("returns null for exempt paths (skipped entirely)", () => {
-    expect(computeFlagsUpdate("CLAUDE.md", [NO_ROOT_RULE])).toBeNull();
     expect(
-      computeFlagsUpdate(".taproot/config.json", [NO_ROOT_RULE]),
+      computeFlagsUpdate("CLAUDE.md", undefined, [NO_ROOT_RULE]),
     ).toBeNull();
+    expect(
+      computeFlagsUpdate(".taproot/config.json", undefined, [NO_ROOT_RULE]),
+    ).toBeNull();
+  });
+
+  it("emits structured_record reason for CRM folder files without violation", () => {
+    const result = computeFlagsUpdate("leads/jane.md", undefined, [
+      NO_ROOT_RULE,
+    ]);
+    expect(result?.set?.outside_rules_reason).toBe("structured_record");
+    expect(result?.set?.outside_rules).toBeUndefined();
+    expect(result?.remove).toContain("outside_rules");
   });
 });
 
