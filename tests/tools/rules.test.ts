@@ -100,7 +100,7 @@ describe("garden_rules", () => {
     const result = await handler({});
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("permission denied");
-    expect(result.content[0].text).toContain("Error reading filing rules");
+    expect(result.content[0].text).toContain("garden_rules_failed");
+    expect(result.content[0].text).toContain("request_id:");
   });
 });

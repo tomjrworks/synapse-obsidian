@@ -149,9 +149,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
     asyncHandler(async (req, res) => {
       const parsed = pushSchema.safeParse(req.body);
       if (!parsed.success) {
-        res
-          .status(400)
-          .json({ error: "invalid_body", detail: parsed.error.format() });
+        respondError(res, 400, "sync_push_invalid_body", parsed.error);
         return;
       }
 
@@ -294,9 +292,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
     asyncHandler(async (req, res) => {
       const parsed = pullQuerySchema.safeParse(req.query);
       if (!parsed.success) {
-        res
-          .status(400)
-          .json({ error: "invalid_query", detail: parsed.error.format() });
+        respondError(res, 400, "sync_pull_invalid_query", parsed.error);
         return;
       }
       const { since, since_id, limit } = parsed.data;

@@ -1,6 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
+import {
+  checkToolRateLimit,
+  rateLimitToolError,
+  respondToolError,
+} from "./_rate-limit.js";
 
 const STARTER_RULES = `# Filing Rules (starter — no CLAUDE.md yet)
 
@@ -77,16 +81,8 @@ export function registerRulesTool(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error reading filing rules: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_rules_failed", err);
       }
     },
   );

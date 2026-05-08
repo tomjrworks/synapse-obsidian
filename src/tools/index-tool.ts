@@ -1,7 +1,11 @@
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
+import {
+  checkToolRateLimit,
+  rateLimitToolError,
+  respondToolError,
+} from "./_rate-limit.js";
 import { parseFrontmatter } from "../utils/vault.js";
 import {
   extractCardinality,
@@ -192,17 +196,8 @@ export function registerIndexTool(
         }
 
         return { content: [{ type: "text", text: wrapped }] };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error building vault index: ${msg}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_index_failed", err);
       }
     },
   );

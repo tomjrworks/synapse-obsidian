@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
+import {
+  checkToolRateLimit,
+  rateLimitToolError,
+  respondToolError,
+} from "./_rate-limit.js";
 import {
   loadConfig,
   saveConfig,
@@ -587,16 +591,8 @@ export function registerInitTools(
       return {
         content: [{ type: "text" as const, text: output.join("\n") }],
       };
-    } catch (err: any) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error scanning vault: ${err.message}`,
-          },
-        ],
-        isError: true,
-      };
+    } catch (err) {
+      return respondToolError("taproot_setup_scan_failed", err);
     }
   };
 
@@ -884,16 +880,8 @@ export function registerInitTools(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error configuring Taproot: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_till_failed", err);
       }
     },
   );
@@ -981,16 +969,8 @@ export function registerInitTools(
         return {
           content: [{ type: "text", text: output.join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error initializing knowledge base: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_init_failed", err);
       }
     },
   );

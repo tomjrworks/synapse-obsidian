@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import type { StorageBackend } from "../utils/storage.js";
-import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
+import {
+  checkToolRateLimit,
+  rateLimitToolError,
+  respondToolError,
+} from "./_rate-limit.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -90,16 +94,8 @@ export function registerKnowledgeTools(
           try {
             const fetched = await fetchUrlAsText(url);
             body = fetched.body;
-          } catch (fetchErr: any) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Error fetching URL: ${fetchErr.message}`,
-                },
-              ],
-              isError: true,
-            };
+          } catch (fetchErr) {
+            return respondToolError("taproot_seed_fetch_failed", fetchErr);
           }
         } else {
           body = content!;
@@ -138,16 +134,8 @@ export function registerKnowledgeTools(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error saving content: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_seed_failed", err);
       }
     },
   );
@@ -338,16 +326,8 @@ export function registerKnowledgeTools(
         );
 
         return { content: [{ type: "text", text: output.join("\n") }] };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error getting status: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_status_failed", err);
       }
     },
   );
@@ -449,16 +429,8 @@ export function registerKnowledgeTools(
         return {
           content: [{ type: "text", text: output.join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error preparing ingest: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_water_failed", err);
       }
     },
   );
@@ -550,16 +522,8 @@ export function registerKnowledgeTools(
         return {
           content: [{ type: "text", text: output.join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error scanning for compilation: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_cultivate_failed", err);
       }
     },
   );
@@ -697,16 +661,8 @@ export function registerKnowledgeTools(
         }
 
         return { content: [{ type: "text", text: output.join("\n") }] };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error researching query: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_harvest_failed", err);
       }
     },
   );
@@ -903,16 +859,8 @@ export function registerKnowledgeTools(
         return {
           content: [{ type: "text", text: report.join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error running lint: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_prune_failed", err);
       }
     },
   );
@@ -990,16 +938,8 @@ export function registerKnowledgeTools(
         let fetched;
         try {
           fetched = await fetchUrlAsText(url);
-        } catch (fetchErr: any) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Error fetching URL: ${fetchErr.message}`,
-              },
-            ],
-            isError: true,
-          };
+        } catch (fetchErr) {
+          return respondToolError("taproot_save_url_fetch_failed", fetchErr);
         }
 
         const config = await loadConfig(backend);
@@ -1082,11 +1022,8 @@ export function registerKnowledgeTools(
         return {
           content: [{ type: "text", text: responseText }],
         };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `Error saving URL: ${err.message}` }],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("taproot_save_url_failed", err);
       }
     },
   );

@@ -2,7 +2,11 @@ import { z } from "zod";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
+import {
+  checkToolRateLimit,
+  rateLimitToolError,
+  respondToolError,
+} from "./_rate-limit.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -58,13 +62,8 @@ export function registerVaultTools(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            { type: "text", text: `Error reading file: ${err.message}` },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_read_failed", err);
       }
     },
   );
@@ -172,13 +171,8 @@ export function registerVaultTools(
         return {
           content: [{ type: "text", text: message }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            { type: "text", text: `Error writing file: ${err.message}` },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_plant_failed", err);
       }
     },
   );
@@ -238,13 +232,8 @@ export function registerVaultTools(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            { type: "text", text: `Error listing files: ${err.message}` },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_survey_failed", err);
       }
     },
   );
@@ -309,11 +298,8 @@ export function registerVaultTools(
             },
           ],
         };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `Error searching: ${err.message}` }],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_find_failed", err);
       }
     },
   );
@@ -344,16 +330,8 @@ export function registerVaultTools(
         return {
           content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error getting stats: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_stats_failed", err);
       }
     },
   );
@@ -397,16 +375,8 @@ export function registerVaultTools(
         return {
           content: [{ type: "text", text: JSON.stringify(fm, null, 2) }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error reading frontmatter: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_frontmatter_failed", err);
       }
     },
   );
@@ -549,13 +519,8 @@ export function registerVaultTools(
         return {
           content: [{ type: "text", text: output.join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            { type: "text", text: `Error finding notes: ${err.message}` },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_search_failed", err);
       }
     },
   );
@@ -616,16 +581,8 @@ export function registerVaultTools(
         return {
           content: [{ type: "text", text: [header, "", ...lines].join("\n") }],
         };
-      } catch (err: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error listing recent notes: ${err.message}`,
-            },
-          ],
-          isError: true,
-        };
+      } catch (err) {
+        return respondToolError("garden_recent_failed", err);
       }
     },
   );

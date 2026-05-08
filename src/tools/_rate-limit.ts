@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { LRUCache } from "lru-cache";
 
 // Tool-level rate limiting. Keyed by (kind, workspaceId, tool). Separate
@@ -50,5 +51,19 @@ export function rateLimitToolError(message: string) {
   return {
     isError: true as const,
     content: [{ type: "text" as const, text: message }],
+  };
+}
+
+export function respondToolError(
+  code: string,
+  err: unknown,
+): { isError: true; content: [{ type: "text"; text: string }] } {
+  const requestId = randomUUID();
+  console.error(`[tool_error] code=${code} request_id=${requestId}`, err);
+  return {
+    isError: true as const,
+    content: [
+      { type: "text" as const, text: `${code} [request_id: ${requestId}]` },
+    ],
   };
 }
