@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,12 +123,17 @@ export async function startServer(port: number): Promise<void> {
   });
   app.options("/mcp", (_req, res) => res.sendStatus(204));
 
+  // express-rate-limit v8 requires custom keyGenerators to wrap IP fallbacks
+  // in `ipKeyGenerator` so IPv6 addresses are subnet-bucketed correctly
+  // (otherwise IPv6 clients can bypass limits by varying their /128 bits).
+  // See https://express-rate-limit.github.io/ERR_ERL_KEY_GEN_IPV6/.
   const proxyIp = (req: express.Request): string => {
     const cf = req.headers["cf-connecting-ip"];
-    if (typeof cf === "string" && cf) return cf;
+    if (typeof cf === "string" && cf) return ipKeyGenerator(cf);
     const xff = req.headers["x-forwarded-for"];
-    if (typeof xff === "string" && xff) return xff.split(",")[0].trim();
-    return req.ip ?? "unknown";
+    if (typeof xff === "string" && xff)
+      return ipKeyGenerator(xff.split(",")[0].trim());
+    return ipKeyGenerator(req.ip ?? "unknown");
   };
 
   const makeLimit = (max: number, windowSec = 60) =>
