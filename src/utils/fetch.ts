@@ -110,6 +110,51 @@ async function validateUrl(raw: string): Promise<URL> {
   throw new Error(`blocked private IP: only https: URLs are permitted`);
 }
 
+// 10 MB default — p99 markdown article ~200 KB, 50× headroom.
+// Override at runtime with TAPROOT_FETCH_MAX_BYTES env-var (no redeploy needed).
+// Evaluated at call time so Railway env-var changes take effect without restart.
+function getMaxFetchBodyBytes(): number {
+  const env = Number(process.env.TAPROOT_FETCH_MAX_BYTES);
+  return Number.isFinite(env) && env > 0 ? env : 10 * 1024 * 1024;
+}
+
+async function readBoundedText(
+  response: Response,
+  maxBytes: number,
+): Promise<string> {
+  if (!response.body) {
+    // No body stream (e.g. some test mocks) — fall back to .text() with a
+    // byte-count check. Fail-closed: missing Content-Length is not a bypass.
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) {
+      throw new Error(`Response body exceeded ${maxBytes} bytes`);
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Response body exceeded ${maxBytes} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* idempotent */
+    }
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+}
+
 /**
  * Fetch a URL, convert HTML to plain text, and extract a title from <title>
  * or first H1. Throws on HTTP errors so callers can format their own messages.
@@ -148,7 +193,7 @@ export async function fetchUrlAsText(rawUrl: string): Promise<FetchedUrl> {
   }
 
   const contentType = response!.headers.get("content-type") || "";
-  const rawBody = await response!.text();
+  const rawBody = await readBoundedText(response!, getMaxFetchBodyBytes());
 
   let title: string | null = null;
   if (
