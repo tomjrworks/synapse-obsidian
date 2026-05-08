@@ -43,11 +43,12 @@ async function createMcpServer(
     },
     { instructions },
   );
-  registerVaultTools(server, backend);
-  registerKnowledgeTools(server, backend);
-  registerInitTools(server, backend);
-  registerRulesTool(server, backend);
-  registerIndexTool(server, backend);
+  const toolOpts = { workspaceId: opts.workspaceId };
+  registerVaultTools(server, backend, toolOpts);
+  registerKnowledgeTools(server, backend, toolOpts);
+  registerInitTools(server, backend, toolOpts);
+  registerRulesTool(server, backend, toolOpts);
+  registerIndexTool(server, backend, toolOpts);
   registerPrompts(server, backend);
   registerResources(server, backend);
   return server;

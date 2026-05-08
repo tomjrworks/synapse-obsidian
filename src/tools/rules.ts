@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
+import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
 
 const STARTER_RULES = `# Filing Rules (starter — no CLAUDE.md yet)
 
@@ -33,6 +34,7 @@ user should personalize them.
 export function registerRulesTool(
   server: McpServer,
   backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
 ): void {
   server.registerTool(
     "garden_rules",
@@ -49,6 +51,12 @@ export function registerRulesTool(
       },
     },
     async () => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_rules",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         if (await backend.exists("CLAUDE.md")) {
           const content = await backend.readFile("CLAUDE.md");

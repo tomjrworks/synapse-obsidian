@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
+import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
 import {
   loadConfig,
   saveConfig,
@@ -464,6 +465,7 @@ async function scaffoldStructuredVault(
 export function registerInitTools(
   server: McpServer,
   backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
 ): void {
   // ── taproot_setup_scan (was taproot_plant) ───────────────────────────
   // F8 (2026-05-07): renamed from `taproot_plant` to resolve the name
@@ -472,6 +474,12 @@ export function registerInitTools(
   // below as a shim with a [deprecated] prefix so already-paired clients
   // don't break.
   const setupScanHandler = async () => {
+    const limited = checkToolRateLimit(
+      opts.workspaceId ?? "unknown",
+      "taproot_setup_scan",
+      "write",
+    );
+    if (limited) return rateLimitToolError(limited);
     try {
       // Check if already configured
       const existingConfig = await loadConfig(backend);
@@ -694,6 +702,12 @@ export function registerInitTools(
       purpose,
       purposeDescription,
     }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_till",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config: SynapseConfig = getDefaultConfig();
         config.mode = mode;
@@ -905,6 +919,12 @@ export function registerInitTools(
       },
     },
     async ({ topic }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_sow",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const { created, skipped } = await scaffoldStructuredVault(backend, {
           topic,

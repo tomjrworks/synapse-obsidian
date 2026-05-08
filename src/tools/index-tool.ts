@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
+import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
 import { parseFrontmatter } from "../utils/vault.js";
 import {
   extractCardinality,
@@ -139,6 +140,7 @@ async function maybeWriteIndexMd(
 export function registerIndexTool(
   server: McpServer,
   backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
 ): void {
   server.registerTool(
     "garden_index",
@@ -155,6 +157,12 @@ export function registerIndexTool(
       },
     },
     async () => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_index",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         // 1. In-memory cache (1h TTL)
         const cached = indexCache.get(backend);

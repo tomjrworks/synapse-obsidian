@@ -1,8 +1,8 @@
-import { LRUCache } from "lru-cache";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import type { StorageBackend } from "../utils/storage.js";
+import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -20,27 +20,10 @@ const TODAY = () => new Date().toISOString().split("T")[0];
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
 
-const RATE_LIMIT_MS = 60_000;
-const rateLimitMap = new LRUCache<string, number>({
-  max: 10_000,
-  ttl: RATE_LIMIT_MS * 5,
-});
-
-function checkRateLimit(workspaceId: string, tool: string): string | null {
-  const key = `${workspaceId}:${tool}`;
-  const last = rateLimitMap.get(key) ?? 0;
-  const now = Date.now();
-  if (now - last < RATE_LIMIT_MS) {
-    const waitSec = Math.ceil((RATE_LIMIT_MS - (now - last)) / 1000);
-    return `Rate limit: ${tool} can only run once per 60 seconds per workspace. Try again in ${waitSec}s.`;
-  }
-  rateLimitMap.set(key, now);
-  return null;
-}
-
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
 ): void {
   // ── taproot_seed ────────────────────────────────────────────────────
   server.registerTool(
@@ -74,6 +57,12 @@ export function registerKnowledgeTools(
       },
     },
     async ({ title, url, content, folder }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_seed",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         if (!url && !content) {
           return {
@@ -178,6 +167,12 @@ export function registerKnowledgeTools(
       },
     },
     async () => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_status",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config = await loadConfig(backend);
 
@@ -378,6 +373,12 @@ export function registerKnowledgeTools(
       },
     },
     async ({ sourcePath }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_water",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -476,6 +477,12 @@ export function registerKnowledgeTools(
       },
     },
     async () => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_cultivate",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config = await loadConfig(backend);
         const sourcesFolder = config?.sourcesFolder || "sources";
@@ -579,15 +586,12 @@ export function registerKnowledgeTools(
       },
     },
     async ({ question, save }) => {
-      if ("workspaceId" in backend) {
-        const rateLimitErr = checkRateLimit(
-          (backend as { workspaceId: string }).workspaceId,
-          "taproot_harvest",
-        );
-        if (rateLimitErr) {
-          return { content: [{ type: "text" as const, text: rateLimitErr }] };
-        }
-      }
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_harvest",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -721,15 +725,12 @@ export function registerKnowledgeTools(
       },
     },
     async () => {
-      if ("workspaceId" in backend) {
-        const rateLimitErr = checkRateLimit(
-          (backend as { workspaceId: string }).workspaceId,
-          "taproot_prune",
-        );
-        if (rateLimitErr) {
-          return { content: [{ type: "text" as const, text: rateLimitErr }] };
-        }
-      }
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_prune",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const config = await loadConfig(backend);
         const notesFolder = config?.wikiFolder || "notes";
@@ -979,6 +980,12 @@ export function registerKnowledgeTools(
       userIntent,
       previewOnly,
     }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "taproot_save_url",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         let fetched;
         try {

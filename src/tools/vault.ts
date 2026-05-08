@@ -2,6 +2,7 @@ import { z } from "zod";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
+import { checkToolRateLimit, rateLimitToolError } from "./_rate-limit.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -20,6 +21,7 @@ import { checkProtected } from "../utils/path-guard.js";
 export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
+  opts: { workspaceId?: string } = {},
 ): void {
   server.registerTool(
     "garden_read",
@@ -40,6 +42,12 @@ export function registerVaultTools(
       },
     },
     async ({ path: filePath }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_read",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const content = await readVaultFile(backend, filePath);
         return {
@@ -92,6 +100,12 @@ export function registerVaultTools(
       },
     },
     async ({ path: filePath, content, acknowledgeRoot }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_plant",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
       // H1 (05-05): guard persistent-instruction files against unacknowledged
       // overwrites via canonical-form Set check. Closes raw-string-match bypasses
       // (`./CLAUDE.md`, case folding on APFS, trailing-slash, traversal,
@@ -196,6 +210,12 @@ export function registerVaultTools(
       },
     },
     async ({ path: subPath, recursive }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_survey",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const files = await listVaultFiles(backend, subPath, recursive);
         if (files.length === 0) {
@@ -255,6 +275,12 @@ export function registerVaultTools(
       },
     },
     async ({ query, path: subPath, maxResults }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_forage",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const results = await searchVault(backend, query, {
           subPath,
@@ -307,6 +333,12 @@ export function registerVaultTools(
       },
     },
     async () => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_measure",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const stats = await getVaultStats(backend);
         return {
@@ -343,6 +375,12 @@ export function registerVaultTools(
       },
     },
     async ({ path: filePath }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_tag",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const content = await readVaultFile(backend, filePath);
         const fm = parseFrontmatter(content);
@@ -398,6 +436,12 @@ export function registerVaultTools(
       },
     },
     async ({ query, limit }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_find",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const max = limit ?? 10;
         const allFiles = await listVaultFiles(backend);
@@ -538,6 +582,12 @@ export function registerVaultTools(
       },
     },
     async ({ n }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_recent",
+        "read",
+      );
+      if (limited) return rateLimitToolError(limited);
       try {
         const limit = Math.min(n ?? 10, 50);
         const recent = await backend.recentFiles(limit);
