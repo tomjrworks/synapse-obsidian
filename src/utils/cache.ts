@@ -1,3 +1,4 @@
+import { LRUCache } from "lru-cache";
 import type { StorageBackend } from "./storage.js";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -16,7 +17,10 @@ interface ClaudeMdCacheEntry {
 // (Stage 1 T6) caches backends per workspace_id and may evict them while
 // active sessions still hold references. Bounded by active-tenant count
 // during the 5-min TTL window; if that ever needs an LRU, add one.
-const claudeMdCache = new Map<string, ClaudeMdCacheEntry>();
+const claudeMdCache = new LRUCache<string, ClaudeMdCacheEntry>({
+  max: 5_000,
+  ttl: CACHE_TTL_MS,
+});
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -27,7 +31,7 @@ async function readClaudeMd(
   tenantKey: string,
 ): Promise<string | null> {
   const entry = claudeMdCache.get(tenantKey);
-  if (entry && Date.now() - entry.loadedAt < CACHE_TTL_MS) {
+  if (entry) {
     return entry.content;
   }
   let content: string | null = null;

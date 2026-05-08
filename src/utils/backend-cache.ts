@@ -27,6 +27,7 @@
  * keep working until the cache expires or evict() is called explicitly.
  * That's acceptable — nuke can race in flight; the audit log records both.
  */
+import { LRUCache } from "lru-cache";
 import { SupabaseEncryptedMirrorBackend } from "./supabase-mirror.js";
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
@@ -37,14 +38,17 @@ interface CacheEntry {
   loadedAt: number;
 }
 
-const cache = new Map<string, CacheEntry>();
+const cache = new LRUCache<string, CacheEntry>({
+  max: 5_000,
+  ttl: DEFAULT_TTL_MS,
+});
 
 export async function getBackend(
   workspaceId: string,
   opts?: { ip?: string; userAgent?: string },
 ): Promise<SupabaseEncryptedMirrorBackend> {
   const hit = cache.get(workspaceId);
-  if (hit && Date.now() - hit.loadedAt < ttlMs) return hit.backend;
+  if (hit) return hit.backend;
 
   // Cache miss — construct fresh. The audit_log row for this kek_unwrap
   // records the request context (ip, ua) of the first request that caused
@@ -53,7 +57,7 @@ export async function getBackend(
     workspaceId,
     opts,
   );
-  cache.set(workspaceId, { backend, loadedAt: Date.now() });
+  cache.set(workspaceId, { backend, loadedAt: Date.now() }, { ttl: ttlMs });
   return backend;
 }
 

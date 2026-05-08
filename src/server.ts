@@ -286,12 +286,15 @@ export async function startServer(port: number): Promise<void> {
     });
   });
 
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.error(`Taproot server running at http://localhost:${port}`);
     console.error(`  MCP:    POST /mcp`);
     console.error(`  API:    /api/*`);
     console.error(`  Health: GET  /health`);
   });
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 30_000;
+  server.keepAliveTimeout = 5_000;
 }
 
 // Self-invoke when run directly (Railway / cloud deploy)

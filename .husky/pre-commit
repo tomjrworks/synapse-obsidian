@@ -1,1 +1,2 @@
 bash scripts/check-secrets.sh
+gitleaks protect --staged --no-banner
