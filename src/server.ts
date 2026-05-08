@@ -146,6 +146,41 @@ export async function startServer(port: number): Promise<void> {
       skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
     });
 
+  // Per-email body-keyed limiter for credential-check endpoints. Stacks IN
+  // FRONT of the existing IP-keyed limiter so credential-stuffing across
+  // rotating residential proxies hits the email cap before the IP cap.
+  // Only counts failed requests (skipSuccessfulRequests: true). Skips on
+  // non-POST or empty email — so GET consent page renders and requests missing
+  // an email body field fall through to the handler's own 400.
+  // Rollback: TAPROOT_DISABLE_RATE_LIMIT=1 disables both this and makeLimit.
+  const makeEmailLimit = (max: number, windowSec = 900) =>
+    rateLimit({
+      windowMs: windowSec * 1000,
+      max,
+      standardHeaders: true,
+      legacyHeaders: false,
+      keyGenerator: (req) => {
+        const email = String(req.body?.email ?? "")
+          .toLowerCase()
+          .trim();
+        return email || "no-email";
+      },
+      skipSuccessfulRequests: true,
+      skip: (req) => {
+        if (process.env.TAPROOT_DISABLE_RATE_LIMIT === "1") return true;
+        if (req.method !== "POST") return true;
+        const email = String(req.body?.email ?? "")
+          .toLowerCase()
+          .trim();
+        return email === "";
+      },
+    });
+
+  // Email limiter stacked BEFORE IP limiter on credential-check endpoints.
+  app.use("/authorize", makeEmailLimit(5));
+  app.use("/signin", makeEmailLimit(5));
+  app.use("/api/helper/auth/direct", makeEmailLimit(5));
+
   app.use("/authorize", makeLimit(10));
   app.use("/register", makeLimit(5));
   app.use("/token", makeLimit(20));
