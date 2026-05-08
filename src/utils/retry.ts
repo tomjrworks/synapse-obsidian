@@ -71,13 +71,27 @@ export async function withRetry<T>(
         status?: number | string;
         statusCode?: number | string;
         message?: string;
+        headers?: Record<string, string>;
       };
       console.warn(`withRetry: transient err on attempt ${i + 1}/${attempts}`, {
         code: e.code,
         status: e.status ?? e.statusCode,
         message: e.message,
       });
-      await new Promise((r) => setTimeout(r, jittered));
+      let waitMs = jittered;
+      const retryAfterRaw =
+        e.headers?.["retry-after"] ?? e.headers?.["Retry-After"];
+      if (retryAfterRaw) {
+        const retryAfterMs = Number(retryAfterRaw) * 1_000;
+        if (
+          Number.isFinite(retryAfterMs) &&
+          retryAfterMs > 0 &&
+          retryAfterMs < 60_000
+        ) {
+          waitMs = Math.max(jittered, retryAfterMs);
+        }
+      }
+      await new Promise((r) => setTimeout(r, waitMs));
     }
   }
   throw lastErr;

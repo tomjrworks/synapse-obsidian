@@ -83,4 +83,26 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(3);
     warnSpy.mockRestore();
   });
+
+  it("floors delay at Retry-After header value when present and within cap", async () => {
+    const err = Object.assign(new Error("rate limited"), {
+      status: 429,
+      headers: { "retry-after": "2" }, // 2 seconds
+    });
+    let capturedWaitMs = 0;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const setTimeoutSpy = vi
+      .spyOn(global, "setTimeout")
+      .mockImplementation((fn: TimerHandler, ms?: number) => {
+        capturedWaitMs = ms as number;
+        (fn as () => void)();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      });
+    await expect(
+      withRetry(() => Promise.reject(err), { attempts: 2, baseMs: 10 }),
+    ).rejects.toThrow();
+    expect(capturedWaitMs).toBeGreaterThanOrEqual(2_000);
+    warnSpy.mockRestore();
+    setTimeoutSpy.mockRestore();
+  });
 });
