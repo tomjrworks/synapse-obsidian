@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var heartbeatTasks: [UUID: Task<Void, Never>] = [:]
     /// Internal access so tests can verify cursor advance + clear.
     var pullCursors: [UUID: PullCursor] = [:]
+    /// Tracks when each workspace's last pullTick started. Used by the watchdog
+    /// to detect stalled pollers (loop frozen > 65s with no new tick).
+    var lastPollStartedAt: [UUID: Date] = [:]
     /// Test seam: the most recent NSMenu produced by `rebuildMenu`. `private(set)`
     /// so tests can read but external code can't mutate it. Always non-nil after
     /// the first `rebuildMenu` call (which `applicationDidFinishLaunching` runs).
@@ -302,6 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startAllWatchers()
         startAllPullPollers()
         startAllHeartbeats()
+        startWatchdog()
 
         // Start the auto-updater AFTER watchers + pollers so a launch-via-
         // deep-link (firstRun window opening, watchers spinning up) settles
@@ -404,7 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // `/private/var` on macOS Catalina+) resolve, which
                     // `resolvingSymlinksInPath()` alone does not.
                     localFolder: folderValue.canonicalPath,
-                    lastSyncAt: nil,
+                    lastSyncAt: loadLastSyncedAt(for: id),
                     syncStatus: .idle
                 )
             }
@@ -726,7 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: name,
             bearer: bearer,
             localFolder: canonical,
-            lastSyncAt: nil,
+            lastSyncAt: loadLastSyncedAt(for: workspaceID),
             syncStatus: .idle
         )
         // C1: dedup against rapid double-confirm (double-click "Get started"
@@ -997,10 +1001,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "leaf.fill"
     }
 
+    /// Sync status line shown as the first item in each workspace's action list.
+    /// Surfaces: "Synced · 3:45 PM", "Syncing… (12 files)", "Error · Last synced 3:45 PM", etc.
+    private func syncStatusText(for workspace: Workspace) -> String {
+        switch workspace.syncStatus {
+        case .idle:
+            if let t = workspace.lastSyncAt { return "Synced · \(formatSyncTime(t))" }
+            return "Synced"
+        case .syncing:
+            if let n = workspace.pendingCount, n > 0 {
+                return "Syncing… (\(n) file\(n == 1 ? "" : "s"))"
+            }
+            return "Syncing…"
+        case .error:
+            if let t = workspace.lastSyncAt { return "Error · Last synced \(formatSyncTime(t))" }
+            return "Error · Never synced"
+        case .paused:
+            return "Paused"
+        }
+    }
+
+    private func formatSyncTime(_ date: Date) -> String {
+        let cal = Calendar.current
+        let fmt = DateFormatter()
+        fmt.timeStyle = .short
+        fmt.dateStyle = .none
+        if cal.isDateInToday(date) { return fmt.string(from: date) }
+        if cal.isDateInYesterday(date) { return "Yesterday \(fmt.string(from: date))" }
+        fmt.dateStyle = .short
+        return fmt.string(from: date)
+    }
+
     /// Adds the per-workspace action items (Open vault folder, Open in
-    /// Obsidian, Pause/Resume sync, Settings…, Sign out) plus an optional
-    /// "Last error" row to `menu`. Used by both flat and nested layouts.
+    /// Obsidian, Pause/Resume sync, Settings…, Sign out) plus a sync status
+    /// row to `menu`. Used by both flat and nested layouts.
     private func appendActionItems(for workspace: Workspace, to menu: NSMenu) {
+        let statusItem = NSMenuItem(title: syncStatusText(for: workspace), action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        menu.addItem(statusItem)
+        menu.addItem(.separator())
+
         let openFolder = NSMenuItem(
             title: "Open vault folder",
             action: #selector(menuOpenVaultFolder(_:)),
@@ -1047,11 +1087,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signOut.representedObject = workspace.id
         menu.addItem(signOut)
 
-        if case let .error(msg) = workspace.syncStatus {
-            let errorItem = NSMenuItem(title: "Last error: \(msg)", action: nil, keyEquivalent: "")
-            errorItem.isEnabled = false
-            menu.addItem(errorItem)
-        }
+        // Error details are shown in the status line at the top of appendActionItems.
     }
 
     @objc func menuOpenVaultFolder(_ sender: NSMenuItem) {
@@ -1226,6 +1262,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaces.forEach { startHeartbeat(for: $0) }
     }
 
+    /// Fires every 90s and flips any workspace whose poller hasn't started a
+    /// tick in >65s to `.error("poll stalled")`. Clears automatically when the
+    /// next pullTick fires and sets `.syncing`. Detects a frozen poller loop —
+    /// not a dead app (no icon = obvious; stalled loop = invisible without this).
+    func startWatchdog() {
+        // Timer fires on the main RunLoop (scheduled from @MainActor context).
+        // `MainActor.assumeIsolated` makes this explicit to the compiler so
+        // @MainActor-isolated accesses don't generate actor-isolation warnings.
+        Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for i in self.workspaces.indices {
+                    let wsId = self.workspaces[i].id
+                    guard let last = self.lastPollStartedAt[wsId] else { continue }
+                    guard Date().timeIntervalSince(last) > 65 else { continue }
+                    if case .syncing = self.workspaces[i].syncStatus { continue }
+                    self.mutateWorkspaces { wks in
+                        if let j = wks.firstIndex(where: { $0.id == wsId }) {
+                            wks[j].syncStatus = .error("poll stalled")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Idempotent.
     func stopPullPoller(for workspaceID: UUID) {
         pullPollers[workspaceID]?.cancel()
@@ -1272,6 +1334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// background poller Task.
     func pullTick(workspaceID: UUID) async {
         guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else { return }
+        lastPollStartedAt[workspaceID] = Date()
         let snapshot = WorkspaceSnapshot(
             id: workspace.id,
             bearer: workspace.bearer,
@@ -1288,6 +1351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var cursor = pullCursors[workspaceID]
         var pageCount = 0
         var terminalStatus: SyncStatus = .idle
+        var caughtUpAt: Date? = nil     // set when .caughtUp fires; nil = hit D5 cap or error
+        var lastPendingCount: Int? = nil // last pendingCount from .morePages; 0 on .caughtUp
         drainLoop: while pageCount < Self.maxDrainPagesPerTick {
             let outcome = await syncEngine.pull(
                 workspace: snapshot,
@@ -1303,15 +1368,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch outcome {
             case .caughtUp(let next):
                 if let next { cursor = next }
+                caughtUpAt = Date()
+                lastPendingCount = 0
                 break drainLoop
-            case .morePages(let next):
+            case .morePages(let next, let pending):
                 cursor = next
+                lastPendingCount = pending
             case .transportError:
                 // Cursor unchanged; bail out for this tick. Surface as error
-                // so the menubar icon flips and the menu shows last-error.
-                terminalStatus = .error("transport")
+                // so the menubar icon flips and the menu shows last-error + timestamp.
+                terminalStatus = .error("pull failed")
                 break drainLoop
             }
+        }
+
+        if let now = caughtUpAt {
+            persistLastSyncedAt(now, for: workspaceID)
         }
 
         if let cursor {
@@ -1320,9 +1392,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         watcher?.start()
 
+        // Apply all state changes in a single mutateWorkspaces so the observer
+        // only sees the final post-tick snapshot (not intermediate page states).
         mutateWorkspaces { wks in
             if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
                 wks[i].syncStatus = terminalStatus
+                if let now = caughtUpAt {
+                    wks[i].lastSyncAt = now
+                    wks[i].pendingCount = 0
+                } else if let pending = lastPendingCount {
+                    wks[i].pendingCount = pending
+                }
             }
         }
 
@@ -1391,6 +1471,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let defaults = cursorDefaults()
         defaults.removeObject(forKey: "taproot.lastSync.\(id.uuidString)")
         defaults.removeObject(forKey: "taproot.lastSyncId.\(id.uuidString)")
+    }
+
+    private func persistLastSyncedAt(_ date: Date, for id: UUID) {
+        taprootDefaults().set(
+            date.timeIntervalSince1970,
+            forKey: "taproot.lastSyncedAt.\(id.uuidString)"
+        )
+    }
+
+    private func loadLastSyncedAt(for id: UUID) -> Date? {
+        let t = taprootDefaults().double(forKey: "taproot.lastSyncedAt.\(id.uuidString)")
+        guard t > 0 else { return nil }
+        return Date(timeIntervalSince1970: t)
     }
 
     @objc private func quit() {

@@ -67,6 +67,7 @@ struct PullResponseBody: Decodable {
     let files: [PullFileEntry]
     let next_since: String?
     let next_since_id: String?
+    let pending_count: Int?   // rows remaining after this page; nil on old server versions
 }
 
 /// Outcome a pull tick reports back to the AppDelegate. Caller uses this to
@@ -75,7 +76,8 @@ struct PullResponseBody: Decodable {
 enum PullOutcome: Sendable {
     /// Server returned a full page (== limit). Caller may re-pull
     /// immediately to drain remaining rows (subject to D5 10-page cap).
-    case morePages(PullCursor)
+    /// The Int is `pending_count` from the server — rows still behind after this page.
+    case morePages(PullCursor, Int)
     /// Server returned a partial page (< limit) or empty. Caller advances
     /// cursor and waits for the next interval.
     case caughtUp(PullCursor?)
@@ -324,7 +326,7 @@ actor SyncEngine {
         }
 
         if decoded.files.count >= limit, let next = nextCursor {
-            return .morePages(next)
+            return .morePages(next, decoded.pending_count ?? 0)
         }
         return .caughtUp(nextCursor)
     }

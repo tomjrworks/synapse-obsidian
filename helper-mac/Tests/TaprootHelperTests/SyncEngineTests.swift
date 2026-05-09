@@ -450,7 +450,7 @@ final class SyncEngineTests: XCTestCase {
         )
 
         switch outcome {
-        case .morePages(let cursor):
+        case .morePages(let cursor, _):
             XCTAssertEqual(cursor.modifiedAt, "2026-04-29T05:00:01.000Z")
             XCTAssertEqual(cursor.id, "00000000-0000-4000-8000-000000000002")
         default: XCTFail("expected .morePages, got \(outcome)")

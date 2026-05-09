@@ -18,5 +18,6 @@ struct Workspace: Identifiable {
     var bearer: String
     var localFolder: URL
     var lastSyncAt: Date?
+    var pendingCount: Int?   // rows remaining after last pull page; nil = unknown, 0 = caught up
     var syncStatus: SyncStatus
 }

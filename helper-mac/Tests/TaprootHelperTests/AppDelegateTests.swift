@@ -844,8 +844,8 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [pausedWS])
 
-        // Flat layout: name, Open vault folder, Open in Obsidian, Pause/Resume, Settings…, Sign out, sep, Check for updates…, Quit.
-        XCTAssertEqual(menu.items[3].title, "Resume sync")
+        // Flat layout: name, status, sep, Open vault folder, Open in Obsidian, Pause/Resume, Settings…, Sign out, sep, Check for updates…, Quit.
+        XCTAssertEqual(menu.items[5].title, "Resume sync")
     }
 
     func testBuildMenuShowsLastErrorWhenStatusIsError() {
@@ -861,10 +861,11 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [erroredWS])
 
-        // Looking for a disabled "Last error: transport" item somewhere in the menu.
-        let errorItem = menu.items.first { $0.title == "Last error: transport" }
-        XCTAssertNotNil(errorItem, "Error status should surface a disabled 'Last error' item")
-        XCTAssertEqual(errorItem?.isEnabled, false)
+        // Error state is surfaced in the status line at items[1] (no lastSyncAt → "Error · Never synced").
+        // The old "Last error: transport" item is replaced by the status line.
+        let statusItem = menu.items[1]
+        XCTAssertEqual(statusItem.title, "Error · Never synced")
+        XCTAssertFalse(statusItem.isEnabled)
     }
 
     func testResumeRestartsWatcherAndPoller() throws {
@@ -1011,40 +1012,45 @@ final class AppDelegateTests: XCTestCase {
 
         let menu = app.buildMenu(for: [workspace])
 
-        // Shape: [name (disabled), Open vault folder, Open in Obsidian,
-        //         Pause sync, Settings…, Sign out, separator,
-        //         Check for updates…, Quit] = 9 items.
-        XCTAssertEqual(menu.items.count, 9)
+        // Shape: [name (disabled), Synced (status, disabled), separator,
+        //         Open vault folder, Open in Obsidian, Pause sync,
+        //         Settings…, Sign out, separator, Check for updates…, Quit] = 11 items.
+        XCTAssertEqual(menu.items.count, 11)
 
         XCTAssertEqual(menu.items[0].title, "WS")
         XCTAssertFalse(menu.items[0].isEnabled, "Workspace name row is a disabled label")
 
-        let openFolder = menu.items[1]
+        // Status line: "Synced" (no lastSyncAt, so no timestamp)
+        XCTAssertEqual(menu.items[1].title, "Synced")
+        XCTAssertFalse(menu.items[1].isEnabled, "Status row is disabled")
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+
+        let openFolder = menu.items[3]
         XCTAssertEqual(openFolder.title, "Open vault folder")
         XCTAssertEqual(openFolder.representedObject as? UUID, id)
 
-        let openInObsidian = menu.items[2]
+        let openInObsidian = menu.items[4]
         XCTAssertEqual(openInObsidian.title, "Open in Obsidian")
         XCTAssertEqual(openInObsidian.representedObject as? UUID, id)
         XCTAssertEqual(openInObsidian.action, #selector(AppDelegate.menuOpenInObsidian(_:)))
 
-        let pauseSync = menu.items[3]
+        let pauseSync = menu.items[5]
         XCTAssertEqual(pauseSync.title, "Pause sync")
         XCTAssertEqual(pauseSync.representedObject as? UUID, id)
 
-        let settings = menu.items[4]
+        let settings = menu.items[6]
         XCTAssertEqual(settings.title, "Settings…")
         XCTAssertTrue(settings.isEnabled, "Settings… enabled in T11.6")
         XCTAssertEqual(settings.action, #selector(AppDelegate.menuOpenSettings(_:)))
 
-        let signOut = menu.items[5]
+        let signOut = menu.items[7]
         XCTAssertEqual(signOut.title, "Sign out")
         XCTAssertEqual(signOut.representedObject as? UUID, id)
 
-        XCTAssertTrue(menu.items[6].isSeparatorItem)
+        XCTAssertTrue(menu.items[8].isSeparatorItem)
 
-        XCTAssertEqual(menu.items[7].title, "Check for updates…")
-        XCTAssertEqual(menu.items[8].title, "Quit")
+        XCTAssertEqual(menu.items[9].title, "Check for updates…")
+        XCTAssertEqual(menu.items[10].title, "Quit")
     }
 
     func testBuildMenuNestedLayoutForTwoWorkspaces() throws {
@@ -1081,23 +1087,26 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(menu.items[3].title, "Check for updates…")
         XCTAssertEqual(menu.items[4].title, "Quit")
 
-        // Each submenu carries the 5 per-workspace actions, no name-label
-        // (the top-level row already labels which workspace).
-        XCTAssertEqual(alphaSubmenu.items.count, 5)
-        XCTAssertEqual(alphaSubmenu.items[0].title, "Open vault folder")
-        XCTAssertEqual(alphaSubmenu.items[0].representedObject as? UUID, id1)
-        XCTAssertEqual(alphaSubmenu.items[1].title, "Open in Obsidian")
-        XCTAssertEqual(alphaSubmenu.items[1].representedObject as? UUID, id1)
-        XCTAssertEqual(alphaSubmenu.items[2].title, "Pause sync")
+        // Each submenu: status (disabled), separator, then 5 per-workspace actions = 7 items.
+        // No name-label (the top-level row already labels which workspace).
+        XCTAssertEqual(alphaSubmenu.items.count, 7)
+        XCTAssertEqual(alphaSubmenu.items[0].title, "Synced")
+        XCTAssertFalse(alphaSubmenu.items[0].isEnabled)
+        XCTAssertTrue(alphaSubmenu.items[1].isSeparatorItem)
+        XCTAssertEqual(alphaSubmenu.items[2].title, "Open vault folder")
         XCTAssertEqual(alphaSubmenu.items[2].representedObject as? UUID, id1)
-        XCTAssertEqual(alphaSubmenu.items[3].title, "Settings…")
-        XCTAssertTrue(alphaSubmenu.items[3].isEnabled)
-        XCTAssertEqual(alphaSubmenu.items[4].title, "Sign out")
+        XCTAssertEqual(alphaSubmenu.items[3].title, "Open in Obsidian")
+        XCTAssertEqual(alphaSubmenu.items[3].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[4].title, "Pause sync")
         XCTAssertEqual(alphaSubmenu.items[4].representedObject as? UUID, id1)
+        XCTAssertEqual(alphaSubmenu.items[5].title, "Settings…")
+        XCTAssertTrue(alphaSubmenu.items[5].isEnabled)
+        XCTAssertEqual(alphaSubmenu.items[6].title, "Sign out")
+        XCTAssertEqual(alphaSubmenu.items[6].representedObject as? UUID, id1)
 
-        // Beta submenu items are pinned to ws2.id.
-        XCTAssertEqual(betaSubmenu.items[0].representedObject as? UUID, id2)
-        XCTAssertEqual(betaSubmenu.items[4].representedObject as? UUID, id2)
+        // Beta submenu action items are pinned to ws2.id.
+        XCTAssertEqual(betaSubmenu.items[2].representedObject as? UUID, id2)
+        XCTAssertEqual(betaSubmenu.items[6].representedObject as? UUID, id2)
     }
 
     func testPullTickFlipsSyncStatusToSyncingThenIdle() async throws {
@@ -1215,7 +1224,7 @@ final class AppDelegateTests: XCTestCase {
 
         await testApp.pullTick(workspaceID: id)
 
-        XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("transport"))
+        XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("pull failed"))
     }
 
     func testRebuildMenuFiresOnSignOut() throws {
@@ -1232,9 +1241,9 @@ final class AppDelegateTests: XCTestCase {
 
         app.signOut(workspaceID: id2)
 
-        // After sign-out the count drops to 1 → flat 9-item shape.
+        // After sign-out the count drops to 1 → flat 11-item shape (name, status, sep, 5 actions, sep, updates, quit).
         let after = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(after.items.count, 9)
+        XCTAssertEqual(after.items.count, 11)
     }
 
     func testRebuildMenuFiresOnHandleAuthURL() throws {
@@ -1247,9 +1256,9 @@ final class AppDelegateTests: XCTestCase {
         wireFirstRunForTest(app, folder: folder)
         app.applyBearer(workspaceID: id1, bearer: kBearerAlpha)
 
-        // After 1 workspace, currentMenu reflects the 9-item flat shape.
+        // After 1 workspace, currentMenu reflects the 11-item flat shape (name, status, sep, 5 actions, sep, updates, quit).
         let afterFirst = try XCTUnwrap(app.currentMenu)
-        XCTAssertEqual(afterFirst.items.count, 9, "Flat layout after first auth")
+        XCTAssertEqual(afterFirst.items.count, 11, "Flat layout after first auth")
 
         app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
         app.confirmReauth = { _ in true }
