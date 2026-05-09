@@ -589,9 +589,29 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         files.push(baseFields);
         continue;
       }
-      const { data: blob, error: dlErr } = await this.supabase.storage
-        .from(VAULT_BLOBS_BUCKET)
-        .download(row.storage_object as string);
+      // S1: cap each blob download at 10s so a broken/slow blob doesn't block
+      // the entire pull page. The timeout resolves (not rejects) with the same
+      // {data, error} shape Supabase returns, so existing error handling below
+      // is unchanged. The "timeout" substring in the message triggers the
+      // existing isTransient guard, keeping the local file intact.
+      const { data: blob, error: dlErr } = await Promise.race([
+        this.supabase.storage
+          .from(VAULT_BLOBS_BUCKET)
+          .download(row.storage_object as string),
+        new Promise<{
+          data: null;
+          error: { message: string; statusCode?: string };
+        }>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                data: null,
+                error: { message: "blob download timed out after 10s" },
+              }),
+            10_000,
+          ),
+        ),
+      ]);
       if (dlErr || !blob) {
         // Distinguish transient failures (5xx / timeout) from a truly missing
         // blob (404). A timeout does NOT mean the file is gone — treating it as
@@ -640,7 +660,28 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       };
     }
 
-    return { files, next };
+    // S2: count rows remaining after this page so the helper can show
+    // "X files behind" in the menu bar. Uses the same tuple-cursor ordering
+    // as the main query; covered by the same index. Zero when page is empty
+    // (cursor at head) or when this is the last/only page.
+    let pendingCount = 0;
+    if (rows && rows.length > 0 && next) {
+      let countQuery = this.supabase
+        .from("vault_files")
+        .select("*", { count: "exact", head: true })
+        .eq("workspace_id", this.workspaceId)
+        .or(
+          `modified_at.gt.${next.modifiedAt},and(modified_at.eq.${next.modifiedAt},id.gt.${next.id})`,
+        );
+      if (!cursor) {
+        // Initial pull only fetched alive files — count only alive rows too.
+        countQuery = countQuery.is("deleted_at", null);
+      }
+      const { count } = await countQuery;
+      pendingCount = count ?? 0;
+    }
+
+    return { files, next, pendingCount };
   }
 }
 

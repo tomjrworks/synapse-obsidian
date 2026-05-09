@@ -135,6 +135,7 @@ interface PullResponse {
   files: PullFileEntry[];
   next_since: string | null;
   next_since_id: string | null;
+  pending_count: number; // rows remaining after this page; 0 = caught up
 }
 
 export function syncRouter(opts: SyncRouterOptions = {}): Router {
@@ -329,6 +330,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
         files,
         next_since: result.next?.modifiedAt ?? null,
         next_since_id: result.next?.id ?? null,
+        pending_count: result.pendingCount,
       };
       res.json(response);
     }),

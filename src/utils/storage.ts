@@ -47,6 +47,7 @@ export interface PullCursor {
 export interface ListChangedResult {
   files: VaultFileChange[];
   next: PullCursor | null;
+  pendingCount: number; // rows remaining after this page; 0 = caught up
 }
 
 export interface StorageBackend {
