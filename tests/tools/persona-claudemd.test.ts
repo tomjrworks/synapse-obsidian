@@ -5,6 +5,7 @@ import {
   MANAGED_SECTION_ORDER,
   SECTION_MARKER_END,
   SECTION_MARKER_START,
+  _internal,
 } from "../../src/tools/persona-claudemd.js";
 
 describe("persona-claudemd HTML markers + WRITE_AUTOMATICALLY restore", () => {
@@ -58,5 +59,56 @@ describe("persona-claudemd HTML markers + WRITE_AUTOMATICALLY restore", () => {
     expect(out).toContain(SECTION_MARKER_START("traits"));
     expect(out).toContain(SECTION_MARKER_END("traits"));
     expect(out).toContain("no persona traits selected");
+  });
+});
+
+describe("_internal helpers — mature vault mode", () => {
+  it("buildPreambleForVault lists detected folders and omits the skeleton", () => {
+    const out = _internal.buildPreambleForVault([
+      "projects",
+      "daily",
+      "decisions",
+    ]);
+    expect(out).toContain("## Your vault folders");
+    expect(out).not.toContain("## Default folder skeleton");
+    expect(out).toContain("`projects/`");
+    expect(out).toContain("`daily/`");
+    expect(out).toContain("`decisions/`");
+  });
+
+  it("stripFolderSubsections removes Folders block but keeps Filing rules and Context", () => {
+    const founderSection = composePersonaSections({
+      traits: ["founder"],
+    }).traits;
+    // In fresh mode the raw section is used — strip it manually to test the helper
+    const stripped = _internal.stripFolderSubsections(founderSection);
+    expect(stripped).not.toContain("### Folders (added on top of");
+    expect(stripped).toContain("### Filing rules");
+    expect(stripped).toContain("### Context");
+  });
+
+  it("mature mode compose strips folder subsections and uses vault preamble", () => {
+    const out = composePersonaClaudeMd({
+      traits: ["founder"],
+      vaultMaturity: "mature",
+      actualTopFolders: ["projects", "daily"],
+    });
+    expect(out).toContain("## Your vault folders");
+    expect(out).not.toContain("## Default folder skeleton");
+    expect(out).not.toContain(
+      "### Folders (added on top of the default skeleton)",
+    );
+    expect(out).toContain("### Filing rules");
+    expect(out).toContain("### Context");
+  });
+
+  it("fresh mode (default) is byte-identical whether vaultMaturity omitted or explicit fresh", () => {
+    const implicit = composePersonaClaudeMd({ traits: ["founder"] });
+    const explicit = composePersonaClaudeMd({
+      traits: ["founder"],
+      vaultMaturity: "fresh",
+    });
+    expect(implicit).toBe(explicit);
+    expect(implicit).toContain("## Default folder skeleton");
   });
 });

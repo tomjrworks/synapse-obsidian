@@ -351,6 +351,33 @@ When a topic is abandoned, a strategy changes, or information becomes obsolete:
 
 Never delete dead content — it has historical value. Just mark it clearly so searches don't surface it as active.`;
 
+const FOLDER_SKELETON_PATTERN =
+  /## Default folder skeleton[\s\S]*?(?=\*\*Vault root\.)/;
+
+function buildPreambleForVault(topFolders: string[]): string {
+  const replacement =
+    topFolders.length > 0
+      ? `## Your vault folders\n\nThis vault has existing structure. Top-level folders detected:\n\n${topFolders.map((f) => `- \`${f}/\``).join("\n")}\n\nUse \`garden_index\` for the full vault map. The trait sections below show filing RULES — not a folder scaffold to create from scratch.\n\n`
+      : `## Your vault folders\n\n(No top-level folders detected yet — file under sensible names as the vault grows.)\n\n`;
+  return COMMON_PREAMBLE.replace(FOLDER_SKELETON_PATTERN, replacement);
+}
+
+function stripFolderSubsections(body: string): string {
+  return body
+    .replace(
+      /### Folders \(added on top of the default skeleton\)\n(?:- `[^`]+`[^\n]*\n)*/g,
+      "",
+    )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export const _internal = {
+  buildPreambleForVault,
+  stripFolderSubsections,
+  FOLDER_SKELETON_PATTERN,
+};
+
 const UNIVERSAL_TAIL = `## Conventions (universal)
 
 - Filenames: lowercase-kebab-case (e.g., \`active-inference.md\`).
@@ -459,8 +486,11 @@ export function composePersonaSections(opts: {
   traits: string[];
   personaFreetext?: string;
   today?: string;
+  vaultMaturity?: "fresh" | "mature";
+  actualTopFolders?: string[];
 }): ManagedSections {
   const today = opts.today ?? new Date().toISOString().split("T")[0];
+  const isMature = opts.vaultMaturity === "mature";
 
   const seen = new Set<string>();
   const orderedTraits: TraitId[] = [];
@@ -471,9 +501,13 @@ export function composePersonaSections(opts: {
     orderedTraits.push(t);
   }
 
+  const preamble = isMature
+    ? buildPreambleForVault(opts.actualTopFolders ?? [])
+    : COMMON_PREAMBLE;
+
   const filingParts: string[] = [
     `# CLAUDE.md\n\n> Created ${today} | Taproot brain`,
-    COMMON_PREAMBLE,
+    preamble,
   ];
 
   const freetext = opts.personaFreetext?.trim();
@@ -488,7 +522,13 @@ export function composePersonaSections(opts: {
   const traitsBody =
     orderedTraits.length === 0
       ? "<!-- no persona traits selected -->"
-      : orderedTraits.map((t) => TRAIT_SECTIONS[t]).join("\n\n");
+      : orderedTraits
+          .map((t) =>
+            isMature
+              ? stripFolderSubsections(TRAIT_SECTIONS[t])
+              : TRAIT_SECTIONS[t],
+          )
+          .join("\n\n");
 
   return {
     filing: filingParts.join("\n\n"),
@@ -501,6 +541,8 @@ export function composePersonaClaudeMd(opts: {
   traits: string[];
   personaFreetext?: string;
   today?: string;
+  vaultMaturity?: "fresh" | "mature";
+  actualTopFolders?: string[];
 }): string {
   const sections = composePersonaSections(opts);
   const blocks = MANAGED_SECTION_ORDER.map((id) =>

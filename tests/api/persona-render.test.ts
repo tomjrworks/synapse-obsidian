@@ -206,6 +206,83 @@ describe("POST /api/persona/render", () => {
     expect(written).not.toContain("old filing content");
   });
 
+  it("mature vault (>50 files): emits Your vault folders, not Default folder skeleton", async () => {
+    const files = Array.from({ length: 60 }, (_, i) =>
+      i < 30
+        ? `projects/item-${i}.md`
+        : `daily/2026-05-${String(i).padStart(2, "0")}.md`,
+    );
+    const mockBackend = makeBackend({
+      readFile: async (p: string) => {
+        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
+        return "";
+      },
+    });
+    mockBackend.listFiles.mockResolvedValue(files);
+    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
+
+    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
+    const res = makeRes();
+    await callHandler(req, res);
+
+    expect(res._json).toMatchObject({ written: true });
+    const written = vi.mocked(mockBackend.writeFile).mock
+      .calls[0]?.[1] as string;
+    expect(written).toContain("## Your vault folders");
+    expect(written).not.toContain("## Default folder skeleton");
+    expect(written).toContain("`projects/`");
+    expect(written).toContain("`daily/`");
+  });
+
+  it("mature vault: strips per-trait Folders subsection but keeps Filing rules and Context", async () => {
+    const files = Array.from({ length: 60 }, (_, i) =>
+      i < 30
+        ? `projects/item-${i}.md`
+        : `daily/2026-05-${String(i).padStart(2, "0")}.md`,
+    );
+    const mockBackend = makeBackend({
+      readFile: async (p: string) => {
+        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
+        return "";
+      },
+    });
+    mockBackend.listFiles.mockResolvedValue(files);
+    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
+
+    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
+    const res = makeRes();
+    await callHandler(req, res);
+
+    const written = vi.mocked(mockBackend.writeFile).mock
+      .calls[0]?.[1] as string;
+    expect(written).not.toContain(
+      "### Folders (added on top of the default skeleton)",
+    );
+    expect(written).toContain("### Filing rules");
+    expect(written).toContain("### Context");
+    expect(written).toContain("decided we're going to");
+  });
+
+  it("fresh vault (≤50 files): still emits Default folder skeleton (no regression)", async () => {
+    const mockBackend = makeBackend({
+      readFile: async (p: string) => {
+        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
+        return "";
+      },
+    });
+    mockBackend.listFiles.mockResolvedValue([]);
+    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
+
+    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
+    const res = makeRes();
+    await callHandler(req, res);
+
+    const written = vi.mocked(mockBackend.writeFile).mock
+      .calls[0]?.[1] as string;
+    expect(written).toContain("## Default folder skeleton");
+    expect(written).not.toContain("## Your vault folders");
+  });
+
   it("returns no_change on second call (idempotent)", async () => {
     // Write once, then read back the written content and call again
     let stored: string | null = null;

@@ -14,6 +14,7 @@ import {
 import { mergeIntoExistingClaudeMd } from "../tools/claudemd-merge.js";
 import { getBackend } from "../utils/backend-cache.js";
 import { NotFoundError } from "../utils/storage.js";
+import { listVaultFiles } from "../utils/vault.js";
 
 export function personaRenderRouter(): Router {
   const router = Router();
@@ -57,8 +58,27 @@ export function personaRenderRouter(): Router {
       const traits = persona.traits ?? [];
       const personaFreetext = persona.freetext ?? "";
 
+      // Detect vault maturity to emit context-aware CLAUDE.md
+      const allFiles = await listVaultFiles(backend).catch(
+        () => [] as string[],
+      );
+      const totalFiles = allFiles.length;
+      const topFolderSet = new Set<string>();
+      for (const f of allFiles) {
+        const slash = f.indexOf("/");
+        if (slash > 0) topFolderSet.add(f.slice(0, slash));
+      }
+      const vaultMaturity: "fresh" | "mature" =
+        totalFiles > 50 ? "mature" : "fresh";
+      const actualTopFolders = [...topFolderSet].sort().slice(0, 20);
+
       // Compose fresh CLAUDE.md sections
-      const fresh = composePersonaClaudeMd({ traits, personaFreetext });
+      const fresh = composePersonaClaudeMd({
+        traits,
+        personaFreetext,
+        vaultMaturity,
+        actualTopFolders,
+      });
 
       // Read existing CLAUDE.md (null if absent)
       let existing: string | null = null;
@@ -78,7 +98,12 @@ export function personaRenderRouter(): Router {
       if (existing === null) {
         finalContent = fresh;
       } else {
-        const sections = composePersonaSections({ traits, personaFreetext });
+        const sections = composePersonaSections({
+          traits,
+          personaFreetext,
+          vaultMaturity,
+          actualTopFolders,
+        });
         const { merged } = mergeIntoExistingClaudeMd(existing, sections);
         finalContent = merged;
       }
