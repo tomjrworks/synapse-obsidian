@@ -370,6 +370,54 @@ actor SyncEngine {
         return nil
     }
 
+    /// Blocker 1 — between-tick "X files behind" visibility. Helper calls this
+    /// at the start of each pullTick BEFORE flipping to .syncing so the menu
+    /// reflects pending state during the 30s idle window. Returns nil when
+    /// `cursor == nil` (no baseline) or on transport error or non-2xx —
+    /// caller treats nil as "don't update pendingCount" (existing value
+    /// preserved). Always-0 server response (rollback gate via
+    /// `PENDING_COUNT_DISABLED=1` on Railway) decodes to 0; menu just stays
+    /// on "Synced", same as today's behavior.
+    func fetchPendingCount(workspace: WorkspaceSnapshot, cursor: PullCursor?) async -> Int? {
+        guard let cursor else { return nil }
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/sync/pending-count"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "since", value: cursor.modifiedAt),
+            URLQueryItem(name: "since_id", value: cursor.id),
+        ]
+        guard let url = components?.url else { return nil }
+        let request = HTTPRequest(
+            url: url,
+            method: "GET",
+            headers: ["Authorization": "Bearer \(workspace.bearer)"],
+            body: Data()
+        )
+        let response: HTTPResponse
+        do {
+            response = try await httpClient.send(request)
+        } catch {
+            NSLog("[Taproot] fetchPendingCount: transport error: \(error)")
+            return nil
+        }
+        guard (200..<300).contains(response.status) else {
+            NSLog("[Taproot] fetchPendingCount: HTTP \(response.status)")
+            return nil
+        }
+        struct PendingCountBody: Decodable {
+            let pending_count: Int
+        }
+        do {
+            let body = try JSONDecoder().decode(PendingCountBody.self, from: response.body)
+            return body.pending_count
+        } catch {
+            NSLog("[Taproot] fetchPendingCount: decode failed: \(error)")
+            return nil
+        }
+    }
+
     /// Path-traversal-safe join. Refuses absolute paths and any path with
     /// `..` components. nonisolated — pure function.
     ///

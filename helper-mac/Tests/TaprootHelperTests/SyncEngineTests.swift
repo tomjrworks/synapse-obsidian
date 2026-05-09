@@ -798,4 +798,65 @@ extension SyncEngineTests {
         XCTAssertGreaterThanOrEqual(maxObserved, 1,
                                     "At least one onSend snapshot must observe counter >= 1")
     }
+
+    // MARK: - fetchPendingCount (Blocker 1)
+
+    func testFetchPendingCountReturnsNilWhenCursorIsNil() async {
+        let fake = FakeHTTPClient()
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+
+        let result = await engine.fetchPendingCount(workspace: snapshot, cursor: nil)
+
+        XCTAssertNil(result, "nil cursor must short-circuit before HTTP call")
+        let count = await fake.sendCount
+        XCTAssertEqual(count, 0, "no HTTP request should fire when cursor is nil")
+    }
+
+    func testFetchPendingCountDecodesResponse() async throws {
+        let fake = FakeHTTPClient()
+        let body = try JSONSerialization.data(withJSONObject: ["pending_count": 7])
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 200, body: body)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let cursor = PullCursor(modifiedAt: "2026-05-09T00:00:00Z", id: "11111111-0000-0000-0000-000000000001")
+
+        let result = await engine.fetchPendingCount(workspace: snapshot, cursor: cursor)
+
+        XCTAssertEqual(result, 7)
+        let lastReq = await fake.lastRequest
+        let req = try XCTUnwrap(lastReq)
+        XCTAssertEqual(req.method, "GET")
+        XCTAssertTrue(
+            req.url.absoluteString.hasPrefix("https://example.test/api/sync/pending-count?"),
+            "expected pending-count URL with query, got \(req.url.absoluteString)"
+        )
+        XCTAssertTrue(req.url.absoluteString.contains("since=2026-05-09T00:00:00Z"))
+        XCTAssertTrue(req.url.absoluteString.contains("since_id=11111111-0000-0000-0000-000000000001"))
+        XCTAssertEqual(req.headers["Authorization"], "Bearer test-bearer")
+    }
+
+    func testFetchPendingCountReturnsNilOnNon2xx() async {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.success(HTTPResponse(status: 500, body: Data())))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let cursor = PullCursor(modifiedAt: "2026-05-09T00:00:00Z", id: "22222222-0000-0000-0000-000000000002")
+
+        let result = await engine.fetchPendingCount(workspace: snapshot, cursor: cursor)
+
+        XCTAssertNil(result)
+    }
+
+    func testFetchPendingCountReturnsNilOnTransportError() async {
+        let fake = FakeHTTPClient()
+        await fake.setStubbedResponse(.failure(URLError(.notConnectedToInternet)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let snapshot = makeSnapshot()
+        let cursor = PullCursor(modifiedAt: "2026-05-09T00:00:00Z", id: "33333333-0000-0000-0000-000000000003")
+
+        let result = await engine.fetchPendingCount(workspace: snapshot, cursor: cursor)
+
+        XCTAssertNil(result)
+    }
 }

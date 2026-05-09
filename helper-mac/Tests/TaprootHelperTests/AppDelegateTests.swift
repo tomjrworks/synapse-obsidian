@@ -610,10 +610,14 @@ final class AppDelegateTests: XCTestCase {
         // sends fire after sign-out.
         try await Task.sleep(nanoseconds: 500_000_000)
         let sendsAfter = await localFake.sendCount
+        // Blocker 1 — pullTick now fires 2 HTTP sends per tick once the cursor
+        // is seeded (pre-tick pending-count + pull). Allow up to 2 sends from
+        // a single in-flight tick that started before signOut cancelled the
+        // poller.
         XCTAssertLessThanOrEqual(
             sendsAfter,
-            sendsBeforeSignOut + 1,
-            "no new pull sends after signOut (allow 1 in-flight tick that started before cancel)"
+            sendsBeforeSignOut + 2,
+            "no new pull sends after signOut (allow 1 in-flight tick = up to 2 sends: pending-count + pull)"
         )
     }
 
@@ -1224,7 +1228,9 @@ final class AppDelegateTests: XCTestCase {
 
         await testApp.pullTick(workspaceID: id)
 
-        XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("pull failed"))
+        // Blocker 1 — error strings rewritten for end-user clarity.
+        // No lastSyncAt on this workspace → no timestamp suffix.
+        XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("Can't reach Taproot"))
     }
 
     func testRebuildMenuFiresOnSignOut() throws {
@@ -1834,5 +1840,59 @@ final class AppDelegateTests: XCTestCase {
             matches,
             "diagnosticSnapshot format must match '\(pattern)', got: '\(snapshot)'"
         )
+    }
+
+    // MARK: - syncStatusText (Blocker 1: between-tick "X files behind")
+
+    private func makeWorkspace(
+        syncStatus: SyncStatus = .idle,
+        pendingCount: Int? = nil,
+        lastSyncAt: Date? = nil
+    ) -> Workspace {
+        Workspace(
+            id: UUID(),
+            name: "test",
+            bearer: kBearerA,
+            localFolder: FileManager.default.temporaryDirectory,
+            lastSyncAt: lastSyncAt,
+            pendingCount: pendingCount,
+            syncStatus: syncStatus
+        )
+    }
+
+    func testSyncStatusTextIdleWithNoPendingShowsSynced() {
+        let lastSync = Date(timeIntervalSince1970: 1_700_000_000)
+        let ws = makeWorkspace(syncStatus: .idle, pendingCount: 0, lastSyncAt: lastSync)
+        let text = app.syncStatusText(for: ws)
+        XCTAssertTrue(text.hasPrefix("Synced · "), "expected 'Synced · …', got '\(text)'")
+        XCTAssertFalse(text.contains("behind"))
+    }
+
+    func testSyncStatusTextIdleWithPendingShowsFilesBehind() {
+        let lastSync = Date(timeIntervalSince1970: 1_700_000_000)
+        let ws = makeWorkspace(syncStatus: .idle, pendingCount: 3, lastSyncAt: lastSync)
+        let text = app.syncStatusText(for: ws)
+        XCTAssertTrue(text.contains("3 files behind"), "expected '3 files behind', got '\(text)'")
+        XCTAssertTrue(text.contains("Synced "), "expected to include last-sync time, got '\(text)'")
+    }
+
+    func testSyncStatusTextIdleWithSinglePendingUsesSingularNoun() {
+        let lastSync = Date(timeIntervalSince1970: 1_700_000_000)
+        let ws = makeWorkspace(syncStatus: .idle, pendingCount: 1, lastSyncAt: lastSync)
+        let text = app.syncStatusText(for: ws)
+        XCTAssertTrue(text.contains("1 file behind"), "expected '1 file behind' (singular), got '\(text)'")
+        XCTAssertFalse(text.contains("files behind"))
+    }
+
+    func testSyncStatusTextIdleWithPendingButNoLastSync() {
+        let ws = makeWorkspace(syncStatus: .idle, pendingCount: 5, lastSyncAt: nil)
+        let text = app.syncStatusText(for: ws)
+        XCTAssertEqual(text, "5 files behind")
+    }
+
+    func testSyncStatusTextSyncingStillShowsCount() {
+        let ws = makeWorkspace(syncStatus: .syncing, pendingCount: 4, lastSyncAt: nil)
+        let text = app.syncStatusText(for: ws)
+        XCTAssertEqual(text, "Syncing… (4 files)")
     }
 }

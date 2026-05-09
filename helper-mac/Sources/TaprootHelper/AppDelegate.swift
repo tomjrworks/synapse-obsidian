@@ -1010,9 +1010,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Sync status line shown as the first item in each workspace's action list.
     /// Surfaces: "Synced · 3:45 PM", "Syncing… (12 files)", "Error · Last synced 3:45 PM", etc.
-    private func syncStatusText(for workspace: Workspace) -> String {
+    func syncStatusText(for workspace: Workspace) -> String {
         switch workspace.syncStatus {
         case .idle:
+            // Blocker 1 — between-tick "X files behind". Pre-tick fetch seeds
+            // pendingCount before the 30s idle window so the menu reflects
+            // queued AI writes. Falls through to plain "Synced · time" when
+            // caught up (or when count is unknown — initial sync, no cursor).
+            if let n = workspace.pendingCount, n > 0 {
+                let suffix = n == 1 ? "file behind" : "files behind"
+                if let t = workspace.lastSyncAt {
+                    return "\(n) \(suffix) · Synced \(formatSyncTime(t))"
+                }
+                return "\(n) \(suffix)"
+            }
             if let t = workspace.lastSyncAt { return "Synced · \(formatSyncTime(t))" }
             return "Synced"
         case .syncing:
@@ -1287,7 +1298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if case .syncing = self.workspaces[i].syncStatus { continue }
                     self.mutateWorkspaces { wks in
                         if let j = wks.firstIndex(where: { $0.id == wsId }) {
-                            wks[j].syncStatus = .error("poll stalled")
+                            wks[j].syncStatus = .error("Not syncing — check your connection")
                         }
                     }
                 }
@@ -1347,6 +1358,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bearer: workspace.bearer,
             localFolder: workspace.localFolder
         )
+
+        // Blocker 1 — pre-tick "X files behind" seeding. Issued BEFORE the
+        // .syncing flip so the menu reflects queued AI writes during the
+        // idle moment between ticks (today the .idle case shows "Synced"
+        // even when 5 files are queued in Supabase). Skips when cursor is
+        // nil (initial sync — count would be misleading); on transport
+        // error returns nil and pendingCount stays at its prior value.
+        let preTickCursor = pullCursors[workspaceID]
+        if let preCount = await syncEngine.fetchPendingCount(workspace: snapshot, cursor: preTickCursor) {
+            mutateWorkspaces { wks in
+                if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
+                    wks[i].pendingCount = preCount
+                }
+            }
+        }
+
         mutateWorkspaces { wks in
             if let i = wks.firstIndex(where: { $0.id == workspaceID }) {
                 wks[i].syncStatus = .syncing
@@ -1384,7 +1411,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .transportError:
                 // Cursor unchanged; bail out for this tick. Surface as error
                 // so the menubar icon flips and the menu shows last-error + timestamp.
-                terminalStatus = .error("pull failed")
+                if let t = workspaces.first(where: { $0.id == workspaceID })?.lastSyncAt {
+                    terminalStatus = .error("Can't reach Taproot — last synced \(formatSyncTime(t))")
+                } else {
+                    terminalStatus = .error("Can't reach Taproot")
+                }
                 break drainLoop
             }
         }

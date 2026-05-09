@@ -65,6 +65,7 @@ export interface StorageBackend {
     limit: number,
   ): Promise<ListChangedResult>;
   getCursorHead(): Promise<{ modifiedAt: string; id: string } | null>;
+  getPendingCount(cursor: PullCursor | null): Promise<number>;
 }
 
 /**
@@ -200,6 +201,10 @@ export class LocalBackend implements StorageBackend {
 
   async getCursorHead(): Promise<{ modifiedAt: string; id: string } | null> {
     throw new Error("getCursorHead is not supported by LocalBackend");
+  }
+
+  async getPendingCount(_cursor: PullCursor | null): Promise<number> {
+    throw new Error("getPendingCount is not supported by LocalBackend");
   }
 
   private async listRecursive(

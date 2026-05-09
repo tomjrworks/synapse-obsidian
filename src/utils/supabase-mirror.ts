@@ -709,6 +709,35 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return { files, next, pendingCount };
   }
 
+  // Blocker 1 — between-tick "X files behind" visibility. Returns the count of
+  // alive vault_files rows after the helper's keyset cursor, using the same
+  // tuple-cursor predicate as listChanged but with `head: true` so PostgREST
+  // returns just the count (no row data — no blob fetch). Backed by the same
+  // (workspace_id, modified_at, id) index as the pull query. Helper calls this
+  // at the start of each pullTick BEFORE the .syncing flip, so the menu can
+  // show "3 files behind · Synced HH:MM" during the 30s idle window between
+  // ticks (today the menu always shows "Synced" between ticks even when AI
+  // writes are queued).
+  async getPendingCount(cursor: PullCursor | null): Promise<number> {
+    if (!cursor) return 0;
+    const normalizeIso = (t: string): string =>
+      t.endsWith("+00:00") ? t.slice(0, -6) + "Z" : t;
+    const since = normalizeIso(cursor.modifiedAt);
+    // Match listChanged's cursor-present semantics: when a cursor is provided
+    // the pull includes deleted rows (helper applies tombstones), so the
+    // count must include them too. The cursor==null branch above short-
+    // circuits to 0, so we never need the alive-only filter here.
+    const { count, error } = await this.supabase
+      .from("vault_files")
+      .select("*", { count: "exact", head: true })
+      .eq("workspace_id", this.workspaceId)
+      .or(
+        `modified_at.gt.${since},and(modified_at.eq.${since},id.gt.${cursor.id})`,
+      );
+    if (error) throw new Error(`getPendingCount failed: ${error.message}`);
+    return count ?? 0;
+  }
+
   async getCursorHead(): Promise<{ modifiedAt: string; id: string } | null> {
     const normalizeIsoToZ = (t: string): string =>
       t.endsWith("+00:00") ? t.slice(0, -6) + "Z" : t;

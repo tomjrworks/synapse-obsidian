@@ -45,7 +45,10 @@ import {
 type BackendResolver = (
   workspaceId: string,
 ) => Promise<
-  Pick<StorageBackend, "writeFile" | "delete" | "listChanged" | "getCursorHead">
+  Pick<
+    StorageBackend,
+    "writeFile" | "delete" | "listChanged" | "getCursorHead" | "getPendingCount"
+  >
 >;
 
 interface SyncRouterOptions {
@@ -335,6 +338,68 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
         pending_count: result.pendingCount,
       };
       res.json(response);
+    }),
+  );
+
+  // Blocker 1 — between-tick "X files behind" visibility. Helper calls this
+  // at the start of each pullTick BEFORE flipping to .syncing so the menu can
+  // show "3 files behind · Synced HH:MM" during the 30s idle window. Reuses
+  // the pull cursor schema verbatim — same input shape, different output.
+  // Rollback gate: PENDING_COUNT_DISABLED=1 → returns { pending_count: 0 }
+  // without touching Supabase (helper sees 0, menu stays on "Synced").
+  router.get(
+    "/sync/pending-count",
+    authMiddleware,
+    workspaceLimitMiddleware(60),
+    asyncHandler(async (req, res) => {
+      const parsed = pullQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        respondError(
+          res,
+          400,
+          "sync_pending_count_invalid_query",
+          parsed.error,
+        );
+        return;
+      }
+      if (process.env.PENDING_COUNT_DISABLED === "1") {
+        res.json({ pending_count: 0 });
+        return;
+      }
+      const { since, since_id } = parsed.data;
+      const cursor =
+        since && since_id ? { modifiedAt: since, id: since_id } : null;
+      if (!cursor) {
+        // No cursor = caller has no baseline ("behind" is undefined). Return 0
+        // rather than total files so the helper menu doesn't flash a huge
+        // count at first launch before the cursor is seeded.
+        res.json({ pending_count: 0 });
+        return;
+      }
+
+      const { workspaceId } = req as AuthedOAuthRequest;
+      let backend: Pick<
+        StorageBackend,
+        "writeFile" | "delete" | "listChanged" | "getPendingCount"
+      >;
+      try {
+        backend = await resolveBackend(workspaceId);
+      } catch (err) {
+        respondError(res, 500, "server_error", err, {
+          logPrefix: "sync/pending-count",
+        });
+        return;
+      }
+      let pending: number;
+      try {
+        pending = await backend.getPendingCount(cursor);
+      } catch (err) {
+        respondError(res, 500, "server_error", err, {
+          logPrefix: "sync/pending-count",
+        });
+        return;
+      }
+      res.json({ pending_count: pending });
     }),
   );
 

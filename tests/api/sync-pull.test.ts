@@ -39,6 +39,7 @@ function makeServer(
           delete: async () => {},
           listChanged: async () => result,
           getCursorHead: async () => cursorHead,
+          getPendingCount: async () => 0,
         }),
       }),
     );
