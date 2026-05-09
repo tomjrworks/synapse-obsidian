@@ -50,6 +50,19 @@ async function readClaudeMd(
   return content;
 }
 
+const FILING_MARKER_START = "<!-- TAPROOT-MANAGED:filing START -->";
+const FILING_MARKER_END = "<!-- TAPROOT-MANAGED:filing END -->";
+const FILING_CACHE_KEY = "__filing__";
+
+function extractManagedFiling(claude: string): string | null {
+  const s = claude.indexOf(FILING_MARKER_START);
+  if (s === -1) return null;
+  const e = claude.indexOf(FILING_MARKER_END, s);
+  if (e === -1) return null;
+  const body = claude.slice(s + FILING_MARKER_START.length, e).trim();
+  return body.length === 0 ? null : body;
+}
+
 export async function getFilingHintCached(
   backend: StorageBackend,
   tenantKey: string,
@@ -62,6 +75,20 @@ export async function getFilingHintCached(
   if (!claude) return null;
 
   const entry = claudeMdCache.get(tenantKey);
+
+  // Prefer the full managed filing section when present — same hint regardless
+  // of which top-level folder is being filed. Cached once per tenant.
+  if (entry?.filingHints.has(FILING_CACHE_KEY)) {
+    return entry.filingHints.get(FILING_CACHE_KEY) ?? null;
+  }
+  const managed = extractManagedFiling(claude);
+  if (managed !== null) {
+    const hint = `Filing rules (CLAUDE.md managed section):\n${managed}\n`;
+    if (entry) entry.filingHints.set(FILING_CACHE_KEY, hint);
+    return hint;
+  }
+
+  // Fallback: legacy regex-match (3 lines containing top-level folder name)
   if (entry?.filingHints.has(topLevel)) {
     return entry.filingHints.get(topLevel) ?? null;
   }

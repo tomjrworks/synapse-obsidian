@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerIndexTool } from "../../src/tools/index-tool.js";
+import {
+  registerIndexTool,
+  _clearIndexCache,
+} from "../../src/tools/index-tool.js";
 import type { StorageBackend } from "../../src/utils/storage.js";
 
 type ToolHandler = () => Promise<{
@@ -200,5 +203,98 @@ describe("garden_index", () => {
     const result = await handler();
 
     expect(result.content[0].text).toContain("Great Title");
+  });
+
+  it("emits a stub section (not silent drop) when index exceeds 16k budget", async () => {
+    // 20 top-level folders × 20 files each ≈ 20k chars — exceeds 16k budget.
+    // Sections are always top-level (## folder/), so we need volume to trigger truncation.
+    const allFiles = Array.from({ length: 20 }, (_, f) =>
+      Array.from(
+        { length: 20 },
+        (_, i) =>
+          `folder-${String(f).padStart(2, "0")}/file-${String(i).padStart(3, "0")}.md`,
+      ),
+    ).flat();
+    const backend = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => "# Title\n"),
+      listFiles: vi.fn(async () => allFiles),
+    });
+    _clearIndexCache(backend);
+
+    registerIndexTool(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("garden_index")!;
+    const result = await handler();
+    const text = result.content[0].text;
+
+    // folder-19 is the last alphabetically — gets stubbed first, header must still appear
+    expect(text).toContain("## folder-19/");
+    // Stub line with correct file count
+    expect(text).toContain(
+      "Truncated — 20 files. Call `garden_survey` for details.",
+    );
+    // Legacy silent-drop footer must NOT appear
+    expect(text).not.toContain("<truncated: deepest-");
+  });
+
+  it("emits singular 'file' (not 'files') in stub when folder has exactly 1 file", async () => {
+    // 19 folders × 20 files + folder-19 with 1 file — total still exceeds 16k
+    const fullFolders = Array.from({ length: 19 }, (_, f) =>
+      Array.from(
+        { length: 20 },
+        (_, i) =>
+          `folder-${String(f).padStart(2, "0")}/file-${String(i).padStart(3, "0")}.md`,
+      ),
+    ).flat();
+    const singletonFolder = ["folder-19/lonely.md"];
+    const backend = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => "# Title\n"),
+      listFiles: vi.fn(async () => [...fullFolders, ...singletonFolder]),
+    });
+    _clearIndexCache(backend);
+
+    registerIndexTool(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("garden_index")!;
+    const result = await handler();
+    const text = result.content[0].text;
+
+    // folder-19 (1 file) is the last alphabetically and gets stubbed — singular form
+    expect(text).toMatch(/Truncated — 1 file\. Call/);
+    expect(text).not.toMatch(/Truncated — 1 files\./);
+  });
+
+  it("stub output is stable across two renders of the same input", async () => {
+    const allFiles = Array.from({ length: 20 }, (_, f) =>
+      Array.from(
+        { length: 20 },
+        (_, i) =>
+          `folder-${String(f).padStart(2, "0")}/file-${String(i).padStart(3, "0")}.md`,
+      ),
+    ).flat();
+
+    const backend1 = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => "# Title\n"),
+      listFiles: vi.fn(async () => [...allFiles]),
+    });
+    const backend2 = makeBackend({
+      exists: vi.fn(async () => false),
+      readFile: vi.fn(async () => "# Title\n"),
+      listFiles: vi.fn(async () => [...allFiles]),
+    });
+    _clearIndexCache(backend1);
+    _clearIndexCache(backend2);
+
+    registerIndexTool(serverCapture.server, backend1);
+    const handler1 = serverCapture.registered.get("garden_index")!;
+    const result1 = await handler1();
+
+    const serverCapture2 = makeServerCapture();
+    registerIndexTool(serverCapture2.server, backend2);
+    const handler2 = serverCapture2.registered.get("garden_index")!;
+    const result2 = await handler2();
+
+    expect(result1.content[0].text).toBe(result2.content[0].text);
   });
 });

@@ -17,7 +17,7 @@ const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
 const FILES_PER_FOLDER_LIMIT = 20;
 const TOTAL_FILE_LIMIT = 1000;
-const INDEX_CHAR_BUDGET = 8000;
+const INDEX_CHAR_BUDGET = 16_000;
 
 interface IndexCacheEntry {
   rendered: string;
@@ -363,8 +363,9 @@ function truncateText(text: string, maxLen: number): string | undefined {
 }
 
 /**
- * Apply 8000-char budget. If the rendered index exceeds the cap, drop the
- * deepest-nested folder sections first until it fits.
+ * Apply 16_000-char budget. If the rendered index exceeds the cap, replace the
+ * deepest-nested folder sections with stubs (visible to Claude, tiny footprint)
+ * rather than silently dropping them.
  */
 function applyCharBudget(
   rendered: string,
@@ -372,14 +373,15 @@ function applyCharBudget(
 ): string {
   if (rendered.length <= INDEX_CHAR_BUDGET) return rendered;
 
-  // Split into preamble + per-folder sections
   const lines = rendered.split("\n");
   const preamble: string[] = [];
 
   interface Section {
     header: string;
+    label: string;
     body: string[];
     depth: number;
+    truncated?: boolean;
   }
 
   const sections: Section[] = [];
@@ -390,7 +392,7 @@ function applyCharBudget(
       if (cur) sections.push(cur);
       const label = line.slice(3).replace(/\/$/, "");
       const depth = label === "(root)" ? 0 : label.split("/").length;
-      cur = { header: line, body: [], depth };
+      cur = { header: line, label, body: [], depth };
     } else if (cur) {
       cur.body.push(line);
     } else {
@@ -407,24 +409,28 @@ function applyCharBudget(
     return parts.join("\n").trimEnd() + "\n";
   };
 
-  const dropped: string[] = [];
   const remaining = [...sections];
 
   while (remaining.length > 0) {
     const attempt = build(remaining);
     if (attempt.length <= INDEX_CHAR_BUDGET) break;
-    // Drop the deepest section (last occurrence of max depth)
-    const maxDepth = Math.max(...remaining.map((s) => s.depth));
-    const idx = remaining.map((s) => s.depth).lastIndexOf(maxDepth);
-    const [gone] = remaining.splice(idx, 1);
-    dropped.push(gone.header.slice(3).trim());
+    // Replace the deepest non-truncated section with a stub.
+    const candidates = remaining
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => !s.truncated);
+    if (candidates.length === 0) break; // preamble alone exceeds budget; can't shrink further
+    const maxDepth = Math.max(...candidates.map((c) => c.s.depth));
+    const last = [...candidates].reverse().find((c) => c.s.depth === maxDepth)!;
+    const fileCount = groups.get(last.s.label)?.length ?? 0;
+    remaining[last.i] = {
+      ...last.s,
+      body: [
+        `*Truncated — ${fileCount} file${fileCount === 1 ? "" : "s"}. Call \`garden_survey\` for details.*`,
+        "",
+      ],
+      truncated: true,
+    };
   }
 
-  let result = build(remaining);
-  if (dropped.length > 0) {
-    result =
-      result.trimEnd() +
-      `\n\n<truncated: deepest-${dropped.length} folders dropped: ${dropped.join(", ")}>\n`;
-  }
-  return result;
+  return build(remaining);
 }
