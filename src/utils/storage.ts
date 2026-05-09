@@ -64,6 +64,7 @@ export interface StorageBackend {
     cursor: PullCursor | null,
     limit: number,
   ): Promise<ListChangedResult>;
+  getCursorHead(): Promise<{ modifiedAt: string; id: string } | null>;
 }
 
 /**
@@ -195,6 +196,10 @@ export class LocalBackend implements StorageBackend {
     // path. /api/sync/pull only routes through SupabaseEncryptedMirrorBackend.
     // Throw rather than no-op so a misrouted request fails loudly.
     throw new Error("listChanged is not supported by LocalBackend");
+  }
+
+  async getCursorHead(): Promise<{ modifiedAt: string; id: string } | null> {
+    throw new Error("getCursorHead is not supported by LocalBackend");
   }
 
   private async listRecursive(

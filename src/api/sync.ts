@@ -39,12 +39,14 @@ import {
   type StorageBackend,
 } from "../utils/storage.js";
 
-// Pick<StorageBackend, "writeFile" | "delete" | "listChanged"> instead of typeof
-// defaultGetBackend so the unit smoke can stub a minimal object — production
-// callers pass a SupabaseEncryptedMirrorBackend which is assignable.
+// Pick<StorageBackend, ...> instead of typeof defaultGetBackend so the unit
+// smoke can stub a minimal object — production callers pass a
+// SupabaseEncryptedMirrorBackend which is assignable.
 type BackendResolver = (
   workspaceId: string,
-) => Promise<Pick<StorageBackend, "writeFile" | "delete" | "listChanged">>;
+) => Promise<
+  Pick<StorageBackend, "writeFile" | "delete" | "listChanged" | "getCursorHead">
+>;
 
 interface SyncRouterOptions {
   getBackend?: BackendResolver;
@@ -333,6 +335,40 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
         pending_count: result.pendingCount,
       };
       res.json(response);
+    }),
+  );
+
+  router.get(
+    "/sync/cursor-head",
+    authMiddleware,
+    workspaceLimitMiddleware(60),
+    asyncHandler(async (req, res) => {
+      const { workspaceId } = req as AuthedOAuthRequest;
+      let backend: Pick<
+        StorageBackend,
+        "writeFile" | "delete" | "listChanged" | "getCursorHead"
+      >;
+      try {
+        backend = await resolveBackend(workspaceId);
+      } catch (err) {
+        respondError(res, 500, "server_error", err, {
+          logPrefix: "sync/cursor-head",
+        });
+        return;
+      }
+      let head: { modifiedAt: string; id: string } | null;
+      try {
+        head = await backend.getCursorHead();
+      } catch (err) {
+        respondError(res, 500, "server_error", err, {
+          logPrefix: "sync/cursor-head",
+        });
+        return;
+      }
+      res.json({
+        next_since: head?.modifiedAt ?? null,
+        next_since_id: head?.id ?? null,
+      });
     }),
   );
 

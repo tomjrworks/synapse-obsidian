@@ -331,6 +331,45 @@ actor SyncEngine {
         return .caughtUp(nextCursor)
     }
 
+    /// Fetches the DB-head cursor from `GET /api/sync/cursor-head`. Called once
+    /// immediately after initial sync completes so the first pullTick starts at
+    /// head (no re-download of all just-pushed files). Returns nil on transport
+    /// error or if the workspace is empty — caller treats nil as "no cursor"
+    /// (safe: first pull becomes an initial pull, same as today).
+    func fetchCursorHead(workspace: WorkspaceSnapshot) async -> PullCursor? {
+        let url = baseURL.appendingPathComponent("api/sync/cursor-head")
+        let request = HTTPRequest(
+            url: url,
+            method: "GET",
+            headers: ["Authorization": "Bearer \(workspace.bearer)"],
+            body: Data()
+        )
+        let response: HTTPResponse
+        do {
+            response = try await httpClient.send(request)
+        } catch {
+            NSLog("[Taproot] fetchCursorHead: transport error: \(error)")
+            return nil
+        }
+        guard (200..<300).contains(response.status) else {
+            NSLog("[Taproot] fetchCursorHead: HTTP \(response.status)")
+            return nil
+        }
+        struct CursorHeadBody: Decodable {
+            let next_since: String?
+            let next_since_id: String?
+        }
+        do {
+            let body = try JSONDecoder().decode(CursorHeadBody.self, from: response.body)
+            if let s = body.next_since, let i = body.next_since_id {
+                return PullCursor(modifiedAt: s, id: i)
+            }
+        } catch {
+            NSLog("[Taproot] fetchCursorHead: decode failed: \(error)")
+        }
+        return nil
+    }
+
     /// Path-traversal-safe join. Refuses absolute paths and any path with
     /// `..` components. nonisolated — pure function.
     ///

@@ -777,6 +777,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.currentInitialSyncCoordinator = nil
                     return
                 }
+                // Seed pull cursor to DB head so the first pullTick returns
+                // zero files instead of re-downloading all just-pushed files.
+                if let head = await syncEngine.fetchCursorHead(workspace: snapshot) {
+                    self.pullCursors[workspaceID] = head
+                    self.persistCursor(head, for: workspaceID)
+                    NSLog("[Taproot] Pull cursor seeded to head after initial sync: \(head.modifiedAt)")
+                }
                 self.startWatcher(for: workspace)
                 self.startPullPoller(for: workspace)
                 self.startHeartbeat(for: workspace)

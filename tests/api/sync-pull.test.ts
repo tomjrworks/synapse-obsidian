@@ -25,6 +25,7 @@ function seedWorkspace(wsId: string) {
 
 function makeServer(
   result: ListChangedResult,
+  cursorHead: { modifiedAt: string; id: string } | null = null,
 ): Promise<{ server: Server; baseUrl: string }> {
   return new Promise((resolve) => {
     const wsId = "ws-test-pull";
@@ -37,6 +38,7 @@ function makeServer(
           writeFile: async () => {},
           delete: async () => {},
           listChanged: async () => result,
+          getCursorHead: async () => cursorHead,
         }),
       }),
     );
@@ -153,6 +155,44 @@ describe("GET /api/sync/pull — pending_count", () => {
       expect(files[0].deleted).toBe(false);
       expect(files[0].path).toBe("notes/good.md");
       expect(body.pending_count).toBe(0);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+describe("GET /api/sync/cursor-head", () => {
+  it("returns next_since + next_since_id when workspace has files", async () => {
+    const head = {
+      modifiedAt: "2026-05-09T12:00:00Z",
+      id: "aaaaaaaa-0000-0000-0000-000000000001",
+    };
+    const { server, baseUrl } = await makeServer(
+      { files: [], next: null, pendingCount: 0 },
+      head,
+    );
+    try {
+      const res = await fetch(`${baseUrl}/sync/cursor-head`);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(res.status).toBe(200);
+      expect(body.next_since).toBe(head.modifiedAt);
+      expect(body.next_since_id).toBe(head.id);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("returns null cursors when workspace is empty", async () => {
+    const { server, baseUrl } = await makeServer(
+      { files: [], next: null, pendingCount: 0 },
+      null,
+    );
+    try {
+      const res = await fetch(`${baseUrl}/sync/cursor-head`);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(res.status).toBe(200);
+      expect(body.next_since).toBeNull();
+      expect(body.next_since_id).toBeNull();
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }

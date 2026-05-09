@@ -574,10 +574,18 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     const { data: rows, error } = await query;
     if (error) throw new Error(`listChanged query failed: ${error.message}`);
 
-    // Per row: if alive, fetch + decrypt content via the same path readFile
-    // uses. Reuses the in-memory DEK held by this backend instance.
-    const files: VaultFileChange[] = [];
-    for (const row of rows ?? []) {
+    // Per row: fetch + decrypt content for alive rows. Runs concurrently in
+    // chunks of PULL_PARALLELISM (default 10, env-var rollback gate).
+    const parallelismRaw = parseInt(process.env.PULL_PARALLELISM ?? "10", 10);
+    const concurrency = Math.max(
+      1,
+      isNaN(parallelismRaw) ? 10 : parallelismRaw,
+    );
+
+    type RowType = NonNullable<typeof rows>[0];
+    const processRow = async (
+      row: RowType,
+    ): Promise<VaultFileChange | null> => {
       const baseFields = {
         path: row.path as string,
         size: row.size_bytes as number,
@@ -585,67 +593,84 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         id: row.id as string,
         deleted: row.deleted_at !== null,
       };
-      if (baseFields.deleted) {
-        files.push(baseFields);
-        continue;
-      }
-      // S1: cap each blob download at 10s so a broken/slow blob doesn't block
-      // the entire pull page. The timeout resolves (not rejects) with the same
-      // {data, error} shape Supabase returns, so existing error handling below
-      // is unchanged. The "timeout" substring in the message triggers the
-      // existing isTransient guard, keeping the local file intact.
-      const { data: blob, error: dlErr } = await Promise.race([
-        this.supabase.storage
-          .from(VAULT_BLOBS_BUCKET)
-          .download(row.storage_object as string),
-        new Promise<{
-          data: null;
-          error: { message: string; statusCode?: string };
-        }>((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                data: null,
-                error: { message: "blob download timed out after 10s" },
-              }),
-            10_000,
-          ),
-        ),
-      ]);
-      if (dlErr || !blob) {
-        // Distinguish transient failures (5xx / timeout) from a truly missing
-        // blob (404). A timeout does NOT mean the file is gone — treating it as
-        // deleted would silently wipe the user's local copy. Skip transient
-        // errors so the local file is preserved; the cursor still advances past
-        // this row so the next pull tick won't retry it. A genuine 404 still
-        // signals deletion to clean up stale local copies.
-        const statusCode = String(
-          (dlErr as { statusCode?: unknown })?.statusCode ?? "",
-        );
-        const msg = dlErr?.message?.toLowerCase() ?? "";
-        const isTransient =
+      if (baseFields.deleted) return baseFields;
+
+      let blob: Blob;
+      try {
+        // withRetry handles transient 5xx + timeout (statusCode 504 makes the
+        // timeout detectable by isTransient, so it retries up to 3x then skips).
+        blob = await withRetry(async () => {
+          const { data, error: dlErr } = await Promise.race([
+            this.supabase.storage
+              .from(VAULT_BLOBS_BUCKET)
+              .download(row.storage_object as string),
+            new Promise<{
+              data: null;
+              error: { message: string; statusCode?: string };
+            }>((resolve) =>
+              setTimeout(
+                () =>
+                  resolve({
+                    data: null,
+                    error: {
+                      message: "blob download timeout after 10s",
+                      statusCode: "504",
+                    },
+                  }),
+                10_000,
+              ),
+            ),
+          ]);
+          if (dlErr || !data) {
+            throw Object.assign(
+              new Error(dlErr?.message ?? "download failed"),
+              {
+                statusCode: dlErr?.statusCode,
+              },
+            );
+          }
+          return data;
+        });
+      } catch (err) {
+        // Post-retry classifier: distinguish transient (skip, preserve local
+        // copy) from a genuine missing blob (404 → mark deleted).
+        const e = err as { statusCode?: unknown; message?: string };
+        const statusCode = String(e.statusCode ?? "");
+        const msg = (e.message ?? "").toLowerCase();
+        const isTransientErr =
           ["500", "502", "503", "504"].includes(statusCode) ||
           msg.includes("timeout") ||
           msg.includes("gateway");
-        if (isTransient) {
+        if (isTransientErr) {
           console.error(
-            `[listChanged] transient storage error for ${row.path}, skipping: ${dlErr?.message ?? "no body"}`,
+            `[listChanged] transient storage error for ${row.path}, skipping: ${e.message ?? "no body"}`,
           );
-          continue;
+          return null;
         }
         console.error(
-          `[listChanged] storage object missing for ${row.path}: ${dlErr?.message ?? "no body"}`,
+          `[listChanged] storage object missing for ${row.path}: ${e.message ?? "no body"}`,
         );
-        files.push({ ...baseFields, deleted: true });
-        continue;
+        return { ...baseFields, deleted: true };
       }
+
       const ciphertext = Buffer.from(await blob.arrayBuffer());
       const plaintext = decryptBlob(
         ciphertext,
         this.dek,
         this.workspaceId,
       ).toString("utf8");
-      files.push({ ...baseFields, content: plaintext });
+      return { ...baseFields, content: plaintext };
+    };
+
+    const files: VaultFileChange[] = [];
+    for (let i = 0; i < (rows ?? []).length; i += concurrency) {
+      const chunk = (rows ?? []).slice(i, i + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map((row) => processRow(row)),
+      );
+      for (const result of chunkResults) {
+        if (result) files.push(result);
+      }
     }
 
     // Cursor: last row of returned page. Empty page echoes input cursor
@@ -682,6 +707,26 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     return { files, next, pendingCount };
+  }
+
+  async getCursorHead(): Promise<{ modifiedAt: string; id: string } | null> {
+    const normalizeIsoToZ = (t: string): string =>
+      t.endsWith("+00:00") ? t.slice(0, -6) + "Z" : t;
+    const { data, error } = await this.supabase
+      .from("vault_files")
+      .select("modified_at, id")
+      .eq("workspace_id", this.workspaceId)
+      .is("deleted_at", null)
+      .order("modified_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`getCursorHead failed: ${error.message}`);
+    if (!data) return null;
+    return {
+      modifiedAt: normalizeIsoToZ(data.modified_at as string),
+      id: data.id as string,
+    };
   }
 }
 
