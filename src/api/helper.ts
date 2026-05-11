@@ -150,7 +150,9 @@ export function helperRouter(): Router {
 
       const lastSeen = data.last_seen_at
         ? new Date(data.last_seen_at).getTime()
-        : 0;
+        : data.installed_at
+          ? new Date(data.installed_at).getTime()
+          : 0;
       const fresh = lastSeen > Date.now() - HELPER_FRESHNESS_MS;
 
       // vault_path lives in workspaces.settings once T11 lands the helper
