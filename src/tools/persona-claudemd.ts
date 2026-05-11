@@ -172,8 +172,6 @@ const STARTER_FOLDERS: FolderSummary[] = [
   { name: "projects", summary: "active work, one subfolder per project" },
 ];
 
-const STARTER_COMMENT = `<!-- Starter folders — Taproot will replace this with your observed folder structure after your first week of saves. -->`;
-
 const LEARNED_RULES_PLACEHOLDER = "(none yet)";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -221,28 +219,27 @@ function renderFolderList(folders: FolderSummary[]): string {
 }
 
 function renderVaultFoldersBlock(folderScan: FolderSummary[]): string {
-  const lines: string[] = ["## Vault folders"];
-  if (folderScan.length === 0) {
-    lines.push(
-      "",
-      "These are starter folders. New top-level folders are deliberate — ask before creating one.",
-      "",
-      renderFolderList(STARTER_FOLDERS),
-      "",
-      STARTER_COMMENT,
-    );
-  } else {
-    lines.push(
-      "",
-      "These are the real top-level folders. They reflect how the user works, not a template. New top-level folders are deliberate — ask before creating one.",
-      "",
-      renderFolderList(folderScan),
-    );
-  }
-  lines.push(
+  // Always emit the 5 starter folders with their canonical summaries —
+  // they exist on disk from helper-mac StarterFolders.ensure even when
+  // the cloud-side scan doesn't see them (empty folders aren't object-
+  // visible in Supabase Storage). For starter folders that DO appear in
+  // the scan, the canonical summary still wins so we don't surface a
+  // random inbox note's first line as the folder's purpose. Non-starter
+  // observed folders append below the starters.
+  const starterNames = new Set(STARTER_FOLDERS.map((f) => f.name));
+  const observedNonStarters = folderScan.filter(
+    (f) => !starterNames.has(f.name),
+  );
+  const folders: FolderSummary[] = [...STARTER_FOLDERS, ...observedNonStarters];
+  const lines: string[] = [
+    "## Vault folders",
+    "",
+    "These are your top-level folders. The 5 starter folders come pre-scaffolded; new top-level folders are deliberate — ask before creating one.",
+    "",
+    renderFolderList(folders),
     "",
     "**Vault root.** Only `CLAUDE.md` and `index.md` live at vault root. **NEVER create files at vault root** — file under one of the folders above.",
-  );
+  ];
   return lines.join("\n");
 }
 

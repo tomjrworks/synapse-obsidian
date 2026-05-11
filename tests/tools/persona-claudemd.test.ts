@@ -45,26 +45,54 @@ describe("composePersonaClaudeMd — marker contract", () => {
 });
 
 describe("composePersonaSections — folder scan rendering", () => {
-  it("emits the L7 starter scaffold when folder scan is empty", () => {
+  it("emits the 5 starter folders with canonical summaries when scan is empty", () => {
     const out = composePersonaSections({ folderScan: [] });
     for (const folder of ["daily", "decisions", "inbox", "notes", "projects"]) {
       expect(out.filing).toContain(`\`${folder}/\``);
     }
-    expect(out.filing).toContain("Starter folders");
+    // Canonical summaries — not "daily notes" or first-line-of-note guesses
+    expect(out.filing).toContain("`daily/` — session logs and dated notes");
+    expect(out.filing).toContain(
+      "`inbox/` — landing pad for notes that don't have a clear home yet",
+    );
   });
 
-  it("emits only the observed folders when folder scan is non-empty", () => {
+  it("always emits the 5 starter folders with canonical summaries even when scan has user-derived summaries", () => {
+    // Empty starter folders don't sync to cloud (Supabase Storage is
+    // object-based), so the scan can miss them OR derive a meaningless
+    // summary from the first note's first line (e.g. an inbox first-wow
+    // note). Canonical summary must always win for starters.
     const out = composePersonaSections({
       folderScan: [
-        { name: "daily", summary: "session logs" },
+        { name: "inbox", summary: "My favorite coffee shop is Starbucks" },
         { name: "projects", summary: "active work" },
       ],
     });
-    expect(out.filing).toContain("`daily/` — session logs");
-    expect(out.filing).toContain("`projects/` — active work");
-    // No starter-scaffold leakage when real folders are present
-    expect(out.filing).not.toContain("Starter folders");
-    expect(out.filing).not.toContain("`inbox/` — landing pad");
+    // Canonical inbox summary wins over the derived first-line of a note
+    expect(out.filing).toContain(
+      "`inbox/` — landing pad for notes that don't have a clear home yet",
+    );
+    expect(out.filing).not.toContain(
+      "`inbox/` — My favorite coffee shop is Starbucks",
+    );
+    // Starters still all appear, even if scan only saw 1 of them
+    for (const folder of ["daily", "decisions", "notes"]) {
+      expect(out.filing).toContain(`\`${folder}/\``);
+    }
+  });
+
+  it("appends non-starter observed folders after the 5 starters", () => {
+    const out = composePersonaSections({
+      folderScan: [
+        { name: "app-building", summary: "app project plans" },
+        { name: "school", summary: "coursework" },
+      ],
+    });
+    // Starters first
+    expect(out.filing).toContain("`daily/`");
+    // Observed non-starters preserved with their derived summaries
+    expect(out.filing).toContain("`app-building/` — app project plans");
+    expect(out.filing).toContain("`school/` — coursework");
   });
 
   it("Tom-shaped vault (14 folders) renders all 14 by name", () => {
