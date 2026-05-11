@@ -99,7 +99,7 @@ export function onboardingRulesRouter(): Router {
       const { settings, error } = await patchWorkspaceSettings(
         sb,
         membership.workspaceId,
-        { onboarding_step: "done" },
+        { onboarding_step: "use-cases" },
       );
       if (error) {
         respondError(res, 500, "step_advance_failed", error, {

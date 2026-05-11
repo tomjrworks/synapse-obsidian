@@ -18,6 +18,7 @@ export const ONBOARDING_STEPS = [
   "connect",
   "first-wow",
   "rules-review",
+  "use-cases",
   "done",
   "complete",
 ] as const;

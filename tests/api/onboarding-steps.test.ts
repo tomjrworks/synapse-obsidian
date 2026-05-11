@@ -51,14 +51,17 @@ describe("ONBOARDING_STEPS structural invariants", () => {
     expect(rulesReview).toBe(firstWow + 1);
   });
 
-  it("sequences rules-review immediately before done", () => {
-    // Symmetric guard for the next transition. SITE done page calls
-    // /onboarding/step with step="done"; if rules-review is reordered
-    // past done, the forward-only guard rejects it as cannot_move_backward.
+  it("sequences rules-review → use-cases → done in order", () => {
+    // Symmetric guard for the post-rules-review transitions. SITE
+    // rules-review advances to use-cases (the "what you can do" step);
+    // use-cases advances to done. Forward-only monotonicity in
+    // /onboarding/step depends on this contiguous ordering.
     const rulesReview = ONBOARDING_STEPS.indexOf("rules-review");
+    const useCases = ONBOARDING_STEPS.indexOf("use-cases");
     const done = ONBOARDING_STEPS.indexOf("done");
     expect(rulesReview).toBeGreaterThanOrEqual(0);
-    expect(done).toBe(rulesReview + 1);
+    expect(useCases).toBe(rulesReview + 1);
+    expect(done).toBe(useCases + 1);
   });
 
   it("places done immediately before complete", () => {
