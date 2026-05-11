@@ -114,8 +114,8 @@ async function flushIndexForWorkspace(
 }
 
 /**
- * Write index.md with TAPROOT-MANAGED:index marker, unless a fresh
- * user-authored index.md (no marker, ≤7 days old) is present.
+ * Write index.md with TAPROOT-MANAGED:index marker, unless a user-authored
+ * index.md (no marker) is present — never clobber user files regardless of age.
  */
 async function maybeWriteIndexMd(
   backend: StorageBackend,
@@ -125,15 +125,7 @@ async function maybeWriteIndexMd(
     const existing = await backend.readFile("index.md");
     const hasMarker = existing.includes(MANAGED_INDEX_MARKER);
     if (!hasMarker) {
-      const fm = parseFrontmatter(existing);
-      const raw = fm.date_modified ?? fm.modified ?? fm.last_updated;
-      const ts = parseDateValue(raw);
-      if (ts !== null) {
-        const ageMs = Date.now() - ts;
-        if (ageMs >= 0 && ageMs <= INDEX_FRESHNESS_DAYS * 24 * 60 * 60 * 1000) {
-          return; // user-authored and fresh — don't clobber
-        }
-      }
+      return; // user-authored — never clobber
     }
   }
 
