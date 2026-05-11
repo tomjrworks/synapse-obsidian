@@ -144,6 +144,17 @@ mkdir -p "$APP_PATH/Contents/Frameworks"
 
 cp "$EXEC_SRC" "$APP_PATH/Contents/MacOS/TaprootHelper"
 cp "$INFO_PLIST" "$APP_PATH/Contents/Info.plist"
+
+# App icon — copy AppIcon.icns into Resources/ so CFBundleIconFile resolves.
+# Without this the Dock/Finder/Spotlight show macOS's generic blank Mac
+# placeholder. Source-of-truth lives next to Info.plist in Sources/.
+ICON_SRC="$HELPER_MAC_ROOT/Sources/TaprootHelper/AppIcon.icns"
+if [[ -f "$ICON_SRC" ]]; then
+    cp "$ICON_SRC" "$APP_PATH/Contents/Resources/AppIcon.icns"
+else
+    echo "warning: AppIcon.icns not found at $ICON_SRC — app will use generic icon" >&2
+fi
+
 # `ditto` preserves the framework's Versions/Current symlinks + top-level
 # aliases (Sparkle, Headers, Resources, Modules → Versions/Current/...).
 # Plain `cp -R` may flatten on some macOS versions.
