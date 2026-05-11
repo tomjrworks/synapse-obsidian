@@ -13,6 +13,7 @@
  */
 import type { StorageBackend } from "./storage.js";
 import { listVaultFiles } from "./vault.js";
+import { loadIgnorePatterns, pathMatchesIgnore } from "./taproot-ignore.js";
 
 export interface FolderSummary {
   name: string;
@@ -122,6 +123,10 @@ function deriveSummary(folderName: string, content: string): string {
 export async function scanFolders(
   backend: StorageBackend,
 ): Promise<FolderSummary[]> {
+  // Respect user-defined ignore patterns from CLAUDE.md so excluded folders
+  // don't show up in the generated CLAUDE.md's Vault folders block either.
+  const ignorePatterns = await loadIgnorePatterns(backend);
+
   const files = await listVaultFiles(backend);
   const buckets = new Map<string, FolderBucket>();
 
@@ -131,6 +136,7 @@ export async function scanFolders(
     const top = f.slice(0, slash);
     if (isHidden(top)) continue;
     if (!f.toLowerCase().endsWith(".md")) continue;
+    if (pathMatchesIgnore(f, ignorePatterns)) continue;
     let bucket = buckets.get(top);
     if (!bucket) {
       bucket = { notes: [] };

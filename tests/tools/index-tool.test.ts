@@ -351,6 +351,58 @@ describe("garden_index", () => {
       expect(written).toMatch(/TAPROOT-MANAGED:index: true/);
     });
 
+    it("excludes paths listed in CLAUDE.md TAPROOT-IGNORE block", async () => {
+      // Real-world repro: vault has 5 normal notes + 50 CRM-row files in a
+      // dedicated subfolder. CLAUDE.md TAPROOT-IGNORE block excludes that
+      // subfolder. The 50 files must NOT appear in the regenerated index.
+      const knowledge = [
+        "projects/launch-plan.md",
+        "decisions/pivot-decision.md",
+        "daily/session-log.md",
+        "research/competitive-brief.md",
+        "ideas/onboarding-rewrite.md",
+      ];
+      const crm = Array.from(
+        { length: 50 },
+        (_, i) => `projects/leads/contact-${i.toString().padStart(3, "0")}.md`,
+      );
+      const allFiles = [...knowledge, ...crm];
+
+      const claudeMd = `# CLAUDE.md\nuser content\n<!-- TAPROOT-IGNORE\nprojects/leads/\n-->`;
+      const writeFile = vi.fn(async () => undefined);
+      const backend = makeBackend({
+        exists: vi.fn(async (p: string) => p === "CLAUDE.md"),
+        readFile: vi.fn(async (p: string) => {
+          if (p === "CLAUDE.md") return claudeMd;
+          return "# Title\nbody";
+        }),
+        listFiles: vi.fn(async () => allFiles),
+        writeFile,
+      });
+      _clearIndexCache(backend);
+
+      registerIndexTool(serverCapture.server, backend);
+      const handler = serverCapture.registered.get("garden_index")!;
+      const result = await handler();
+      await new Promise((r) => setImmediate(r));
+
+      const mcpText = result.content[0].text;
+      // None of the 50 CRM rows in MCP response
+      expect(mcpText).not.toMatch(/contact-000/);
+      expect(mcpText).not.toMatch(/contact-049/);
+      // Knowledge notes still appear (as wikilinks)
+      expect(mcpText).toMatch(/\[\[launch-plan\]\]/);
+      expect(mcpText).toMatch(/\[\[pivot-decision\]\]/);
+
+      // Same in the disk-format file actually written
+      expect(writeFile).toHaveBeenCalled();
+      const diskWritten = writeFile.mock.calls[0][1] as string;
+      expect(diskWritten).not.toMatch(/contact-000/);
+      expect(diskWritten).not.toMatch(/contact-049/);
+      expect(diskWritten).toMatch(/\[\[launch-plan\]\]/);
+      expect(diskWritten).toMatch(/\[\[pivot-decision\]\]/);
+    });
+
     it("loads each file's content only once across both renderers", async () => {
       // Regression guard: before the refactor, flush/handler made two
       // listFiles + 2× readFile passes (one per renderer). The refactor

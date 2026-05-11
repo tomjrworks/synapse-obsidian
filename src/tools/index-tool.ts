@@ -12,6 +12,10 @@ import {
   renderCardinalityLine,
   MANAGED_INDEX_MARKER,
 } from "../utils/frontmatter.js";
+import {
+  loadIgnorePatterns,
+  pathMatchesIgnore,
+} from "../utils/taproot-ignore.js";
 
 const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
@@ -283,7 +287,15 @@ interface IndexData {
  * (Tom's at 800+ files).
  */
 async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
-  const all = await backend.listFiles();
+  // Load ignore patterns FIRST so we can filter files out before doing the
+  // expensive per-file readFile loop. Patterns come from CLAUDE.md's
+  // TAPROOT-IGNORE block — see src/utils/taproot-ignore.ts for the contract.
+  const ignorePatterns = await loadIgnorePatterns(backend);
+
+  const allUnfiltered = await backend.listFiles();
+  const all = allUnfiltered.filter(
+    (filePath) => !pathMatchesIgnore(filePath, ignorePatterns),
+  );
   const truncated = all.length >= TOTAL_FILE_LIMIT;
   const groups = new Map<string, string[]>();
   const root: string[] = [];
