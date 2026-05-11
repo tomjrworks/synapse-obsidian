@@ -21,6 +21,10 @@ import {
   LOCAL_TENANT_KEY,
 } from "../utils/cache.js";
 import { checkProtected } from "../utils/path-guard.js";
+import {
+  loadIgnorePatterns,
+  pathMatchesIgnore,
+} from "../utils/taproot-ignore.js";
 
 export function registerVaultTools(
   server: McpServer,
@@ -583,6 +587,130 @@ export function registerVaultTools(
         };
       } catch (err) {
         return respondToolError("garden_recent_failed", err);
+      }
+    },
+  );
+
+  // ── garden_delete ────────────────────────────────────────────────────
+  server.registerTool(
+    "garden_delete",
+    {
+      title: "Delete a note",
+      description:
+        "Use this when the user wants to delete, remove, or trash a note in their vault. Hard-deletes the file at the given path (helper will sync the deletion to local Obsidian). For soft-delete (preserve historical content but mark as superseded — see CLAUDE.md 'Marking dead / superseded content' convention), use `garden_plant` to rewrite the file with `status: killed` frontmatter and an ⚠️ ARCHIVED banner instead. Triggers: 'delete this note', 'remove the X note', 'trash that', 'get rid of [path]', 'undo that save'. Refuses to delete protected paths (CLAUDE.md, index.md, .taproot/config.json). Refuses paths matching the vault's TAPROOT-IGNORE patterns. Refuses to delete folders or .taproot/ internal state.",
+      inputSchema: {
+        path: z
+          .string()
+          .describe(
+            "Relative path of the note to delete (e.g. 'inbox/test-note.md')",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ path: filePath }) => {
+      const limited = checkToolRateLimit(
+        opts.workspaceId ?? "unknown",
+        "garden_delete",
+        "write",
+      );
+      if (limited) return rateLimitToolError(limited);
+
+      // 1. Protected-path guard (CLAUDE.md / index.md / .taproot/config.json)
+      const guard = checkProtected(filePath);
+      if (guard.kind === "invalid") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Invalid path '${filePath}': ${guard.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (guard.kind === "protected") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Refusing to delete '${filePath}' — protected vault config (resolves to '${guard.canonical}'). These files hold persistent AI instructions or workspace state and must not be deleted via tool calls.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // 2. Refuse anything inside .taproot/ (workspace state)
+      if (filePath.startsWith(".taproot/") || filePath === ".taproot") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Refusing to delete '${filePath}' — '.taproot/' holds workspace state managed by the helper. Deleting it would unpair the vault.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // 3. Refuse to act on TAPROOT-IGNORE'd paths (CRM-row dumps, etc.)
+      const ignorePatterns = await loadIgnorePatterns(backend);
+      if (pathMatchesIgnore(filePath, ignorePatterns)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Refusing to delete '${filePath}' — matches a TAPROOT-IGNORE pattern in CLAUDE.md. These paths are excluded from AI management by the user's explicit configuration.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // 4. Only delete .md files (refuses folders, non-markdown blobs)
+      if (!filePath.toLowerCase().endsWith(".md")) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Refusing to delete '${filePath}' — only .md notes can be deleted via this tool. For folders or other file types, the user should delete in Finder / Obsidian directly.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // 5. Verify the file exists before deleting (clearer error than backend's)
+      const exists = await backend.exists(filePath).catch(() => false);
+      if (!exists) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No file at '${filePath}'. Nothing to delete. Use \`garden_find\` to locate the note's actual path.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      try {
+        await backend.delete(filePath);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Deleted: ${filePath}\n\nThe helper will sync this deletion to your local Obsidian vault within ~30s. To restore, the file is in your OS trash (Mac: Cmd+Z in Finder while the trash is open, or check Time Machine).`,
+            },
+          ],
+        };
+      } catch (err) {
+        return respondToolError("garden_delete_failed", err);
       }
     },
   );
