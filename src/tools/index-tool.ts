@@ -86,21 +86,26 @@ async function flushIndexForWorkspace(
   // 1. Evict in-memory cache
   indexCache.delete(backend);
 
-  // 2. Synthesize fresh index
-  let rendered: string;
+  // 2. Single pass through the vault — listFiles + per-file readFile happen
+  // ONCE. Both renderers (MCP cache + disk write-back) operate off this data.
+  let data: IndexData;
   try {
-    rendered = await synthesizeIndex(backend);
+    data = await loadIndexData(backend);
   } catch (err) {
     console.error(
-      `[index-tool] synthesis failed for workspace ${workspaceId}: ${err}`,
+      `[index-tool] index data load failed for workspace ${workspaceId}: ${err}`,
     );
     return;
   }
 
-  // 3. Write-back to index.md if permitted
+  // 3. MCP-format goes into the cache for Claude (truncation hints + cardinality)
+  const mcpRendered = renderIndexForMcp(data);
+
+  // 4. DISK-format gets written to index.md (clean human-readable per CLAUDE.md spec)
   if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
     try {
-      await maybeWriteIndexMd(backend, rendered);
+      const diskRendered = renderIndexForDisk(data);
+      await maybeWriteIndexMd(backend, diskRendered);
     } catch (err) {
       console.error(
         `[index-tool] write-back failed for workspace ${workspaceId}: ${err}`,
@@ -108,8 +113,8 @@ async function flushIndexForWorkspace(
     }
   }
 
-  // 4. Populate cache with fresh result
-  const wrapped = wrap(rendered, "synthesized");
+  // 5. Populate cache with the MCP-format result
+  const wrapped = wrap(mcpRendered, "synthesized");
   indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
 }
 
@@ -197,13 +202,17 @@ export function registerIndexTool(
           return { content: [{ type: "text", text: wrapped }] };
         }
 
-        // 4. Synthesize transient + populate cache + queue write-back
-        const synthesized = await synthesizeIndex(backend);
-        const wrapped = wrap(synthesized, "synthesized");
+        // 4. Single-pass load — both renderers share the same file/content data
+        const data = await loadIndexData(backend);
+        const mcpRendered = renderIndexForMcp(data);
+        const wrapped = wrap(mcpRendered, "synthesized");
         indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
 
         if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
-          void maybeWriteIndexMd(backend, synthesized).catch((err) =>
+          // DISK-format (clean) for the user's vault, computed from the same
+          // data we already loaded. No re-read.
+          const diskRendered = renderIndexForDisk(data);
+          void maybeWriteIndexMd(backend, diskRendered).catch((err) =>
             console.error(`[index-tool] write-back error: ${err}`),
           );
         }
@@ -259,16 +268,27 @@ function parseDateValue(value: unknown): number | null {
   return null;
 }
 
-async function synthesizeIndex(backend: StorageBackend): Promise<string> {
+interface IndexData {
+  root: string[];
+  groups: Map<string, string[]>;
+  contents: Map<string, string | undefined>;
+  truncated: boolean;
+  totalFiles: number;
+}
+
+/**
+ * Load the file list + each file's content in a single pass so the two
+ * synthesizers (MCP / disk) can render without re-reading. Without this,
+ * a flush walks the entire vault twice — 2x the latency on big vaults
+ * (Tom's at 800+ files).
+ */
+async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
   const all = await backend.listFiles();
   const truncated = all.length >= TOTAL_FILE_LIMIT;
-
-  if (all.length === 0) {
-    return "# Vault index\n\n(empty vault — no markdown files yet)";
-  }
-
   const groups = new Map<string, string[]>();
   const root: string[] = [];
+  const contents = new Map<string, string | undefined>();
+
   for (const filePath of all) {
     const slash = filePath.indexOf("/");
     if (slash === -1) {
@@ -279,49 +299,65 @@ async function synthesizeIndex(backend: StorageBackend): Promise<string> {
       arr.push(filePath);
       groups.set(folder, arr);
     }
+    try {
+      contents.set(filePath, await backend.readFile(filePath));
+    } catch {
+      contents.set(filePath, undefined);
+    }
   }
+  root.sort();
+  for (const arr of groups.values()) arr.sort();
+  return { root, groups, contents, truncated, totalFiles: all.length };
+}
 
-  const folders = [...groups.keys()].sort();
+async function synthesizeIndex(backend: StorageBackend): Promise<string> {
+  const data = await loadIndexData(backend);
+  return renderIndexForMcp(data);
+}
+
+function renderIndexForMcp(data: IndexData): string {
+  if (data.totalFiles === 0) {
+    return "# Vault index\n\n(empty vault — no markdown files yet)";
+  }
+  const folders = [...data.groups.keys()].sort();
   const lines: string[] = [`# Vault index`, ""];
 
-  if (truncated) {
+  if (data.truncated) {
     lines.push(
       `> Showing first ${TOTAL_FILE_LIMIT} files. Vault may have more — call \`garden_survey({ path: "<folder>" })\` for full folder contents.`,
       "",
     );
   }
 
-  if (root.length > 0) {
-    const rendered = await renderFolderSlice(backend, root.sort());
-    lines.push(`## (root)`, ...rendered, "");
+  if (data.root.length > 0) {
+    lines.push(
+      `## (root)`,
+      ...renderFolderSliceForMcp(data.root, data.contents),
+      "",
+    );
   }
 
   for (const folder of folders) {
-    const files = (groups.get(folder) ?? []).sort();
-    const rendered = await renderFolderSlice(backend, files);
-    lines.push(`## ${folder}/`, ...rendered, "");
+    const files = data.groups.get(folder) ?? [];
+    lines.push(
+      `## ${folder}/`,
+      ...renderFolderSliceForMcp(files, data.contents),
+      "",
+    );
   }
 
   const raw = lines.join("\n").trimEnd() + "\n";
-  return applyCharBudget(raw, groups);
+  return applyCharBudget(raw, data.groups);
 }
 
-async function renderFolderSlice(
-  backend: StorageBackend,
+function renderFolderSliceForMcp(
   files: string[],
-): Promise<string[]> {
+  contents: Map<string, string | undefined>,
+): string[] {
   const sliced = files.slice(0, FILES_PER_FOLDER_LIMIT);
-  const rendered: string[] = [];
-
-  for (const f of sliced) {
-    let content: string | undefined;
-    try {
-      content = await backend.readFile(f);
-    } catch {
-      content = undefined;
-    }
-    rendered.push(buildFileEntry(f, content));
-  }
+  const rendered: string[] = sliced.map((f) =>
+    buildFileEntry(f, contents.get(f)),
+  );
 
   if (files.length > FILES_PER_FOLDER_LIMIT) {
     const folder = files[0].includes("/") ? path.dirname(files[0]) : ".";
@@ -331,6 +367,74 @@ async function renderFolderSlice(
   }
 
   return rendered;
+}
+
+/**
+ * Synthesize the human-readable index.md that gets written to the vault on
+ * disk. Distinct from `synthesizeIndex` (which is the MCP tool response):
+ *
+ *   - No truncation hints (no "_(N more in this folder — call garden_survey)_")
+ *   - No char-budget truncation stubs
+ *   - No cardinality dumps in the entry line
+ *   - No raw file path — just the wikilink + one-line summary
+ *   - No per-folder limit — lists every file under each top-level folder
+ *
+ * Format matches the CLAUDE.md spec exactly:
+ *   - [[<wikilink>]] — <one-line summary>
+ */
+async function synthesizeIndexForDisk(
+  backend: StorageBackend,
+): Promise<string> {
+  const data = await loadIndexData(backend);
+  return renderIndexForDisk(data);
+}
+
+function renderIndexForDisk(data: IndexData): string {
+  if (data.totalFiles === 0) {
+    return "# Vault index\n\n(empty vault — no markdown files yet)\n";
+  }
+  const folders = [...data.groups.keys()].sort();
+  const lines: string[] = ["# Vault index", ""];
+
+  if (data.root.length > 0) {
+    lines.push(
+      `## (root)`,
+      ...data.root.map((f) => buildFileEntryForDisk(f, data.contents.get(f))),
+      "",
+    );
+  }
+
+  for (const folder of folders) {
+    const files = data.groups.get(folder) ?? [];
+    lines.push(
+      `## ${folder}/`,
+      ...files.map((f) => buildFileEntryForDisk(f, data.contents.get(f))),
+      "",
+    );
+  }
+
+  return lines.join("\n").trimEnd() + "\n";
+}
+
+function buildFileEntryForDisk(
+  filePath: string,
+  content: string | undefined,
+): string {
+  const base = path.basename(filePath, ".md");
+  let summaryText = "(no description)";
+
+  if (content !== undefined && content.trim()) {
+    const card = extractCardinality(content);
+    summaryText =
+      card.summary ??
+      extractFirstH1(content) ??
+      truncateText(stripFrontmatter(content), 100) ??
+      "(no description)";
+    // CLAUDE.md spec: one-line summary under ~100 chars.
+    summaryText = truncateText(summaryText, 100) ?? summaryText;
+  }
+
+  return `- [[${base}]] — ${summaryText}`;
 }
 
 function buildFileEntry(filePath: string, content: string | undefined): string {

@@ -297,4 +297,83 @@ describe("garden_index", () => {
 
     expect(result1.content[0].text).toBe(result2.content[0].text);
   });
+
+  describe("write-back format (disk index.md)", () => {
+    it("writes a clean human-readable index, not the MCP-tool-response format", async () => {
+      // Real-world repro: vault has 30 files in a folder (above per-folder
+      // cap of 20) — the disk-format must list ALL of them, no truncation
+      // hints, no cardinality dumps, no file paths in entries.
+      const files = Array.from(
+        { length: 30 },
+        (_, i) => `daily/2026-05-${String(i + 1).padStart(2, "0")}-session.md`,
+      );
+      const writeFile = vi.fn(async () => undefined);
+      const backend = makeBackend({
+        exists: vi.fn(async (p: string) => p === "index.md"),
+        readFile: vi.fn(async (p: string) => {
+          if (p === "index.md") return ""; // fresh — write-back proceeds
+          // Each note has frontmatter summary
+          return `---\ntitle: Daily session\nsummary: Session log for the day\ntags: [daily]\n---\n# Daily\n`;
+        }),
+        listFiles: vi.fn(async () => files),
+        writeFile,
+      });
+      _clearIndexCache(backend);
+
+      registerIndexTool(serverCapture.server, backend);
+      const handler = serverCapture.registered.get("garden_index")!;
+      await handler();
+
+      // Write-back fires asynchronously after the tool returns
+      await new Promise((r) => setImmediate(r));
+
+      expect(writeFile).toHaveBeenCalled();
+      const written = writeFile.mock.calls[0][1] as string;
+
+      // Clean format: wikilink + em-dash + summary. No path, no [cardinality].
+      expect(written).toMatch(
+        /- \[\[2026-05-01-session\]\] — Session log for the day/,
+      );
+      // All 30 files present — disk format never truncates per-folder
+      expect(written).toMatch(/2026-05-30-session/);
+      // NO MCP truncation hints
+      expect(written).not.toMatch(/_\(\d+ more in this folder/);
+      expect(written).not.toMatch(/call `garden_survey/);
+      // NO char-budget stubs
+      expect(written).not.toMatch(
+        /\*Truncated — \d+ files?\. Call `garden_survey`/,
+      );
+      // NO file-path before summary
+      expect(written).not.toMatch(/`daily\/2026-05-01-session\.md`/);
+      // NO cardinality dump
+      expect(written).not.toMatch(/\[tags:.*\| summary:/);
+      // Wrapped with managed marker
+      expect(written).toMatch(/TAPROOT-MANAGED:index: true/);
+    });
+
+    it("loads each file's content only once across both renderers", async () => {
+      // Regression guard: before the refactor, flush/handler made two
+      // listFiles + 2× readFile passes (one per renderer). The refactor
+      // shares one loadIndexData call between MCP + disk render.
+      const files = ["projects/foo.md", "projects/bar.md"];
+      const readFile = vi.fn(async () => "# Note\n");
+      const listFiles = vi.fn(async () => files);
+      const backend = makeBackend({
+        exists: vi.fn(async () => false),
+        readFile,
+        listFiles,
+        writeFile: vi.fn(async () => undefined),
+      });
+      _clearIndexCache(backend);
+
+      registerIndexTool(serverCapture.server, backend);
+      const handler = serverCapture.registered.get("garden_index")!;
+      await handler();
+      await new Promise((r) => setImmediate(r));
+
+      expect(listFiles).toHaveBeenCalledTimes(1);
+      // 2 files × 1 pass = 2 reads (not 4)
+      expect(readFile).toHaveBeenCalledTimes(2);
+    });
+  });
 });
