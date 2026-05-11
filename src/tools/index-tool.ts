@@ -114,23 +114,44 @@ async function flushIndexForWorkspace(
 }
 
 /**
- * Write index.md with TAPROOT-MANAGED:index marker, unless a user-authored
- * index.md (no marker) is present — never clobber user files regardless of age.
+ * Write index.md with TAPROOT-MANAGED:index marker. Three-state classifier (L6):
+ *   - fresh           → write scaffold (file missing OR <=50 chars trimmed)
+ *   - taproot_managed → regenerate (full rebuild; incremental is a follow-up)
+ *   - user_owned      → skip silently (never clobber)
+ *
+ * Returns the resulting state so callers can surface it in setup-scan responses.
  */
+const INDEX_FRESH_CHAR_FLOOR = 50;
+
+export type IndexMdState = "fresh" | "taproot_managed" | "user_owned";
+
 async function maybeWriteIndexMd(
   backend: StorageBackend,
   rendered: string,
-): Promise<void> {
+): Promise<IndexMdState> {
+  let existing: string | null = null;
   if (await backend.exists("index.md")) {
-    const existing = await backend.readFile("index.md");
-    const hasMarker = existing.includes(MANAGED_INDEX_MARKER);
-    if (!hasMarker) {
-      return; // user-authored — never clobber
+    try {
+      existing = await backend.readFile("index.md");
+    } catch {
+      existing = null;
     }
   }
 
+  let state: IndexMdState;
+  if (existing == null || existing.trim().length <= INDEX_FRESH_CHAR_FLOOR) {
+    state = "fresh";
+  } else if (existing.includes(MANAGED_INDEX_MARKER)) {
+    state = "taproot_managed";
+  } else {
+    state = "user_owned";
+  }
+
+  if (state === "user_owned") return state;
+
   const content = `---\n${MANAGED_INDEX_MARKER}: true\n---\n\n${rendered}`;
   await backend.writeFile("index.md", content);
+  return state;
 }
 
 export function registerIndexTool(

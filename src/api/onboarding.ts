@@ -31,17 +31,6 @@ export function coerceLegacyStep(step: string): OnboardingStep {
   return step === "vault" ? "obsidian" : (step as OnboardingStep);
 }
 
-const PERSONA_TRAITS = [
-  "founder",
-  "writer-researcher",
-  "creator-designer",
-  "salesperson",
-  "student",
-  "life-os",
-  "professional-services",
-] as const;
-type PersonaTrait = (typeof PERSONA_TRAITS)[number];
-
 export function onboardingRouter(): Router {
   const router = Router();
 
@@ -118,52 +107,21 @@ export function onboardingRouter(): Router {
     }),
   );
 
+  // POST /persona — kept as a no-op acknowledgement for clients that still
+  // hit it during onboarding. Trait + freetext inputs are no longer accepted;
+  // CLAUDE.md is generated from observed folder structure (see persona-render).
   router.post(
     "/persona",
     requireSupabaseAuth,
     requireWorkspace,
     asyncHandler(async (req, res) => {
-      const { traits, freetext } = (req.body ?? {}) as {
-        traits?: unknown;
-        freetext?: unknown;
-      };
-
-      if (!Array.isArray(traits) || traits.length === 0) {
-        res.status(400).json({
-          error: "invalid_traits",
-          detail: "traits must be a non-empty array",
-        });
-        return;
-      }
-      const invalid = traits.filter(
-        (t) =>
-          typeof t !== "string" || !PERSONA_TRAITS.includes(t as PersonaTrait),
-      );
-      if (invalid.length > 0) {
-        res.status(400).json({
-          error: "unknown_trait",
-          unknown: invalid,
-          allowed: PERSONA_TRAITS,
-        });
-        return;
-      }
-      if (freetext !== undefined && typeof freetext !== "string") {
-        res.status(400).json({ error: "freetext_must_be_string" });
-        return;
-      }
-
       const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
-
-      const persona = {
-        traits: traits as string[],
-        ...(typeof freetext === "string" ? { freetext } : {}),
-      };
-
+      // Touch settings to clear any pending persona shape without rewriting it.
       const { settings, error } = await patchWorkspaceSettings(
         sb,
         membership.workspaceId,
-        { persona },
+        {},
       );
       if (error) {
         respondError(res, 500, "update_failed", error, {
@@ -171,10 +129,9 @@ export function onboardingRouter(): Router {
         });
         return;
       }
-
       res.json({
         workspace_id: membership.workspaceId,
-        persona: settings.persona,
+        persona: settings.persona ?? null,
       });
     }),
   );

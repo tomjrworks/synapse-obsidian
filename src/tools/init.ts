@@ -15,6 +15,8 @@ import {
 import { readVaultFile, listVaultFiles } from "../utils/vault.js";
 import { invalidateClaudeMdCache, LOCAL_TENANT_KEY } from "../utils/cache.js";
 
+// LEGACY: monolithic non-marker CLAUDE.md generation. Not called by the wizard.
+// Do not extend. Scheduled for separate-PR removal.
 /**
  * Generate a personalized CLAUDE.md from onboarding answers.
  * This is the single most important file in the vault — it makes Claude proactive.

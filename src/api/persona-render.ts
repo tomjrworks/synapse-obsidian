@@ -8,13 +8,14 @@ import {
 } from "./middleware.js";
 import { respondError } from "./respond-error.js";
 import {
+  classifyClaudeMdContent,
   composePersonaClaudeMd,
   composePersonaSections,
 } from "../tools/persona-claudemd.js";
 import { mergeIntoExistingClaudeMd } from "../tools/claudemd-merge.js";
 import { getBackend } from "../utils/backend-cache.js";
 import { NotFoundError } from "../utils/storage.js";
-import { listVaultFiles } from "../utils/vault.js";
+import { scanFolders } from "../utils/folder-scan.js";
 
 export function personaRenderRouter(): Router {
   const router = Router();
@@ -22,28 +23,26 @@ export function personaRenderRouter(): Router {
   /**
    * POST /api/persona/render
    *
-   * Idempotent. Reads workspace.settings.persona, composes a fresh CLAUDE.md,
-   * and writes it to the vault (merge if existing, fresh if absent).
+   * Idempotent. Composes a fresh CLAUDE.md from the observed folder
+   * structure (no longer trait-driven) and writes it according to the
+   * three-state classifier (L5):
+   *   - fresh           → write full scaffold
+   *   - taproot_managed → merge managed blocks, preserve outside edits
+   *   - user_owned      → skip silently
    *
    * Returns:
-   *   { written: true,  path: "CLAUDE.md" }          — file created/updated
-   *   { written: false, reason: "no_persona_set" }   — no persona in settings
-   *   { written: false, reason: "no_change", path: "CLAUDE.md" } — idempotent
+   *   { written: true,  path: "CLAUDE.md", claudemd_status: "written" | "merged" }
+   *   { written: false, reason: "no_change", claudemd_status: "merged" }
+   *   { written: false, reason: "skipped_user_owned", claudemd_status: "skipped_user_owned" }
    */
   router.post(
     "/persona/render",
     requireSupabaseAuth,
     requireWorkspace,
-    workspaceLimitMiddleware(10, 3600), // 10/hour/workspace — LLM write; abuse cap
+    workspaceLimitMiddleware(10, 3600),
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const workspaceId = membership.workspaceId;
-      const persona = membership.settings?.persona;
-
-      if (!persona || (!persona.traits?.length && !persona.freetext?.trim())) {
-        res.json({ written: false, reason: "no_persona_set" });
-        return;
-      }
 
       let backend;
       try {
@@ -55,32 +54,8 @@ export function personaRenderRouter(): Router {
         return;
       }
 
-      const traits = persona.traits ?? [];
-      const personaFreetext = persona.freetext ?? "";
+      const folderScan = await scanFolders(backend).catch(() => []);
 
-      // Detect vault maturity to emit context-aware CLAUDE.md
-      const allFiles = await listVaultFiles(backend).catch(
-        () => [] as string[],
-      );
-      const totalFiles = allFiles.length;
-      const topFolderSet = new Set<string>();
-      for (const f of allFiles) {
-        const slash = f.indexOf("/");
-        if (slash > 0) topFolderSet.add(f.slice(0, slash));
-      }
-      const vaultMaturity: "fresh" | "mature" =
-        totalFiles > 50 ? "mature" : "fresh";
-      const actualTopFolders = [...topFolderSet].sort().slice(0, 20);
-
-      // Compose fresh CLAUDE.md sections
-      const fresh = composePersonaClaudeMd({
-        traits,
-        personaFreetext,
-        vaultMaturity,
-        actualTopFolders,
-      });
-
-      // Read existing CLAUDE.md (null if absent)
       let existing: string | null = null;
       try {
         existing = await backend.readFile("CLAUDE.md");
@@ -94,23 +69,39 @@ export function personaRenderRouter(): Router {
         existing = null;
       }
 
-      let finalContent: string;
-      if (existing === null) {
-        finalContent = fresh;
-      } else {
-        const sections = composePersonaSections({
-          traits,
-          personaFreetext,
-          vaultMaturity,
-          actualTopFolders,
+      const state = classifyClaudeMdContent(existing);
+
+      if (state === "user_owned") {
+        res.json({
+          written: false,
+          reason: "skipped_user_owned",
+          claudemd_status: "skipped_user_owned",
+          path: "CLAUDE.md",
         });
-        const { merged } = mergeIntoExistingClaudeMd(existing, sections);
-        finalContent = merged;
+        return;
       }
 
-      // Idempotent: no write if content unchanged
+      let finalContent: string;
+      let claudemdStatus: "written" | "merged";
+
+      if (state === "fresh") {
+        finalContent = composePersonaClaudeMd({ folderScan });
+        claudemdStatus = "written";
+      } else {
+        // taproot_managed: merge fresh sections into the existing file.
+        const sections = composePersonaSections({ folderScan });
+        const { merged } = mergeIntoExistingClaudeMd(existing!, sections);
+        finalContent = merged;
+        claudemdStatus = "merged";
+      }
+
       if (finalContent === existing) {
-        res.json({ written: false, reason: "no_change", path: "CLAUDE.md" });
+        res.json({
+          written: false,
+          reason: "no_change",
+          claudemd_status: claudemdStatus,
+          path: "CLAUDE.md",
+        });
         return;
       }
 
@@ -123,7 +114,11 @@ export function personaRenderRouter(): Router {
         return;
       }
 
-      res.json({ written: true, path: "CLAUDE.md" });
+      res.json({
+        written: true,
+        path: "CLAUDE.md",
+        claudemd_status: claudemdStatus,
+      });
     }),
   );
 

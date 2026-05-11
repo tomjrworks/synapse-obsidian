@@ -1,11 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { personaRenderRouter } from "../../src/api/persona-render.js";
 
-// ---------------------------------------------------------------------------
-// Minimal test harness — avoids spinning up Express; calls the router handler
-// directly by extracting it via a mock router capture.
-// ---------------------------------------------------------------------------
-
 vi.mock("../../src/utils/backend-cache.js", () => ({
   getBackend: vi.fn(),
 }));
@@ -48,7 +43,6 @@ function makeRes() {
       return this;
     }),
   };
-  // bind methods so `this` works
   res.json = res.json.bind(res);
   res.status = res.status.bind(res);
   return res;
@@ -56,11 +50,7 @@ function makeRes() {
 
 function makeReq(settings: Record<string, unknown> = {}) {
   return {
-    membership: {
-      workspaceId: "ws-test",
-      name: "Test",
-      settings,
-    },
+    membership: { workspaceId: "ws-test", name: "Test", settings },
     body: {},
     header: vi.fn(() => "Bearer fake-jwt"),
   };
@@ -70,12 +60,13 @@ function makeBackend(
   overrides: {
     readFile?: (p: string) => Promise<string>;
     writeFile?: (p: string, c: string) => Promise<void>;
+    files?: string[];
   } = {},
 ) {
   return {
     readFile: vi.fn(overrides.readFile ?? (async () => "")),
     writeFile: vi.fn(overrides.writeFile ?? (async () => undefined)),
-    listFiles: vi.fn(async () => []),
+    listFiles: vi.fn(async () => overrides.files ?? []),
     exists: vi.fn(async () => false),
     mkdir: vi.fn(async () => undefined),
     delete: vi.fn(async () => undefined),
@@ -86,25 +77,11 @@ function makeBackend(
   };
 }
 
-// Extract the actual POST handler from the router
 async function callHandler(
   req: ReturnType<typeof makeReq>,
   res: ReturnType<typeof makeRes>,
 ) {
-  // Build a minimal next() that records errors
-  const errors: unknown[] = [];
-  const next = (err?: unknown) => {
-    if (err) errors.push(err);
-  };
-
-  // personaRenderRouter() registers POST /persona/render.
-  // We reach the handler directly by capturing it via the mock asyncHandler.
-  // Since asyncHandler is mocked to return `fn` unwrapped, the route handler
-  // is the 3rd argument to router.post(). We exercise it by building the router
-  // and calling handle on a fake req.
   const router = personaRenderRouter();
-
-  // Simulate express routing by calling router.handle
   await new Promise<void>((resolve) => {
     (router as unknown as { handle: Function }).handle(
       Object.assign(req, {
@@ -115,44 +92,13 @@ async function callHandler(
       res,
       () => resolve(),
     );
-    // Also resolve after a tick in case handler ends response synchronously
     setTimeout(resolve, 50);
   });
-
-  return { json: res._json, status: res._status, errors };
+  return { json: res._json, status: res._status };
 }
 
 describe("POST /api/persona/render", () => {
-  it("returns no_persona_set when settings.persona is absent", async () => {
-    const mockBackend = makeBackend();
-    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
-
-    const req = makeReq({ persona: null });
-    const res = makeRes();
-    await callHandler(req, res);
-
-    expect(res._json).toMatchObject({
-      written: false,
-      reason: "no_persona_set",
-    });
-    expect(mockBackend.writeFile).not.toHaveBeenCalled();
-  });
-
-  it("returns no_persona_set when traits and freetext are both empty", async () => {
-    const mockBackend = makeBackend();
-    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
-
-    const req = makeReq({ persona: { traits: [], freetext: "   " } });
-    const res = makeRes();
-    await callHandler(req, res);
-
-    expect(res._json).toMatchObject({
-      written: false,
-      reason: "no_persona_set",
-    });
-  });
-
-  it("writes fresh CLAUDE.md when persona set and no existing file", async () => {
+  it("writes a fresh CLAUDE.md scaffold when none exists", async () => {
     const mockBackend = makeBackend({
       readFile: async (p: string) => {
         if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
@@ -161,20 +107,69 @@ describe("POST /api/persona/render", () => {
     });
     vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
 
-    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
+    const req = makeReq({});
     const res = makeRes();
     await callHandler(req, res);
 
-    expect(res._json).toMatchObject({ written: true, path: "CLAUDE.md" });
+    expect(res._json).toMatchObject({
+      written: true,
+      path: "CLAUDE.md",
+      claudemd_status: "written",
+    });
     expect(mockBackend.writeFile).toHaveBeenCalledWith(
       "CLAUDE.md",
       expect.stringContaining(SECTION_MARKER_START("filing")),
     );
   });
 
-  it("merges into existing CLAUDE.md with markers", async () => {
-    // Build a minimal existing CLAUDE.md with all three managed sections
-    const existingClaudeMd = [
+  it("emits the observed folder list (no fabricated folders)", async () => {
+    const files = ["projects/p.md", "daily/2026-05-11.md", "cooking/recipe.md"];
+    const mockBackend = makeBackend({
+      readFile: async (p: string) => {
+        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
+        if (files.includes(p)) return "";
+        return "";
+      },
+      files,
+    });
+    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
+
+    const req = makeReq({});
+    const res = makeRes();
+    await callHandler(req, res);
+
+    const written = vi.mocked(mockBackend.writeFile).mock
+      .calls[0]?.[1] as string;
+    expect(written).toContain("`projects/`");
+    expect(written).toContain("`daily/`");
+    expect(written).toContain("`cooking/`");
+    // No fabricated trait folders from the legacy templates
+    expect(written).not.toContain("`metrics/`");
+    expect(written).not.toContain("`playbook/`");
+  });
+
+  it("skips when CLAUDE.md is user-owned (substantive, no markers)", async () => {
+    const userContent =
+      "# My CLAUDE.md\n\n" + "I keep my own filing rules here. ".repeat(20);
+    const mockBackend = makeBackend({
+      readFile: async (p: string) => (p === "CLAUDE.md" ? userContent : ""),
+    });
+    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
+
+    const req = makeReq({});
+    const res = makeRes();
+    await callHandler(req, res);
+
+    expect(res._json).toMatchObject({
+      written: false,
+      reason: "skipped_user_owned",
+      claudemd_status: "skipped_user_owned",
+    });
+    expect(mockBackend.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("merges into existing taproot-managed CLAUDE.md", async () => {
+    const existing = [
       SECTION_MARKER_START("filing"),
       "old filing content",
       SECTION_MARKER_END("filing"),
@@ -187,113 +182,31 @@ describe("POST /api/persona/render", () => {
     ].join("\n");
 
     const mockBackend = makeBackend({
-      readFile: async (p: string) => {
-        if (p === "CLAUDE.md") return existingClaudeMd;
-        return "";
-      },
+      readFile: async (p: string) => (p === "CLAUDE.md" ? existing : ""),
     });
     vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
 
-    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
+    const req = makeReq({});
     const res = makeRes();
     await callHandler(req, res);
 
-    expect(res._json).toMatchObject({ written: true, path: "CLAUDE.md" });
+    expect(res._json).toMatchObject({
+      written: true,
+      claudemd_status: "merged",
+    });
     const written = vi.mocked(mockBackend.writeFile).mock
       .calls[0]?.[1] as string;
-    // Managed sections replaced
     expect(written).toContain(SECTION_MARKER_START("filing"));
     expect(written).not.toContain("old filing content");
   });
 
-  it("mature vault (>50 files): emits Your vault folders, not Default folder skeleton", async () => {
-    const files = Array.from({ length: 60 }, (_, i) =>
-      i < 30
-        ? `projects/item-${i}.md`
-        : `daily/2026-05-${String(i).padStart(2, "0")}.md`,
-    );
-    const mockBackend = makeBackend({
-      readFile: async (p: string) => {
-        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
-        return "";
-      },
-    });
-    mockBackend.listFiles.mockResolvedValue(files);
-    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
-
-    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
-    const res = makeRes();
-    await callHandler(req, res);
-
-    expect(res._json).toMatchObject({ written: true });
-    const written = vi.mocked(mockBackend.writeFile).mock
-      .calls[0]?.[1] as string;
-    expect(written).toContain("## Your vault folders");
-    expect(written).not.toContain("## Default folder skeleton");
-    expect(written).toContain("`projects/`");
-    expect(written).toContain("`daily/`");
-  });
-
-  it("mature vault: strips per-trait Folders subsection but keeps Filing rules and Context", async () => {
-    const files = Array.from({ length: 60 }, (_, i) =>
-      i < 30
-        ? `projects/item-${i}.md`
-        : `daily/2026-05-${String(i).padStart(2, "0")}.md`,
-    );
-    const mockBackend = makeBackend({
-      readFile: async (p: string) => {
-        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
-        return "";
-      },
-    });
-    mockBackend.listFiles.mockResolvedValue(files);
-    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
-
-    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
-    const res = makeRes();
-    await callHandler(req, res);
-
-    const written = vi.mocked(mockBackend.writeFile).mock
-      .calls[0]?.[1] as string;
-    expect(written).not.toContain(
-      "### Folders (added on top of the default skeleton)",
-    );
-    expect(written).toContain("### Filing rules");
-    expect(written).toContain("### Context");
-    expect(written).toContain("decided we're going to");
-  });
-
-  it("fresh vault (≤50 files): still emits Default folder skeleton (no regression)", async () => {
-    const mockBackend = makeBackend({
-      readFile: async (p: string) => {
-        if (p === "CLAUDE.md") throw new NotFoundError("CLAUDE.md");
-        return "";
-      },
-    });
-    mockBackend.listFiles.mockResolvedValue([]);
-    vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
-
-    const req = makeReq({ persona: { traits: ["founder"], freetext: "" } });
-    const res = makeRes();
-    await callHandler(req, res);
-
-    const written = vi.mocked(mockBackend.writeFile).mock
-      .calls[0]?.[1] as string;
-    expect(written).toContain("## Default folder skeleton");
-    expect(written).not.toContain("## Your vault folders");
-  });
-
   it("returns no_change on second call (idempotent)", async () => {
-    // Write once, then read back the written content and call again
     let stored: string | null = null;
-
     const mockBackend = makeBackend({
       readFile: async (p: string) => {
-        if (p === "CLAUDE.md") {
-          if (stored === null) throw new NotFoundError("CLAUDE.md");
-          return stored;
-        }
-        return "";
+        if (p !== "CLAUDE.md") return "";
+        if (stored === null) throw new NotFoundError("CLAUDE.md");
+        return stored;
       },
       writeFile: async (_p: string, c: string) => {
         stored = c;
@@ -301,14 +214,13 @@ describe("POST /api/persona/render", () => {
     });
     vi.mocked(getBackend).mockResolvedValue(mockBackend as never);
 
-    const traits = ["founder"];
-    const req1 = makeReq({ persona: { traits, freetext: "" } });
+    const req1 = makeReq({});
     const res1 = makeRes();
     await callHandler(req1, res1);
     expect(res1._json).toMatchObject({ written: true });
 
-    // Second call with same persona — content matches, no write
-    const req2 = makeReq({ persona: { traits, freetext: "" } });
+    // Second call: classifier sees taproot_managed; merge yields same content
+    const req2 = makeReq({});
     const res2 = makeRes();
     await callHandler(req2, res2);
     expect(res2._json).toMatchObject({

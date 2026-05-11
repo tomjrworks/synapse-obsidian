@@ -1,15 +1,13 @@
 import { Router } from "express";
-import {
-  composePersonaClaudeMd,
-  isTraitId,
-  TRAIT_INDEX_HEADERS,
-} from "../tools/persona-claudemd.js";
+import { composePersonaClaudeMd } from "../tools/persona-claudemd.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
+import { getBackend } from "../utils/backend-cache.js";
+import { scanFolders } from "../utils/folder-scan.js";
 
 const UNIVERSAL_SECTIONS = [
   "Decisions",
@@ -28,26 +26,11 @@ const INDEX_HEADER_COMMENT = `<!--
 -->
 `;
 
-function buildIndexStub(traits: string[]): string {
-  const seen = new Set<string>();
-  const sections: string[] = [];
-
-  for (const title of UNIVERSAL_SECTIONS) {
-    if (seen.has(title)) continue;
-    seen.add(title);
-    sections.push(`## ${title}\n\n`);
-  }
-
-  for (const t of traits) {
-    if (!isTraitId(t)) continue;
-    for (const header of TRAIT_INDEX_HEADERS[t]) {
-      if (seen.has(header)) continue;
-      seen.add(header);
-      sections.push(`## ${header}\n\n`);
-    }
-  }
-
-  return INDEX_HEADER_COMMENT + "\n" + sections.join("");
+function buildIndexStub(): string {
+  const sections = UNIVERSAL_SECTIONS.map((title) => `## ${title}\n\n`).join(
+    "",
+  );
+  return INDEX_HEADER_COMMENT + "\n" + sections;
 }
 
 export function personaRouter(): Router {
@@ -59,27 +42,18 @@ export function personaRouter(): Router {
     requireWorkspace,
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
+      const workspaceId = membership.workspaceId;
 
-      const persona = membership.settings.persona ?? {};
-      const traits: string[] = Array.isArray(persona.traits)
-        ? persona.traits
-        : [];
-      const freetext =
-        typeof persona.freetext === "string" ? persona.freetext.trim() : "";
+      const folderScan = await (async () => {
+        try {
+          const backend = await getBackend(workspaceId);
+          return await scanFolders(backend);
+        } catch {
+          return [];
+        }
+      })();
 
-      // Either at least one trait OR non-empty freetext is required —
-      // empty-traits + non-empty freetext still composes a valid CLAUDE.md
-      // (preamble + user context + tail) per the templates spec.
-      if (traits.length === 0 && !freetext) {
-        res.status(400).json({ error: "persona_not_set" });
-        return;
-      }
-
-      const claudeMd = composePersonaClaudeMd({
-        traits,
-        personaFreetext: freetext || undefined,
-      });
-
+      const claudeMd = composePersonaClaudeMd({ folderScan });
       res.type("text/markdown").send(claudeMd);
     }),
   );
@@ -88,15 +62,8 @@ export function personaRouter(): Router {
     "/persona/index-stub",
     requireSupabaseAuth,
     requireWorkspace,
-    asyncHandler(async (req, res) => {
-      const { membership } = req as AuthedWorkspaceRequest;
-
-      const persona = membership.settings.persona ?? {};
-      const traits: string[] = Array.isArray(persona.traits)
-        ? persona.traits
-        : [];
-
-      const stub = buildIndexStub(traits);
+    asyncHandler(async (_req, res) => {
+      const stub = buildIndexStub();
       res.type("text/markdown").send(stub);
     }),
   );
