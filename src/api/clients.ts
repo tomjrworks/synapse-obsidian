@@ -25,7 +25,7 @@ const CLIENTS: ClientDef[] = [
     label: "claude.ai (web)",
     path_type: "url-paste",
     instructions_md:
-      "Paste this URL in claude.ai → Settings → Custom Integrations → Add custom integration.",
+      "Paste this URL in claude.ai → Settings → Connectors (scroll to the bottom) → Add custom connector.",
     screenshot_url: "/screenshots/connect/claude-ai.png",
   },
   {
