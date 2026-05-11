@@ -725,6 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // attaches FSEvents to this vault. Same rationale as the launch-time
         // pass in applicationDidFinishLaunching; idempotent.
         SynapseMigration.migrate(in: canonical)
+        // L7 parity: pre-create the 5 starter folders so the server-rendered
+        // CLAUDE.md filing tree references match disk reality from t=0.
+        // Idempotent + per-folder failure-isolated.
+        StarterFolders.ensure(in: canonical)
         let workspace = Workspace(
             id: workspaceID,
             name: name,

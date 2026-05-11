@@ -1672,6 +1672,32 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertNotNil(app.pullPollers[id], "Poller must start on confirmFirstRun")
     }
 
+    /// 0.1.10: confirmFirstRun must pre-create the 5 starter folders on the
+    /// vault root so the server-rendered CLAUDE.md filing tree references
+    /// match disk reality from t=0. Thin wiring assertion — full helper
+    /// behavior is covered in StarterFoldersTests.
+    func testConfirmFirstRunPreCreatesStarterFolders() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        app.skipInitialSyncForTesting = true
+        app.confirmFirstRun(workspaceID: id, bearer: "B", name: "MyVault", vaultFolder: folder)
+        defer {
+            app.watchers[id]?.stop()
+            app.stopPullPoller(for: id)
+        }
+
+        for name in StarterFolders.names {
+            let url = folder.canonicalPath.appendingPathComponent(name, isDirectory: true)
+            var isDir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            XCTAssertTrue(exists && isDir.boolValue,
+                          "Starter folder \(name)/ must exist on disk after confirmFirstRun")
+        }
+    }
+
     /// C1 (build-audit-3): rapid double-fire of confirmFirstRun (e.g. a user
     /// double-clicking "Get started" before the window dismisses, or two
     /// presentFirstRun Tasks racing through fetchWorkspaceName) must not
