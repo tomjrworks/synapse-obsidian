@@ -20,7 +20,17 @@ export function workspaceCreateRouter(): Router {
   router.post(
     "/workspace",
     requireSupabaseAuth,
-    userIdLimitMiddleware(3, 3600), // 3/hour/user — keyed by user.id (workspace doesn't exist yet)
+    // 60/hour/user. The endpoint is idempotent (returns existing workspace_id
+    // on subsequent calls) — but SITE's onboarding/layout.tsx fires this on
+    // EVERY page render to ensure the workspace exists. A normal wizard walk
+    // can fire 7-12+ workspace POSTs across step navigations, refreshes, and
+    // back-button presses. The old 3/hour cap triggered a server-side redirect
+    // loop (429 → /sign-in?error → middleware → /dashboard → /onboarding/X →
+    // /api/workspace → 429 → ...) that the browser killed with
+    // TOO_MANY_REDIRECTS. Tom hit this during a fresh-user smoke walk
+    // 2026-05-11 22:40 UTC at the rules-review step. 60/hour is comfortably
+    // above realistic legitimate usage and still abuse-resistant.
+    userIdLimitMiddleware(60, 3600),
     asyncHandler(async (req, res) => {
       const { user } = req as AuthedRequest;
       const sb = supabaseService();
