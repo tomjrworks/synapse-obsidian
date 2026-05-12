@@ -300,19 +300,21 @@ describe("garden_index", () => {
 
   describe("write-back format (disk index.md)", () => {
     it("writes a clean human-readable index, not the MCP-tool-response format", async () => {
-      // Real-world repro: vault has 30 files in a folder (above per-folder
-      // cap of 20) — the disk-format must list ALL of them, no truncation
-      // hints, no cardinality dumps, no file paths in entries.
-      const files = Array.from(
+      // Vault has 30 daily session logs + 1 project note.
+      // Disk format must: list the project note, exclude daily/ entries,
+      // use clean wikilink+summary format with no truncation hints.
+      const dailyFiles = Array.from(
         { length: 30 },
         (_, i) => `daily/2026-05-${String(i + 1).padStart(2, "0")}-session.md`,
       );
+      const files = [...dailyFiles, "projects/launch-plan.md"];
       const writeFile = vi.fn(async () => undefined);
       const backend = makeBackend({
         exists: vi.fn(async (p: string) => p === "index.md"),
         readFile: vi.fn(async (p: string) => {
           if (p === "index.md") return ""; // fresh — write-back proceeds
-          // Each note has frontmatter summary
+          if (p === "projects/launch-plan.md")
+            return `---\ntitle: Launch Plan\nsummary: Product launch checklist\n---\n`;
           return `---\ntitle: Daily session\nsummary: Session log for the day\ntags: [daily]\n---\n# Daily\n`;
         }),
         listFiles: vi.fn(async () => files),
@@ -330,12 +332,13 @@ describe("garden_index", () => {
       expect(writeFile).toHaveBeenCalled();
       const written = writeFile.mock.calls[0][1] as string;
 
-      // Clean format: wikilink + em-dash + summary. No path, no [cardinality].
+      // Non-daily files ARE indexed with clean format
       expect(written).toMatch(
-        /- \[\[2026-05-01-session\]\] — Session log for the day/,
+        /- \[\[launch-plan\]\] — Product launch checklist/,
       );
-      // All 30 files present — disk format never truncates per-folder
-      expect(written).toMatch(/2026-05-30-session/);
+      // daily/ entries are EXCLUDED from disk index
+      expect(written).not.toMatch(/2026-05-01-session/);
+      expect(written).not.toMatch(/2026-05-30-session/);
       // NO MCP truncation hints
       expect(written).not.toMatch(/_\(\d+ more in this folder/);
       expect(written).not.toMatch(/call `garden_survey/);
@@ -344,7 +347,7 @@ describe("garden_index", () => {
         /\*Truncated — \d+ files?\. Call `garden_survey`/,
       );
       // NO file-path before summary
-      expect(written).not.toMatch(/`daily\/2026-05-01-session\.md`/);
+      expect(written).not.toMatch(/`projects\/launch-plan\.md`/);
       // NO cardinality dump
       expect(written).not.toMatch(/\[tags:.*\| summary:/);
       // Wrapped with managed marker

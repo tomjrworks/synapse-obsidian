@@ -401,6 +401,10 @@ async function synthesizeIndexForDisk(
   return renderIndexForDisk(data);
 }
 
+// Temporal folders excluded from the disk-written index.md.
+// These are high-volume, date-ordered — discoverable via garden_recent, not index lookup.
+const INDEX_DISK_EXCLUDE_FOLDERS = new Set(["daily"]);
+
 function renderIndexForDisk(data: IndexData): string {
   if (data.totalFiles === 0) {
     return "# Vault index\n\n(empty vault — no markdown files yet)\n";
@@ -417,6 +421,7 @@ function renderIndexForDisk(data: IndexData): string {
   }
 
   for (const folder of folders) {
+    if (INDEX_DISK_EXCLUDE_FOLDERS.has(folder)) continue;
     const files = data.groups.get(folder) ?? [];
     lines.push(
       `## ${folder}/`,
