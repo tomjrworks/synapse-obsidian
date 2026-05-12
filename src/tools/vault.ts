@@ -15,7 +15,9 @@ import {
   getVaultStats,
   parseFrontmatter,
   normalizeFrontmatterDate,
+  type SearchMatch,
 } from "../utils/vault.js";
+import { withTimeout } from "../utils/with-timeout.js";
 import {
   getFilingHintCached,
   invalidateClaudeMdCache,
@@ -27,6 +29,22 @@ import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
+
+export function parseForageHints(
+  indexContent: string,
+  query: string,
+): string[] {
+  const lowerQuery = query.toLowerCase();
+  const regex = /^\s*-\s+\[\[([^\]]+)\]\]\s+(?:—|--)\s+(.+)$/gmu;
+  const hints: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(indexContent)) !== null) {
+    const [, wikiPath, summary] = match;
+    const haystack = `${wikiPath} ${summary}`.toLowerCase();
+    if (haystack.includes(lowerQuery)) hints.push(`${wikiPath}.md`);
+  }
+  return hints;
+}
 
 export function registerVaultTools(
   server: McpServer,
@@ -289,42 +307,132 @@ export function registerVaultTools(
       );
       if (limited) return rateLimitToolError(limited);
       try {
-        const results = await searchVault(backend, query, {
-          subPath,
-          maxResults,
+        interface ForageHit {
+          file: string;
+          title: string;
+          dateModified?: string;
+          matches: SearchMatch[];
+        }
+
+        const collectedResults: ForageHit[] = [];
+        let partialResults = false;
+        const cap = maxResults ?? 20;
+        const lowerQuery = query.toLowerCase();
+        const concurrency = Math.max(
+          1,
+          parseInt(process.env.FORAGE_PARALLELISM ?? "10", 10),
+        );
+        const budgetMs = parseInt(process.env.FORAGE_TIMEOUT_MS ?? "15000", 10);
+
+        const scanPath = async () => {
+          let priorityHints: string[] = [];
+          try {
+            if (await backend.exists("index.md").catch(() => false)) {
+              const indexContent = await readVaultFile(backend, "index.md");
+              priorityHints = parseForageHints(indexContent, query);
+            }
+          } catch {
+            /* non-fatal */
+          }
+
+          let files = await listVaultFiles(backend, subPath);
+
+          if (priorityHints.length > 0) {
+            const hintBasenames = new Set(
+              priorityHints.map((h) => path.basename(h)),
+            );
+            const isPriority = (f: string) =>
+              priorityHints.includes(f) || hintBasenames.has(path.basename(f));
+            files = [
+              ...files.filter(isPriority),
+              ...files.filter((f) => !isPriority(f)),
+            ];
+          }
+
+          for (let i = 0; i < files.length; i += concurrency) {
+            if (collectedResults.length >= cap) break;
+            const chunk = files.slice(i, i + concurrency);
+            const chunkHits = await Promise.all(
+              chunk.map(async (file): Promise<ForageHit | null> => {
+                try {
+                  const content = await readVaultFile(backend, file);
+                  const lines = content.split("\n");
+                  const matches: SearchMatch[] = [];
+                  for (let j = 0; j < lines.length; j++) {
+                    if (lines[j].toLowerCase().includes(lowerQuery)) {
+                      matches.push({ line: j + 1, text: lines[j].trim() });
+                    }
+                  }
+                  if (matches.length === 0) return null;
+                  const fm = parseFrontmatter(content);
+                  const dateModified =
+                    normalizeFrontmatterDate(fm.date_modified) ?? undefined;
+                  return {
+                    file,
+                    title:
+                      (fm.title as string | undefined) ??
+                      path.basename(file, ".md"),
+                    dateModified,
+                    matches,
+                  };
+                } catch {
+                  return null;
+                }
+              }),
+            );
+            for (const hit of chunkHits) {
+              if (hit !== null && collectedResults.length < cap) {
+                collectedResults.push(hit);
+              }
+            }
+          }
+        };
+
+        await withTimeout(scanPath(), budgetMs, () => {
+          partialResults = true;
         });
-        if (results.length === 0) {
+
+        if (collectedResults.length === 0) {
+          if (partialResults) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `> Note: search budget exhausted — no results collected before timeout.`,
+                },
+              ],
+            };
+          }
           return {
             content: [{ type: "text", text: `No results for "${query}"` }],
           };
         }
-        const output = (
-          await Promise.all(
-            results.map(async (r) => {
-              const matchLines = r.matches
-                .slice(0, 3)
-                .map((m) => `  L${m.line}: ${m.text}`)
-                .join("\n");
-              let modifiedSuffix = "";
-              try {
-                const fm = parseFrontmatter(
-                  await readVaultFile(backend, r.file),
-                );
-                const modified = normalizeFrontmatterDate(fm.date_modified);
-                if (modified) modifiedSuffix = ` (modified ${modified})`;
-              } catch {
-                // Frontmatter read failures are non-fatal — omit the suffix.
-              }
-              return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}\n</vault-file>`;
-            }),
-          )
-        ).join("\n\n");
+
+        const fileBlocks = collectedResults.map((r) => {
+          const matchLines = r.matches
+            .slice(0, 3)
+            .map((m) => `  L${m.line}: ${m.text}`)
+            .join("\n");
+          const modifiedSuffix = r.dateModified
+            ? ` (modified ${r.dateModified})`
+            : "";
+          return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}\n</vault-file>`;
+        });
+
+        const headerLines: string[] = [];
+        if (partialResults) {
+          headerLines.push(
+            `> Note: search budget exhausted — partial results from ${collectedResults.length} matches found so far.`,
+            "",
+          );
+        }
+        headerLines.push(`${collectedResults.length} files match "${query}":`);
 
         return {
           content: [
             {
               type: "text",
-              text: `${results.length} files match "${query}":\n\n${output}`,
+              text: [...headerLines, "", fileBlocks.join("\n\n")].join("\n"),
             },
           ],
         };
