@@ -18,11 +18,71 @@ import { loadConfig, getDefaultConfig } from "../utils/config.js";
 import { fetchUrlAsText } from "../utils/fetch.js";
 import { getFilingHintCached, LOCAL_TENANT_KEY } from "../utils/cache.js";
 import { buildFrontmatter, stripControls } from "../utils/yaml.js";
+import { withTimeout } from "../utils/with-timeout.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
+
+// --- taproot_harvest helpers ---
+
+const HARVEST_STOP_WORDS = new Set([
+  "what",
+  "does",
+  "the",
+  "with",
+  "from",
+  "your",
+  "this",
+  "that",
+  "have",
+  "about",
+  "into",
+  "over",
+  "when",
+  "where",
+  "which",
+  "there",
+  "their",
+  "would",
+  "could",
+  "should",
+  "brain",
+  "says",
+  "tell",
+]);
+
+export function extractKeywords(question: string): string[] {
+  return question
+    .toLowerCase()
+    .split(/[\s\p{P}]+/u)
+    .filter((w) => w.length > 3 && !HARVEST_STOP_WORDS.has(w))
+    .slice(0, 5);
+}
+
+interface IndexCandidate {
+  path: string;
+  title: string;
+  score: number;
+}
+
+export function parseIndexCandidates(
+  indexContent: string,
+  keywords: string[],
+): IndexCandidate[] {
+  const regex = /^\s*-\s+\[\[([^\]]+)\]\]\s+(?:—|--)\s+(.+)$/gmu;
+  const candidates: IndexCandidate[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(indexContent)) !== null) {
+    const [, wikiPath, summary] = match;
+    const title = wikiPath.split("/").pop() ?? wikiPath;
+    const haystack = `${wikiPath} ${summary}`.toLowerCase();
+    const score = keywords.filter((k) => haystack.includes(k)).length;
+    candidates.push({ path: `${wikiPath}.md`, title, score });
+  }
+  return candidates.sort((a, b) => b.score - a.score);
+}
 
 export function registerKnowledgeTools(
   server: McpServer,
@@ -570,41 +630,82 @@ export function registerKnowledgeTools(
           index = await readVaultFile(backend, "index.md");
         }
 
-        const keywords = question
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length > 3);
-
+        const keywords = extractKeywords(question);
         const allResults: Map<string, string> = new Map();
+        let partialResults = false;
 
-        // Search notes folder if it exists, otherwise search whole vault
-        const searchPath = (await backend.exists(notesFolder))
-          ? notesFolder
-          : undefined;
+        const concurrency = Math.max(
+          1,
+          parseInt(process.env.HARVEST_PARALLELISM ?? "10", 10),
+        );
 
-        for (const keyword of keywords.slice(0, 5)) {
-          const results = await searchVault(backend, keyword, {
-            subPath: searchPath,
-            maxResults: 10,
-          });
-          for (const r of results) {
-            if (!allResults.has(r.file)) {
-              allResults.set(r.file, r.title);
+        const hotPath = async () => {
+          const indexCandidates = index
+            ? parseIndexCandidates(index, keywords)
+            : [];
+          const scoredCandidates = indexCandidates.filter((c) => c.score > 0);
+
+          if (scoredCandidates.length > 0) {
+            // Index-first path: read top 15 candidates in parallel chunks
+            const topCandidates = scoredCandidates.slice(0, 15);
+            for (let i = 0; i < topCandidates.length; i += concurrency) {
+              const chunk = topCandidates.slice(i, i + concurrency);
+              await Promise.all(
+                chunk.map(async (c) => {
+                  if (!allResults.has(c.path)) {
+                    allResults.set(c.path, c.title);
+                  }
+                }),
+              );
+            }
+          } else {
+            // Body-search fallback: parallel across keywords, capped per-keyword
+            const searchPath = (await backend.exists(notesFolder))
+              ? notesFolder
+              : undefined;
+            const resultSets = await Promise.all(
+              keywords.slice(0, 5).map((k) =>
+                searchVault(backend, k, {
+                  subPath: searchPath,
+                  maxResults: 5,
+                }),
+              ),
+            );
+            for (const results of resultSets) {
+              for (const r of results) {
+                if (!allResults.has(r.file)) {
+                  allResults.set(r.file, r.title);
+                }
+              }
             }
           }
-        }
+        };
 
+        const harvestBudgetMs = parseInt(
+          process.env.HARVEST_TIMEOUT_MS ?? "15000",
+          10,
+        );
+        await withTimeout(hotPath(), harvestBudgetMs, () => {
+          partialResults = true;
+        });
+
+        // Read file contents in parallel chunks
         const relevantFiles = [...allResults.entries()].slice(0, 10);
         const pageContents: string[] = [];
-
-        for (const [file] of relevantFiles) {
-          try {
-            const content = await readVaultFile(backend, file);
-            pageContents.push(
-              `### ${file}\n<vault-file path="${file}">\n${content.slice(0, 3000)}\n</vault-file>`,
-            );
-          } catch {
-            // Skip unreadable files
+        for (let i = 0; i < relevantFiles.length; i += concurrency) {
+          const chunk = relevantFiles.slice(i, i + concurrency);
+          const chunkContents = await Promise.all(
+            chunk.map(async ([file]) => {
+              try {
+                const content = await readVaultFile(backend, file);
+                return `### ${file}\n<vault-file path="${file}">\n${content.slice(0, 3000)}\n</vault-file>`;
+              } catch {
+                return null;
+              }
+            }),
+          );
+          for (const c of chunkContents) {
+            if (c !== null) pageContents.push(c);
           }
         }
 
@@ -616,6 +717,12 @@ export function registerKnowledgeTools(
             ? `<vault-file path="index.md">\n${index.slice(0, 5000)}\n</vault-file>`
             : "(No index found — run taproot_cultivate first)",
           "",
+          ...(partialResults
+            ? [
+                `> Note: research budget exhausted at 15s — returning partial results from ${relevantFiles.length} candidates.`,
+                "",
+              ]
+            : []),
           `### Relevant Pages (${relevantFiles.length} found)`,
           "",
           ...pageContents,
