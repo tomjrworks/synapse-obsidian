@@ -90,6 +90,37 @@ export function parseFrontmatter(content: string): Record<string, any> {
 }
 
 /**
+ * Normalize a frontmatter date value to `YYYY-MM-DD` for display.
+ * Accepts string (iso, date-only, or anything Date-parseable), Date,
+ * or number (epoch ms). Returns null for missing/malformed values.
+ * Mirrors the coercion shape used by `extractCardinality` in
+ * `src/utils/frontmatter.ts` for the `created` field.
+ */
+export function normalizeFrontmatterDate(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (raw instanceof Date) {
+    if (isNaN(raw.getTime())) return null;
+    return raw.toISOString().split("T")[0];
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    // Accept already-date-shaped strings as-is (YYYY-MM-DD or full iso).
+    const datePart = trimmed.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return datePart;
+    const d = new Date(trimmed);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().split("T")[0];
+  }
+  if (typeof raw === "number") {
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().split("T")[0];
+  }
+  return null;
+}
+
+/**
  * Get vault statistics.
  */
 export async function getVaultStats(

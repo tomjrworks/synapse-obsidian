@@ -158,14 +158,35 @@ If the user expresses a preference about how they like work done — file naming
  * names to match against. Folders get created on first save into them.
  */
 const STARTER_FOLDERS: FolderSummary[] = [
-  { name: "daily", summary: "session logs and dated notes" },
-  { name: "decisions", summary: "dated decisions with reasoning" },
+  {
+    name: "daily",
+    summary: "session logs — file under `daily/YYYY-MM/YYYY-MM-DD-<topic>.md`",
+  },
+  {
+    name: "decisions",
+    summary:
+      "dated decisions with reasoning — file under `decisions/<project>/YYYY-MM-DD-<topic>.md`",
+  },
   {
     name: "inbox",
     summary: "landing pad for notes that don't have a clear home yet",
   },
   { name: "notes", summary: "misc one-off notes" },
   { name: "projects", summary: "active work, one subfolder per project" },
+];
+
+/**
+ * Baseline filing rules emitted into every freshly-rendered CLAUDE.md
+ * alongside any user-curated learned rules. These three reflect the
+ * canonical vault conventions (daily/YYYY-MM, decisions/<project>,
+ * ideas/<project>) so a fresh user gets a working filing tree on day
+ * one. Word-for-word from the global vault CLAUDE.md "Learned filing
+ * rules" section — that file is the single source of truth.
+ */
+const DEFAULT_LEARNED_RULES: string[] = [
+  "Session logs → `daily/YYYY-MM/YYYY-MM-DD-<topic>.md`. Create the month folder if needed.",
+  "Decisions → `decisions/<project>/YYYY-MM-DD-<topic>.md`. Project = taproot | coldcraft | mainloop | personal.",
+  "Ideas → `ideas/<project>/` matching subfolder. Use `ideas/personal/` for non-project ideas.",
 ];
 
 const LEARNED_RULES_PLACEHOLDER = "(none yet)";
@@ -258,7 +279,9 @@ export function composePersonaSections(
 ): ManagedSections {
   const today = opts.today ?? new Date().toISOString().split("T")[0];
   const folderScan = opts.folderScan ?? [];
-  const learnedRules = opts.learnedRules ?? [];
+  // Baseline rules merge with any user-curated rules. Defaults stay first
+  // so the canonical conventions read top-down; user-added rules append.
+  const learnedRules = [...DEFAULT_LEARNED_RULES, ...(opts.learnedRules ?? [])];
 
   const filing = [
     `# CLAUDE.md\n\n> Created ${today} | Taproot memory layer`,
@@ -319,6 +342,7 @@ export function composePersonaClaudeMd(
 export const _internal = {
   FILING_DECISION_TREE,
   STARTER_FOLDERS,
+  DEFAULT_LEARNED_RULES,
   LEARNED_RULES_PLACEHOLDER,
   FRESH_CHAR_FLOOR,
   renderVaultFoldersBlock,

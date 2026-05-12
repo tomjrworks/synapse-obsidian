@@ -14,6 +14,7 @@ import {
   searchVault,
   getVaultStats,
   parseFrontmatter,
+  normalizeFrontmatterDate,
 } from "../utils/vault.js";
 import {
   getFilingHintCached,
@@ -21,6 +22,7 @@ import {
   LOCAL_TENANT_KEY,
 } from "../utils/cache.js";
 import { checkProtected } from "../utils/path-guard.js";
+import { maybeInjectDateModified } from "../utils/date-modified.js";
 import {
   loadIgnorePatterns,
   pathMatchesIgnore,
@@ -159,8 +161,20 @@ export function registerVaultTools(
         }
       }
 
+      // Tier 2: gated `date_modified` frontmatter injection. Off by
+      // default; flip `GARDEN_PLANT_DATE_INJECT=1` on Railway after
+      // smoke. Skipped unconditionally for protected paths — those have
+      // marker-merge contracts we don't want to perturb. Skipped for
+      // files without an existing frontmatter block (we never prepend
+      // YAML to a plain markdown file). Skipped on YAML parse error.
+      const shouldInjectDate =
+        process.env.GARDEN_PLANT_DATE_INJECT === "1" && guard.kind === "ok";
+      const finalContent = shouldInjectDate
+        ? maybeInjectDateModified(content)
+        : content;
+
       try {
-        await writeVaultFile(backend, filePath, content);
+        await writeVaultFile(backend, filePath, finalContent);
         if (filePath === "CLAUDE.md") {
           invalidateClaudeMdCache(LOCAL_TENANT_KEY);
         }
@@ -284,15 +298,27 @@ export function registerVaultTools(
             content: [{ type: "text", text: `No results for "${query}"` }],
           };
         }
-        const output = results
-          .map((r) => {
-            const matchLines = r.matches
-              .slice(0, 3)
-              .map((m) => `  L${m.line}: ${m.text}`)
-              .join("\n");
-            return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)\n${matchLines}\n</vault-file>`;
-          })
-          .join("\n\n");
+        const output = (
+          await Promise.all(
+            results.map(async (r) => {
+              const matchLines = r.matches
+                .slice(0, 3)
+                .map((m) => `  L${m.line}: ${m.text}`)
+                .join("\n");
+              let modifiedSuffix = "";
+              try {
+                const fm = parseFrontmatter(
+                  await readVaultFile(backend, r.file),
+                );
+                const modified = normalizeFrontmatterDate(fm.date_modified);
+                if (modified) modifiedSuffix = ` (modified ${modified})`;
+              } catch {
+                // Frontmatter read failures are non-fatal — omit the suffix.
+              }
+              return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}\n</vault-file>`;
+            }),
+          )
+        ).join("\n\n");
 
         return {
           content: [
@@ -427,6 +453,7 @@ export function registerVaultTools(
           title: string;
           score: number;
           preview: string;
+          modified?: string;
         };
         const filenameMatches: Match[] = [];
 
@@ -463,6 +490,8 @@ export function registerVaultTools(
             const content = await readVaultFile(backend, m.file);
             const fm = parseFrontmatter(content);
             const fmTitle = typeof fm.title === "string" ? fm.title : null;
+            const modified =
+              normalizeFrontmatterDate(fm.date_modified) ?? undefined;
             const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
             const previewLine =
               body
@@ -474,6 +503,7 @@ export function registerVaultTools(
               title: fmTitle || m.title,
               score: m.score,
               preview: previewLine,
+              modified,
             });
           } catch {
             results.push(m);
@@ -512,7 +542,7 @@ export function registerVaultTools(
           "",
           ...results.map(
             (r) =>
-              `- **${r.title}** — ${r.file}${r.preview ? `\n  <vault-file path="${r.file}">${r.preview}</vault-file>` : ""}`,
+              `- **${r.title}** — ${r.file}${r.modified ? ` (modified ${r.modified})` : ""}${r.preview ? `\n  <vault-file path="${r.file}">${r.preview}</vault-file>` : ""}`,
           ),
           "",
           results.length === 1

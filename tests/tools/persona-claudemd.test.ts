@@ -51,7 +51,12 @@ describe("composePersonaSections — folder scan rendering", () => {
       expect(out.filing).toContain(`\`${folder}/\``);
     }
     // Canonical summaries — not "daily notes" or first-line-of-note guesses
-    expect(out.filing).toContain("`daily/` — session logs and dated notes");
+    expect(out.filing).toContain(
+      "`daily/` — session logs — file under `daily/YYYY-MM/YYYY-MM-DD-<topic>.md`",
+    );
+    expect(out.filing).toContain(
+      "`decisions/` — dated decisions with reasoning — file under `decisions/<project>/YYYY-MM-DD-<topic>.md`",
+    );
     expect(out.filing).toContain(
       "`inbox/` — landing pad for notes that don't have a clear home yet",
     );
@@ -168,24 +173,40 @@ describe("composePersonaSections — L8 guardrail", () => {
 });
 
 describe("composePersonaSections — learned rules block", () => {
-  it("renders '(none yet)' when no learned rules", () => {
+  it("emits the three baseline filing rules when no user-curated rules are provided", () => {
     const out = composePersonaSections({});
-    expect(out.traits).toContain("(none yet)");
+    for (const rule of _internal.DEFAULT_LEARNED_RULES) {
+      expect(out.traits).toContain(`- ${rule}`);
+    }
+    // Defaults always emit, so the "(none yet)" placeholder is never shown
+    // in a normal render.
+    expect(out.traits).not.toContain("(none yet)");
   });
 
-  it("renders learned rules as bullets when provided", () => {
+  it("appends user-curated rules after the baseline defaults", () => {
     const out = composePersonaSections({
       learnedRules: [
         "Save customer call notes to meetings/customers/",
         "Decisions get YYYY-MM-DD-<topic>.md naming",
       ],
     });
+    // Baseline defaults still present
+    for (const rule of _internal.DEFAULT_LEARNED_RULES) {
+      expect(out.traits).toContain(`- ${rule}`);
+    }
+    // User-curated rules appended
     expect(out.traits).toContain(
       "- Save customer call notes to meetings/customers/",
     );
     expect(out.traits).toContain(
       "- Decisions get YYYY-MM-DD-<topic>.md naming",
     );
+    // Order: defaults come before user rules
+    const firstDefault = out.traits.indexOf(_internal.DEFAULT_LEARNED_RULES[0]);
+    const firstUser = out.traits.indexOf(
+      "Save customer call notes to meetings/customers/",
+    );
+    expect(firstDefault).toBeLessThan(firstUser);
     expect(out.traits).not.toContain("(none yet)");
   });
 });
