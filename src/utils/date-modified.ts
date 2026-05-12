@@ -15,12 +15,15 @@ function formatLocalIso(d: Date): string {
 
 /**
  * Detect a leading YAML frontmatter block (the same shape `gray-matter`
- * recognizes: `---\n…\n---\n`). Returns false for plain markdown files
- * — we never auto-create a frontmatter block, only mutate an existing
- * one. See plan `breezy-meandering-phoenix.md` rationale.
+ * recognizes: `---\n…\n---\n`). Tolerates leading whitespace so that
+ * `"\n---\n..."` payloads (sometimes emitted by upstream callers that
+ * insert a stray leading newline) still count as having frontmatter.
+ * Returns false for plain markdown files — we never auto-create a
+ * frontmatter block, only mutate an existing one. See plan
+ * `breezy-meandering-phoenix.md` rationale.
  */
 function hasFrontmatterBlock(content: string): boolean {
-  return /^---\r?\n[\s\S]*?\r?\n---\r?\n/.test(content);
+  return /^\s*---\r?\n[\s\S]*?\r?\n---\r?\n/.test(content);
 }
 
 /**

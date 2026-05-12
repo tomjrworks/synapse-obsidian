@@ -55,6 +55,16 @@ body
     warn.mockRestore();
   });
 
+  it("tolerates a leading newline before the opening --- delimiter", () => {
+    // Regression: upstream callers sometimes prepend "\n" to the content.
+    // Gray-matter detects + parses it fine, so we should too.
+    const input = `\n---\ntitle: hello\ntags: [test]\n---\n\nbody\n`;
+    const out = maybeInjectDateModified(input, { now: NOW });
+    expect(out).toContain("date_modified: '2026-05-12T14:30:45'");
+    expect(out).toContain("title: hello");
+    expect(out).toContain("body");
+  });
+
   it("preserves CRLF frontmatter delimiters", () => {
     const input = "---\r\ntitle: hello\r\n---\r\n\r\nbody\r\n";
     const out = maybeInjectDateModified(input, { now: NOW });
