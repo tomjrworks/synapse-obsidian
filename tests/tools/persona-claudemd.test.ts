@@ -35,7 +35,7 @@ describe("composePersonaClaudeMd — marker contract", () => {
     const sections = composePersonaSections({ today: "2026-05-11" });
     expect(sections.filing).toContain("# CLAUDE.md");
     expect(sections.filing).toContain("Created 2026-05-11");
-    expect(sections.filing).toContain("Write AUTOMATICALLY");
+    expect(sections.filing).toContain("Save behavior");
     expect(sections.traits).toContain("Learned filing rules");
     expect(sections.conventions).toContain("Conventions (universal)");
     expect(sections.filing).not.toContain("TAPROOT-MANAGED");

@@ -94,17 +94,13 @@ When a topic is abandoned, a strategy changes, or information becomes obsolete:
 
 Never delete dead content — it has historical value. Just mark it clearly so searches don't surface it as active.`;
 
-const WRITE_AUTOMATICALLY = `## Write AUTOMATICALLY (don't wait to be asked)
+const WRITE_AUTOMATICALLY = `## Save behavior
 
-Don't wait until the end of a conversation to save things. Write to the vault **after each meaningful exchange**:
+**Auto-save + announce** when value is clear: research synthesis from a multi-turn thread, a decision the user lands on, a template or framework that emerged, a lesson or retrospective insight, completed work the user asked to produce. After saving, add a small note at the bottom of your response: *Saved to \`path/file.md\` — move it if you'd like.*
 
-- **Research answers:** When you synthesize an answer worth keeping, save it to \`research/<subfolder>/\`.
-- **New insights or decisions:** Log decisions in \`decisions/\` with a YYYY-MM-DD prefix; log half-baked ideas in \`ideas/\`.
-- **Session logs:** After major milestones (research completed, decision made, milestone shipped), write a daily note in \`daily/YYYY-MM-DD-<topic>.md\`.
-- **Update the index:** After creating any new note, update \`index.md\` with a one-line summary under the matching \`## <Folder>/\` section.
-- **Connect ideas:** Add \`[[wikilinks]]\` to link related notes whenever you create or update content.
+**Ask first** when value is real but ambiguous: a style preference mentioned in passing, a half-baked idea, something personal that might not be vault-worthy, or unclear folder fit. Phrase with a suggested destination: *Worth keeping? I'd file it as \`notes/x.md\`.*
 
-**Don't log:** trivial questions, quick fixes, or exchanges with no lasting value.`;
+**Skip:** quick lookups, mid-task instructions, and throwaway exchanges.`;
 
 const CONVENTIONS_UNIVERSAL = `## Conventions (universal)
 
