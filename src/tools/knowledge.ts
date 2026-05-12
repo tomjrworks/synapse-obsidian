@@ -690,18 +690,50 @@ export function registerKnowledgeTools(
         });
 
         // Read file contents in parallel chunks
+        // Lazy file list — loaded at most once, only when a direct read fails.
+        // Shared across chunks so concurrent misses don't each fire a listFiles call.
+        let allFilesPromise: Promise<string[]> | null = null;
+        const getAllFiles = () => {
+          if (!allFilesPromise) allFilesPromise = listVaultFiles(backend);
+          return allFilesPromise;
+        };
+
+        // Try direct path; on miss, find first file whose basename matches.
+        const readWithFallback = async (
+          candidate: string,
+        ): Promise<{ path: string; content: string } | null> => {
+          try {
+            return {
+              path: candidate,
+              content: await readVaultFile(backend, candidate),
+            };
+          } catch {
+            const files = await getAllFiles();
+            const basename = candidate.split("/").pop()!;
+            const match = files.find(
+              (f) => f === basename || f.endsWith(`/${basename}`),
+            );
+            if (!match) return null;
+            try {
+              return {
+                path: match,
+                content: await readVaultFile(backend, match),
+              };
+            } catch {
+              return null;
+            }
+          }
+        };
+
         const relevantFiles = [...allResults.entries()].slice(0, 10);
         const pageContents: string[] = [];
         for (let i = 0; i < relevantFiles.length; i += concurrency) {
           const chunk = relevantFiles.slice(i, i + concurrency);
           const chunkContents = await Promise.all(
             chunk.map(async ([file]) => {
-              try {
-                const content = await readVaultFile(backend, file);
-                return `### ${file}\n<vault-file path="${file}">\n${content.slice(0, 3000)}\n</vault-file>`;
-              } catch {
-                return null;
-              }
+              const resolved = await readWithFallback(file);
+              if (!resolved) return null;
+              return `### ${resolved.path}\n<vault-file path="${resolved.path}">\n${resolved.content.slice(0, 3000)}\n</vault-file>`;
             }),
           );
           for (const c of chunkContents) {
