@@ -55,14 +55,19 @@ body
     warn.mockRestore();
   });
 
-  it("tolerates a leading newline before the opening --- delimiter", () => {
+  it("tolerates a leading newline before the opening --- delimiter without producing nested frontmatter", () => {
     // Regression: upstream callers sometimes prepend "\n" to the content.
-    // Gray-matter detects + parses it fine, so we should too.
+    // Gray-matter is strict and would otherwise see "no frontmatter" and
+    // emit a nested `---` block wrapping the original content. We strip
+    // leading whitespace before parsing to avoid that.
     const input = `\n---\ntitle: hello\ntags: [test]\n---\n\nbody\n`;
     const out = maybeInjectDateModified(input, { now: NOW });
     expect(out).toContain("date_modified: '2026-05-12T14:30:45'");
     expect(out).toContain("title: hello");
     expect(out).toContain("body");
+    // Exactly two `---` lines (open + close of one frontmatter block).
+    const delimiterCount = (out.match(/^---\s*$/gm) || []).length;
+    expect(delimiterCount).toBe(2);
   });
 
   it("preserves CRLF frontmatter delimiters", () => {

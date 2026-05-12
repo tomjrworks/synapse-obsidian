@@ -41,11 +41,18 @@ export function maybeInjectDateModified(
 ): string {
   if (!hasFrontmatterBlock(content)) return content;
 
+  // `gray-matter` requires the content to START with `---` (no leading
+  // whitespace), but upstream payloads sometimes prepend a stray "\n".
+  // Strip leading whitespace so the parser actually sees the
+  // frontmatter; otherwise it would treat the whole thing as the body
+  // and we'd emit a nested/duplicate `---` block.
+  const trimmed = content.replace(/^\s+/, "");
+
   const now = opts.now ?? new Date();
   const stamp = formatLocalIso(now);
 
   try {
-    const parsed = matter(content);
+    const parsed = matter(trimmed);
     const data = { ...(parsed.data as Record<string, unknown>) };
     data.date_modified = stamp;
     return matter.stringify(parsed.content, data);
