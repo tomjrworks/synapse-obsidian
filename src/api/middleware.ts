@@ -8,6 +8,11 @@ import {
 } from "./workspace.js";
 import { requireAuth, type AuthedMcpRequest } from "../oauth.js";
 import { respondError } from "./respond-error.js";
+import {
+  getSubscriptionFallback,
+  isSubscriptionActive,
+  getDaysRemaining,
+} from "./subscription.js";
 
 export interface AuthedRequest extends Request {
   user: { id: string; email?: string };
@@ -140,6 +145,29 @@ export function userIdLimitMiddleware(max: number, windowSec = 60) {
     skip: () => process.env.TAPROOT_DISABLE_RATE_LIMIT === "1",
   });
 }
+
+// Mount after auth middleware on sync push/pull and MCP tool routes.
+// Returns 402 subscription_required if the workspace's trial has expired or
+// subscription is canceled. Missing rows are treated as trialing (fallback).
+export const requireSubscription: RequestHandler = async (req, res, next) => {
+  const workspaceId =
+    (req as AuthedWorkspaceRequest).membership?.workspaceId ??
+    (req as AuthedOAuthRequest).workspaceId;
+  if (!workspaceId) {
+    res.status(401).json({ error: "no_workspace_id" });
+    return;
+  }
+  const sub = await getSubscriptionFallback(supabaseService(), workspaceId);
+  if (!isSubscriptionActive(sub)) {
+    res.status(402).json({
+      error: "subscription_required",
+      status: sub.status,
+      days_remaining: getDaysRemaining(sub),
+    });
+    return;
+  }
+  next();
+};
 
 // Mount AFTER requireOAuthAuth. Resolves membership by workspaceId (from the
 // OAuth token row) and synthesizes req.user from the workspace owner. Use on

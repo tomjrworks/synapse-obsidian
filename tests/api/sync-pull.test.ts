@@ -34,6 +34,7 @@ function makeServer(
     app.use(
       syncRouter({
         requireAuth: seedWorkspace(wsId),
+        requireSubscription: (_req, _res, next) => next(),
         getBackend: async () => ({
           writeFile: async () => {},
           delete: async () => {},

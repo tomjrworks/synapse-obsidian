@@ -28,6 +28,7 @@ import { logErrorWithId, respondError } from "./respond-error.js";
 import {
   asyncHandler,
   requireOAuthAuth,
+  requireSubscription,
   workspaceLimitMiddleware,
   type AuthedOAuthRequest,
 } from "./middleware.js";
@@ -60,6 +61,9 @@ interface SyncRouterOptions {
   // getBackend arg; bumped to an options object to add this seam — no
   // production callers exist yet.
   requireAuth?: RequestHandler;
+  // Test-only seam for requireSubscription. Pass a no-op to skip Supabase
+  // billing lookup in tests that stub auth.
+  requireSubscription?: RequestHandler;
 }
 
 // H3 (05-01) + H9 (04-30): reject absolute paths, .. traversal, and
@@ -146,11 +150,14 @@ interface PullResponse {
 export function syncRouter(opts: SyncRouterOptions = {}): Router {
   const router = Router();
   const authMiddleware = opts.requireAuth ?? requireOAuthAuth;
+  const subscriptionMiddleware =
+    opts.requireSubscription ?? requireSubscription;
   const resolveBackend = opts.getBackend ?? defaultGetBackend;
 
   router.post(
     "/sync/push",
     authMiddleware,
+    subscriptionMiddleware,
     workspaceLimitMiddleware(60), // 60 push batches/min/workspace; 825-file initial sync = 9 batches → 6× headroom
     asyncHandler(async (req, res) => {
       const parsed = pushSchema.safeParse(req.body);
@@ -294,6 +301,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
   router.get(
     "/sync/pull",
     authMiddleware,
+    subscriptionMiddleware,
     workspaceLimitMiddleware(60), // helper polls every 30s ≈ 2/min → 30× headroom
     asyncHandler(async (req, res) => {
       const parsed = pullQuerySchema.safeParse(req.query);

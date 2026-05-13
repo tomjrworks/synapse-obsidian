@@ -10,6 +10,7 @@ import { syncRouter } from "./sync.js";
 import { workspaceCreateRouter } from "./workspace-create.js";
 import { personaRenderRouter } from "./persona-render.js";
 import { dashboardRouter } from "./dashboard.js";
+import { billingRouter } from "./billing.js";
 
 export function mountApiRoutes(app: Express): void {
   const api = Router();
@@ -29,6 +30,7 @@ export function mountApiRoutes(app: Express): void {
   api.use("/", workspaceCreateRouter());
   api.use("/", personaRenderRouter());
   api.use("/", dashboardRouter());
+  api.use("/", billingRouter());
 
   app.use("/api", api);
 }

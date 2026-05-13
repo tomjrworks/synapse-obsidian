@@ -19,7 +19,12 @@ import {
 } from "../lib/pair-token.js";
 import { tokenHashByteaParam, TOKEN_TTL_SECONDS } from "../auth/bearer.js";
 import { z } from "zod";
-import { patchWorkspaceSettings } from "./workspace.js";
+import {
+  patchWorkspaceSettings,
+  getMembershipForWorkspace,
+} from "./workspace.js";
+import { getSubscriptionFallback, getDaysRemaining } from "./subscription.js";
+import { sendTrialWarningEmail } from "../utils/email.js";
 
 const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
 
@@ -464,7 +469,45 @@ export function helperRouter(): Router {
         }
       }
 
-      res.json({ ok: true, last_seen_at: device.last_seen_at });
+      const sub = await getSubscriptionFallback(sb, workspaceId);
+      const daysLeft = getDaysRemaining(sub);
+
+      // Nudge email: fire once when trial hits ≤7 days remaining.
+      // Heartbeat is OAuth-authed — no membership obj in scope; fetch explicitly.
+      if (sub.status === "trialing" && !sub.trial_warning_sent_at) {
+        if (daysLeft !== null && daysLeft <= 7) {
+          try {
+            const membership = await getMembershipForWorkspace(sb, workspaceId);
+            if (membership?.userId) {
+              const {
+                data: { user },
+              } = await supabaseService().auth.admin.getUserById(
+                membership.userId,
+              );
+              if (user?.email) {
+                await sendTrialWarningEmail(user.email, daysLeft);
+              }
+            }
+          } catch (emailErr) {
+            console.error("[heartbeat] nudge email error:", emailErr);
+          }
+          // Mark sent regardless of email success — prevents retry spam
+          await sb
+            .from("workspace_subscriptions")
+            .update({ trial_warning_sent_at: new Date().toISOString() })
+            .eq("workspace_id", workspaceId);
+        }
+      }
+
+      res.json({
+        ok: true,
+        last_seen_at: device.last_seen_at,
+        billing: {
+          status: sub.status,
+          trial_ends_at: sub.trial_ends_at ?? null,
+          days_remaining: daysLeft,
+        },
+      });
     }),
   );
 

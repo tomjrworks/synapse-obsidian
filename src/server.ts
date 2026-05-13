@@ -22,6 +22,7 @@ import {
 import { registerSigninRoutes } from "./signin.js";
 import { respondError } from "./api/respond-error.js";
 import { mountApiRoutes } from "./api/routes.js";
+import { stripeWebhookHandler } from "./api/stripe-webhook.js";
 import { getBackend } from "./utils/backend-cache.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +57,14 @@ async function createMcpServer(
 
 export async function startServer(port: number): Promise<void> {
   const app = express();
+
+  // Stripe webhook: raw body required for signature verification.
+  // MUST be mounted before express.json() parses the body.
+  app.post(
+    "/api/stripe/webhook",
+    express.raw({ type: "application/json" }),
+    stripeWebhookHandler,
+  );
 
   // 10MB cap accommodates batched helper push payloads (up to 500 ops at
   // ~vault-note size). Verified safe globally including /mcp: grep over src/
@@ -245,6 +254,26 @@ export async function startServer(port: number): Promise<void> {
       mcpLimit(req, res, (err) => (err ? reject(err) : resolve())),
     );
     if (res.headersSent) return; // 429 already sent by the limiter
+    // Subscription gate: blocks expired/canceled workspaces from MCP tools.
+    // workspaceId is already attached by requireAuth above.
+    {
+      const {
+        getSubscriptionFallback,
+        isSubscriptionActive,
+        getDaysRemaining,
+      } = await import("./api/subscription.js");
+      const { supabaseService } = await import("./api/supabase.js");
+      const { workspaceId } = req as AuthedMcpRequest;
+      const sub = await getSubscriptionFallback(supabaseService(), workspaceId);
+      if (!isSubscriptionActive(sub)) {
+        res.status(402).json({
+          error: "subscription_required",
+          status: sub.status,
+          days_remaining: getDaysRemaining(sub),
+        });
+        return;
+      }
+    }
     try {
       const { workspaceId } = req as AuthedMcpRequest;
       const mcpBackend = await getBackend(workspaceId, {
