@@ -53,6 +53,30 @@ const HARVEST_STOP_WORDS = new Set([
   "tell",
 ]);
 
+const TEMPORAL_SIGNAL_PHRASES = [
+  "working on",
+  "been working",
+  "been doing",
+  "been up to",
+  "recently",
+  "lately",
+  "this week",
+  "past week",
+  "last week",
+  "done recently",
+  "what have i",
+  "catch me up",
+  "brief me",
+  "update me",
+  "what did i",
+  "what was i",
+] as const;
+
+export function isTemporalQuestion(question: string): boolean {
+  const q = question.toLowerCase();
+  return TEMPORAL_SIGNAL_PHRASES.some((phrase) => q.includes(phrase));
+}
+
 export function extractKeywords(question: string): string[] {
   return question
     .toLowerCase()
@@ -676,6 +700,15 @@ export function registerKnowledgeTools(
                 if (!allResults.has(r.file)) {
                   allResults.set(r.file, r.title);
                 }
+              }
+            }
+          }
+
+          if (isTemporalQuestion(question)) {
+            const recentPaths = await backend.recentFiles(20);
+            for (const rp of recentPaths) {
+              if (!allResults.has(rp)) {
+                allResults.set(rp, rp.split("/").pop() ?? rp);
               }
             }
           }

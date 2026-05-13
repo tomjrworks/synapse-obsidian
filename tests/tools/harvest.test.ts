@@ -4,6 +4,7 @@ import { registerKnowledgeTools } from "../../src/tools/knowledge.js";
 import {
   extractKeywords,
   parseIndexCandidates,
+  isTemporalQuestion,
 } from "../../src/tools/knowledge.js";
 import type { StorageBackend } from "../../src/utils/storage.js";
 
@@ -212,5 +213,105 @@ describe("parseIndexCandidates", () => {
 
   it("returns empty array for empty index", () => {
     expect(parseIndexCandidates("", ["glug"])).toEqual([]);
+  });
+});
+
+describe("isTemporalQuestion", () => {
+  it("returns true for temporal signal phrases", () => {
+    expect(isTemporalQuestion("Brief me on what I've been working on")).toBe(
+      true,
+    );
+    expect(isTemporalQuestion("What have I been doing lately?")).toBe(true);
+    expect(isTemporalQuestion("Catch me up on recent work")).toBe(true);
+    expect(isTemporalQuestion("What did I work on last week?")).toBe(true);
+  });
+
+  it("returns false for non-temporal questions", () => {
+    expect(isTemporalQuestion("Where are we in the Glug project?")).toBe(false);
+    expect(isTemporalQuestion("What is taproot_harvest?")).toBe(false);
+    expect(isTemporalQuestion("Show me the Taproot pricing decision")).toBe(
+      false,
+    );
+  });
+});
+
+describe("taproot_harvest temporal augmentation", () => {
+  let serverCapture: ReturnType<typeof makeServerCapture>;
+
+  beforeEach(() => {
+    serverCapture = makeServerCapture();
+  });
+
+  // Test: temporal question with daily/ files present — recent files appear in output
+  it("includes recent daily files for temporal questions", async () => {
+    const backend = makeBackend(
+      {
+        "index.md": "# Vault Index\n\n- [[glug-notes]] — Glug project notes",
+        "glug-notes.md": "# Glug Notes\nglug is a water app",
+        "daily/2026-05/2026-05-13-taproot-session.md":
+          "# Session\nWorked on harvest fix today",
+      },
+      {
+        recentFiles: vi.fn(async () => [
+          "daily/2026-05/2026-05-13-taproot-session.md",
+        ]),
+      },
+    );
+
+    registerKnowledgeTools(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("taproot_harvest")!;
+
+    const result = await handler({
+      question: "Brief me on what I've been working on",
+      save: false,
+    });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain("daily/2026-05/2026-05-13-taproot-session.md");
+  });
+
+  // Test: non-temporal question — recentFiles is NOT called
+  it("does not call recentFiles for non-temporal questions", async () => {
+    const recentFiles = vi.fn(async () => []);
+    const backend = makeBackend(
+      {
+        "index.md":
+          "# Vault Index\n\n- [[glug-notes]] — Glug project notes and status",
+        "glug-notes.md": "# Glug Notes\nglug is a water app",
+      },
+      { recentFiles },
+    );
+
+    registerKnowledgeTools(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("taproot_harvest")!;
+
+    await handler({
+      question: "Where are we in the Glug project?",
+      save: false,
+    });
+    expect(recentFiles).not.toHaveBeenCalled();
+  });
+
+  // Test: temporal question, no daily/ files — graceful fallback, no crash
+  it("handles empty recent files list gracefully for temporal questions", async () => {
+    const backend = makeBackend(
+      {
+        "index.md": "# Vault Index\n\n- [[glug-notes]] — Glug project notes",
+        "glug-notes.md": "# Glug Notes\nglug is a water app",
+      },
+      {
+        recentFiles: vi.fn(async () => []),
+      },
+    );
+
+    registerKnowledgeTools(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("taproot_harvest")!;
+
+    const result = await handler({
+      question: "What have I been working on lately?",
+      save: false,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toBeTruthy();
   });
 });
