@@ -11,6 +11,7 @@ import { workspaceCreateRouter } from "./workspace-create.js";
 import { personaRenderRouter } from "./persona-render.js";
 import { dashboardRouter } from "./dashboard.js";
 import { billingRouter } from "./billing.js";
+import { feedbackRouter } from "./feedback.js";
 
 export function mountApiRoutes(app: Express): void {
   const api = Router();
@@ -31,6 +32,7 @@ export function mountApiRoutes(app: Express): void {
   api.use("/", personaRenderRouter());
   api.use("/", dashboardRouter());
   api.use("/", billingRouter());
+  api.use("/", feedbackRouter());
 
   app.use("/api", api);
 }

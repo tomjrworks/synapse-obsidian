@@ -34,6 +34,22 @@ export function respondError(
     `[${prefix}] code=${code} request_id=${requestId} status=${status} err=`,
     err,
   );
+
+  if (status >= 500) {
+    const webhookUrl = process.env.DISCORD_ERROR_WEBHOOK_URL;
+    if (webhookUrl) {
+      const route =
+        (res as unknown as { req?: { path?: string } }).req?.path ?? "?";
+      fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: `🚨 5xx | ${status} | ${code} | route=${route} | req=${requestId}`,
+        }),
+      }).catch(() => {});
+    }
+  }
+
   res.status(status).json({
     ...(opts.extra ?? {}),
     error: code,

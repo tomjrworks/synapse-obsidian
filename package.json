@@ -60,6 +60,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@sentry/node": "^10.53.1",
     "@supabase/supabase-js": "^2.104.1",
     "express": "^5.1.0",
     "express-rate-limit": "^8.4.1",

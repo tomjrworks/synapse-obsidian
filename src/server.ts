@@ -22,6 +22,7 @@ import {
 import { registerSigninRoutes } from "./signin.js";
 import { respondError } from "./api/respond-error.js";
 import { mountApiRoutes } from "./api/routes.js";
+import { initSentry, Sentry } from "./observability/sentry.js";
 import { stripeWebhookHandler } from "./api/stripe-webhook.js";
 import { getBackend } from "./utils/backend-cache.js";
 
@@ -56,6 +57,8 @@ async function createMcpServer(
 }
 
 export async function startServer(port: number): Promise<void> {
+  initSentry();
+
   const app = express();
 
   // Stripe webhook: raw body required for signature verification.
@@ -237,6 +240,8 @@ export async function startServer(port: number): Promise<void> {
   registerSigninRoutes(app, baseUrl);
   console.error(`[Signin] Direct signin enabled at /signin`);
 
+  app.use("/api/feedback", makeLimit(20, 3600));
+
   mountApiRoutes(app);
   console.error(`[API] Onboarding endpoints mounted at /api/*`);
 
@@ -314,6 +319,24 @@ export async function startServer(port: number): Promise<void> {
       version: pkg.version,
     });
   });
+
+  // Sentry error middleware — must be after all routes, before app.listen
+  app.use(
+    (
+      err: unknown,
+      req: express.Request,
+      _res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      Sentry.captureException(err, {
+        tags: {
+          route: req.path,
+          workspaceId: (req as { workspaceId?: string }).workspaceId,
+        },
+      });
+      next(err);
+    },
+  );
 
   const server = app.listen(port, () => {
     console.error(`Taproot server running at http://localhost:${port}`);
