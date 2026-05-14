@@ -23,7 +23,7 @@ import { withTimeout } from "../utils/with-timeout.js";
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
-  "\n\n> **Tip:** Run `taproot_plant` to configure Taproot for your vault.";
+  "\n\n> **Tip:** Run `taproot_setup_scan` to configure Taproot for your vault.";
 
 // --- taproot_harvest helpers ---
 
@@ -313,7 +313,7 @@ export function registerKnowledgeTools(
           );
         } else {
           output.push(
-            "**Taproot hasn't been configured yet.** Run `taproot_plant` to get started.",
+            "**Taproot hasn't been configured yet.** Run `taproot_setup_scan` to get started.",
             "",
           );
         }
@@ -343,7 +343,7 @@ export function registerKnowledgeTools(
         const actions: string[] = [];
         if (!config) {
           actions.push(
-            "1. **Set up Taproot:** Run `taproot_plant` to configure Taproot for your vault.",
+            "1. **Set up Taproot:** Run `taproot_setup_scan` to configure Taproot for your vault.",
           );
         }
         if (rawFiles.length === 0) {
@@ -406,7 +406,7 @@ export function registerKnowledgeTools(
         );
         output.push("");
         output.push(
-          "**Available tools:** taproot_plant, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
+          "**Available tools:** taproot_setup_scan, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
         );
 
         return { content: [{ type: "text", text: output.join("\n") }] };
@@ -878,7 +878,7 @@ export function registerKnowledgeTools(
             content: [
               {
                 type: "text",
-                text: `No files found to check. Run taproot_plant to configure Taproot first.${tipSuffix}`,
+                text: `No files found to check. Run taproot_setup_scan to configure Taproot first.${tipSuffix}`,
               },
             ],
           };

@@ -76,7 +76,15 @@ export function billingRouter(): Router {
       const { interval } = req.body as { interval?: "month" | "year" };
 
       if (interval !== "month" && interval !== "year") {
-        res.status(400).json({ error: "interval must be month or year" });
+        respondError(
+          res,
+          400,
+          "invalid_interval",
+          new Error("interval must be month or year"),
+          {
+            logPrefix: "billing",
+          },
+        );
         return;
       }
 
@@ -86,9 +94,15 @@ export function billingRouter(): Router {
           : process.env.STRIPE_ANNUAL_PRICE_ID;
 
       if (!priceId) {
-        res
-          .status(500)
-          .json({ error: `STRIPE_${interval.toUpperCase()}_PRICE_ID not set` });
+        respondError(
+          res,
+          500,
+          "stripe_not_configured",
+          new Error(`STRIPE_${interval.toUpperCase()}_PRICE_ID not set`),
+          {
+            logPrefix: "billing",
+          },
+        );
         return;
       }
 
@@ -141,7 +155,15 @@ export function billingRouter(): Router {
       const sub = await getSubscription(sb, membership.workspaceId);
 
       if (!sub?.stripe_customer_id) {
-        res.status(400).json({ error: "no_billing_account" });
+        respondError(
+          res,
+          400,
+          "no_billing_account",
+          new Error("workspace has no stripe_customer_id"),
+          {
+            logPrefix: "billing",
+          },
+        );
         return;
       }
 

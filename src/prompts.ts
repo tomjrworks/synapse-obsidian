@@ -13,7 +13,7 @@ async function getSchema(backend: StorageBackend): Promise<string> {
   } catch {
     // ignore read errors
   }
-  return "(No CLAUDE.md found — run taproot_plant to configure Taproot, or taproot_sow to scaffold a knowledge base schema.)";
+  return "(No CLAUDE.md found — run taproot_setup_scan to configure Taproot, or taproot_sow to scaffold a knowledge base schema.)";
 }
 
 export function registerPrompts(
@@ -216,7 +216,7 @@ export function registerPrompts(
                 "",
                 "## PHASE 2 — Set everything up (silently, behind the scenes)",
                 `After getting answers, run these tools WITHOUT narrating the tool names:`,
-                `1. taproot_plant — to scan the vault`,
+                `1. taproot_setup_scan — to scan the vault`,
                 `2. taproot_till — with sourcesFolder="${sourcesFolder}", mode="structured", purpose set from user's answer to Q1, topic set from user's answer to Q2. Accept all other defaults from scan.`,
                 `3. taproot_cultivate — to find files that need processing`,
                 "",

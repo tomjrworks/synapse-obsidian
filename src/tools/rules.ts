@@ -77,7 +77,7 @@ export function registerRulesTool(
           content: [
             {
               type: "text",
-              text: `<vault-rules source="starter" note="No CLAUDE.md yet — these are starter defaults, not the user's chosen conventions. The user can personalize via taproot_plant + taproot_till or by hand-editing CLAUDE.md.">\n${STARTER_RULES}\n</vault-rules>`,
+              text: `<vault-rules source="starter" note="No CLAUDE.md yet — these are starter defaults, not the user's chosen conventions. The user can personalize via taproot_setup_scan + taproot_till or by hand-editing CLAUDE.md.">\n${STARTER_RULES}\n</vault-rules>`,
             },
           ],
         };

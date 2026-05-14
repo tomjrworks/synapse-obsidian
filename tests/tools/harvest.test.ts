@@ -67,7 +67,7 @@ describe("taproot_harvest", () => {
     const result = await handler({ question: "what is glug", save: false });
     expect(result.isError).toBeFalsy();
     const text = result.content[0].text;
-    expect(text).toContain("taproot_plant");
+    expect(text).toContain("taproot_setup_scan");
   });
 
   // Test 2: Index-pass hit — reads only matching files, not all 50
