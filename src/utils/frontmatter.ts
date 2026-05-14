@@ -128,3 +128,24 @@ export function renderCardinalityLine(card: Cardinality): string {
 }
 
 export const MANAGED_INDEX_MARKER = "TAPROOT-MANAGED:index";
+
+// Pre-bake H1 / first-body-line fallback into card.summary at write time so
+// the stored cardinality renders identically to the legacy live-read path
+// in buildFileEntry (which used extractFirstH1 / stripFrontmatter fallbacks).
+// Without this, files without a `summary:` frontmatter field would regress
+// to "(no description)" in the index after migration.
+export function enrichCardinalitySummary(
+  card: Cardinality,
+  rawContent: string,
+): Cardinality {
+  if (card.summary) return card;
+  const h1Match = /^#\s+(.+)$/m.exec(rawContent);
+  if (h1Match) return { ...card, summary: h1Match[1].trim().slice(0, 200) };
+  // \r?\n so CRLF files don't escape frontmatter stripping
+  const body = rawContent.replace(/^---[\s\S]*?---\r?\n/, "").trim();
+  const firstLine = body
+    .split("\n")
+    .find((l) => l.trim() && !l.startsWith("#"));
+  if (firstLine) return { ...card, summary: firstLine.trim().slice(0, 200) };
+  return card;
+}

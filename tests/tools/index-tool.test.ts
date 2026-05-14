@@ -4,7 +4,8 @@ import {
   registerIndexTool,
   _clearIndexCache,
 } from "../../src/tools/index-tool.js";
-import type { StorageBackend } from "../../src/utils/storage.js";
+import type { FileMeta, StorageBackend } from "../../src/utils/storage.js";
+import { extractCardinality } from "../../src/utils/frontmatter.js";
 
 type ToolHandler = () => Promise<{
   content: Array<{ type: string; text: string }>;
@@ -24,7 +25,7 @@ function makeServerCapture() {
 }
 
 function makeBackend(overrides: Partial<StorageBackend> = {}): StorageBackend {
-  return {
+  const base: Partial<StorageBackend> = {
     readFile: vi.fn(async () => ""),
     writeFile: vi.fn(async () => undefined),
     listFiles: vi.fn(async () => []),
@@ -35,8 +36,27 @@ function makeBackend(overrides: Partial<StorageBackend> = {}): StorageBackend {
     stat: vi.fn(async () => ({ size: 0, modifiedAt: new Date() })),
     recentFiles: vi.fn(async () => []),
     listChanged: vi.fn(async () => ({ files: [], next: null })),
-    ...overrides,
-  } as StorageBackend;
+    batchUpdateCardinalities: vi.fn(async () => undefined),
+  };
+  const merged = { ...base, ...overrides } as StorageBackend;
+  // Default listFilesMeta reads files via the merged readFile + listFiles —
+  // so existing tests that only stub those two still exercise the new path
+  // by emitting null cardinalities (which trigger the backfill read loop)
+  // and the rendered output is byte-identical to the legacy fallback.
+  // Tests that want pre-stored cardinalities pass listFilesMeta explicitly.
+  if (!overrides.listFilesMeta) {
+    merged.listFilesMeta = vi.fn(async () => {
+      const paths = await merged.listFiles();
+      const results: FileMeta[] = [];
+      for (const p of paths) {
+        // Return null so loadIndexData falls through to readFile + extract,
+        // matching the legacy path the tests were written against.
+        results.push({ path: p, cardinality: null });
+      }
+      return results;
+    });
+  }
+  return merged;
 }
 
 function isoDaysAgo(days: number): string {
@@ -429,6 +449,137 @@ describe("garden_index", () => {
       expect(listFiles).toHaveBeenCalledTimes(1);
       // 2 files × 1 pass = 2 reads (not 4)
       expect(readFile).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("stored-cardinality fast path", () => {
+    it("renders from listFilesMeta without calling readFile when cardinalities are present", async () => {
+      const card = extractCardinality(
+        "---\ntags: [proj]\nsummary: stored summary\n---\nbody",
+      );
+      const readFile = vi.fn(async () => "should-not-be-called");
+      const backend = makeBackend({
+        exists: vi.fn(async () => false),
+        readFile,
+        listFilesMeta: vi.fn(async () => [
+          { path: "notes/a.md", cardinality: card },
+        ]),
+      });
+      const { server, registered } = serverCapture;
+      registerIndexTool(server, backend);
+      _clearIndexCache(backend);
+      const handler = registered.get("garden_index")!;
+
+      const result = await handler();
+      const text = result.content[0].text;
+
+      expect(text).toContain("[[a]]");
+      expect(text).toContain("stored summary");
+      // listFilesMeta supplied everything — readFile must not have been called
+      // for content extraction (write-back may still readFile index.md
+      // through exists/maybeWriteIndexMd, but exists=false short-circuits that).
+      expect(readFile).not.toHaveBeenCalled();
+    });
+
+    it("backfills null cardinality via readFile + batchUpdateCardinalities", async () => {
+      const readFile = vi.fn(
+        async () => "---\nsummary: backfilled summary\n---\nbody",
+      );
+      const batchUpdateCardinalities = vi.fn(async () => undefined);
+      const backend = makeBackend({
+        readFile,
+        batchUpdateCardinalities,
+        listFilesMeta: vi.fn(async () => [
+          { path: "notes/needs-backfill.md", cardinality: null },
+        ]),
+      });
+      const { server, registered } = serverCapture;
+      registerIndexTool(server, backend);
+      _clearIndexCache(backend);
+      const handler = registered.get("garden_index")!;
+
+      const result = await handler();
+      // give the fire-and-forget batchUpdate a tick
+      await new Promise((r) => setImmediate(r));
+
+      expect(result.content[0].text).toContain("backfilled summary");
+      expect(readFile).toHaveBeenCalledWith("notes/needs-backfill.md");
+      expect(batchUpdateCardinalities).toHaveBeenCalledTimes(1);
+      const updates = batchUpdateCardinalities.mock.calls[0][0] as Map<
+        string,
+        unknown
+      >;
+      expect(updates.has("notes/needs-backfill.md")).toBe(true);
+    });
+
+    it("USE_STORED_CARDINALITY=0 falls back to legacy full-read path", async () => {
+      const original = process.env.USE_STORED_CARDINALITY;
+      process.env.USE_STORED_CARDINALITY = "0";
+      try {
+        const listFilesMeta = vi.fn(async () => []);
+        const readFile = vi.fn(
+          async () => "---\nsummary: legacy summary\n---\nbody",
+        );
+        const backend = makeBackend({
+          readFile,
+          listFiles: vi.fn(async () => ["notes/legacy.md"]),
+          listFilesMeta,
+        });
+        const { server, registered } = serverCapture;
+        registerIndexTool(server, backend);
+        _clearIndexCache(backend);
+        const handler = registered.get("garden_index")!;
+
+        const result = await handler();
+        const text = result.content[0].text;
+
+        expect(text).toContain("[[legacy]]");
+        expect(text).toContain("legacy summary");
+        expect(listFilesMeta).not.toHaveBeenCalled();
+        expect(readFile).toHaveBeenCalledWith("notes/legacy.md");
+      } finally {
+        if (original === undefined) delete process.env.USE_STORED_CARDINALITY;
+        else process.env.USE_STORED_CARDINALITY = original;
+      }
+    });
+
+    it("renders identically whether cardinality is stored or freshly read", async () => {
+      // Equivalence: same file, same rendered entry, regardless of path.
+      const content =
+        "---\ntags: [proj]\nstatus: active\nsummary: shared summary\n---\nbody";
+      const card = extractCardinality(content);
+
+      const storedBackend = makeBackend({
+        listFilesMeta: vi.fn(async () => [
+          { path: "notes/same.md", cardinality: card },
+        ]),
+      });
+      const legacyBackend = makeBackend({
+        readFile: vi.fn(async () => content),
+        listFiles: vi.fn(async () => ["notes/same.md"]),
+        listFilesMeta: vi.fn(async () => [
+          { path: "notes/same.md", cardinality: null },
+        ]),
+      });
+
+      const capStored = makeServerCapture();
+      registerIndexTool(capStored.server, storedBackend);
+      _clearIndexCache(storedBackend);
+
+      const capLegacy = makeServerCapture();
+      registerIndexTool(capLegacy.server, legacyBackend);
+      _clearIndexCache(legacyBackend);
+
+      const storedText = (await capStored.registered.get("garden_index")!())
+        .content[0].text;
+      const legacyText = (await capLegacy.registered.get("garden_index")!())
+        .content[0].text;
+
+      // Strip the source attribute since stored = "synthesized" and so is the
+      // backfill path — but in case wrap labels differ, normalize.
+      const normalize = (s: string) =>
+        s.replace(/source="[^"]*"/, 'source="X"');
+      expect(normalize(storedText)).toBe(normalize(legacyText));
     });
   });
 });

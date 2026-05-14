@@ -4,10 +4,10 @@ import {
   invalidateIndexForWorkspace,
   disposeWorkspaceDebouncer,
 } from "../../src/tools/index-tool.js";
-import type { StorageBackend } from "../../src/utils/storage.js";
+import type { FileMeta, StorageBackend } from "../../src/utils/storage.js";
 
 function makeBackend(overrides: Partial<StorageBackend> = {}): StorageBackend {
-  return {
+  const base: Partial<StorageBackend> = {
     readFile: vi.fn(async () => ""),
     writeFile: vi.fn(async () => undefined),
     listFiles: vi.fn(async () => []),
@@ -18,8 +18,18 @@ function makeBackend(overrides: Partial<StorageBackend> = {}): StorageBackend {
     stat: vi.fn(async () => ({ size: 0, modifiedAt: new Date() })),
     recentFiles: vi.fn(async () => []),
     listChanged: vi.fn(async () => ({ files: [], next: null })),
-    ...overrides,
-  } as StorageBackend;
+    batchUpdateCardinalities: vi.fn(async () => undefined),
+  };
+  const merged = { ...base, ...overrides } as StorageBackend;
+  // Default listFilesMeta delegates to listFiles + readFile so existing
+  // tests (which only stub those) still drive flushes through loadIndexData.
+  if (!overrides.listFilesMeta) {
+    merged.listFilesMeta = vi.fn(async () => {
+      const paths = await merged.listFiles();
+      return paths.map((p): FileMeta => ({ path: p, cardinality: null }));
+    });
+  }
+  return merged;
 }
 
 describe("invalidateIndexForWorkspace", () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  enrichCardinalitySummary,
   extractCardinality,
   renderCardinalityLine,
   MANAGED_INDEX_MARKER,
@@ -128,5 +129,55 @@ describe("renderCardinalityLine", () => {
 describe("MANAGED_INDEX_MARKER", () => {
   it("is the expected string", () => {
     expect(MANAGED_INDEX_MARKER).toBe("TAPROOT-MANAGED:index");
+  });
+});
+
+describe("enrichCardinalitySummary", () => {
+  it("returns the cardinality unchanged when summary is already populated", () => {
+    const card = { summary: "explicit summary", custom: {} };
+    const result = enrichCardinalitySummary(card, "# Header\nbody");
+    expect(result).toBe(card);
+  });
+
+  it("falls back to H1 when no summary field present", () => {
+    const card = { custom: {} };
+    const result = enrichCardinalitySummary(
+      card,
+      "---\ntags: [foo]\n---\n# My Note Title\n\nbody text",
+    );
+    expect(result.summary).toBe("My Note Title");
+  });
+
+  it("falls back to first non-heading body line when no summary AND no H1", () => {
+    const card = { custom: {} };
+    const result = enrichCardinalitySummary(
+      card,
+      "---\ntags: [foo]\n---\nFirst body line.\nSecond line.",
+    );
+    expect(result.summary).toBe("First body line.");
+  });
+
+  it("strips CRLF frontmatter so body fallback doesn't leak YAML", () => {
+    // Regression: a previous regex used \n (LF-only) which left CRLF-style
+    // frontmatter unstripped, causing summary to be a YAML line.
+    const card = { custom: {} };
+    const content =
+      "---\r\ntags: [foo]\r\n---\r\nReal body line\r\nSecond line";
+    const result = enrichCardinalitySummary(card, content);
+    expect(result.summary).toBe("Real body line");
+    expect(result.summary).not.toContain("tags");
+  });
+
+  it("returns cardinality unchanged when no summary, no H1, and no body content", () => {
+    const card = { custom: {} };
+    const result = enrichCardinalitySummary(card, "---\ntags: [a]\n---\n");
+    expect(result.summary).toBeUndefined();
+  });
+
+  it("truncates summary to 200 chars", () => {
+    const longLine = "x".repeat(500);
+    const card = { custom: {} };
+    const result = enrichCardinalitySummary(card, longLine);
+    expect(result.summary).toHaveLength(200);
   });
 });

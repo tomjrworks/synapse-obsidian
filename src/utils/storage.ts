@@ -1,5 +1,6 @@
 import { promises as fsp, constants as fsConstants } from "node:fs";
 import path from "node:path";
+import { extractCardinality, type Cardinality } from "./frontmatter.js";
 
 /**
  * Abstract storage backend interface.
@@ -50,6 +51,15 @@ export interface ListChangedResult {
   pendingCount: number; // rows remaining after this page; 0 = caught up
 }
 
+// Lightweight per-file metadata for index builds — avoids the per-file
+// readFile fanout that dominates loadIndexData on Supabase-mirrored vaults.
+// cardinality is null when the backend hasn't yet extracted it (one-time
+// backfill case) or extraction failed.
+export interface FileMeta {
+  path: string;
+  cardinality: Cardinality | null;
+}
+
 export interface StorageBackend {
   readFile(filePath: string): Promise<string>;
   writeFile(filePath: string, content: string): Promise<void>;
@@ -66,6 +76,8 @@ export interface StorageBackend {
   ): Promise<ListChangedResult>;
   getCursorHead(): Promise<{ modifiedAt: string; id: string } | null>;
   getPendingCount(cursor: PullCursor | null): Promise<number>;
+  listFilesMeta(subPath?: string): Promise<FileMeta[]>;
+  batchUpdateCardinalities(updates: Map<string, Cardinality>): Promise<void>;
 }
 
 /**
@@ -205,6 +217,31 @@ export class LocalBackend implements StorageBackend {
 
   async getPendingCount(_cursor: PullCursor | null): Promise<number> {
     throw new Error("getPendingCount is not supported by LocalBackend");
+  }
+
+  async listFilesMeta(subPath?: string): Promise<FileMeta[]> {
+    const files = await this.listFiles(subPath, true);
+    const results: FileMeta[] = [];
+    for (const filePath of files) {
+      try {
+        const content = await this.readFile(filePath);
+        results.push({
+          path: filePath,
+          cardinality: extractCardinality(content),
+        });
+      } catch {
+        results.push({ path: filePath, cardinality: null });
+      }
+    }
+    return results;
+  }
+
+  async batchUpdateCardinalities(
+    _updates: Map<string, Cardinality>,
+  ): Promise<void> {
+    // No-op: LocalBackend reads fresh from disk on every listFilesMeta call,
+    // so there's nowhere to "store" extracted cardinalities. Only the
+    // Supabase backend persists this column.
   }
 
   private async listRecursive(

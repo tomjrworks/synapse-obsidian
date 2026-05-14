@@ -30,6 +30,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  FileMeta,
   FileStat,
   ListChangedResult,
   PullCursor,
@@ -37,6 +38,11 @@ import type {
   VaultFileChange,
 } from "./storage.js";
 import { ConflictError, NotFoundError } from "./storage.js";
+import {
+  enrichCardinalitySummary,
+  extractCardinality,
+  type Cardinality,
+} from "./frontmatter.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
 import {
@@ -182,12 +188,22 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     const rules = await getRulesForBackend(this, this.workspaceId);
     const flagsUpdate = computeFlagsUpdate(normalized, content, rules);
 
+    // Pre-bake cardinality (with H1/body summary fallback) at write time so
+    // loadIndexData can read it back in one SELECT instead of N readFiles.
+    // extractCardinality is already try/catched internally (returns empty on
+    // parse failure) — no additional guard needed at this call site.
+    const enrichedCardinality = enrichCardinalitySummary(
+      extractCardinality(content),
+      content,
+    );
+
     const { fileId, storageObject } = await this.upsertMetadata(
       normalized,
       plaintext.length,
       sha256Param,
       nowIso,
       flagsUpdate,
+      enrichedCardinality,
     );
 
     // V1.5a.1: Invalidate the index cache on any write except index.md itself
@@ -232,6 +248,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     sha256Param: string,
     nowIso: string,
     flagsUpdate: FlagsUpdate | null = null,
+    extractedCardinality: Cardinality | null = null,
   ): Promise<{ fileId: string; storageObject: string }> {
     // 0.1.7 Phase 2: each PostgREST round-trip wrapped in withRetry. The
     // callback inspects the returned `error` object, throws transient-tagged
@@ -263,6 +280,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         size_bytes: plaintextSize,
         plaintext_sha256: sha256Param,
         modified_at: nowIso,
+        extracted_cardinality: extractedCardinality,
       };
       if (newFlags) updateRow.flags = newFlags;
       await withRetry(async () => {
@@ -298,6 +316,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       mime_type: "text/markdown",
       storage_object: storageObject,
       modified_at: nowIso,
+      extracted_cardinality: extractedCardinality,
     };
     if (insertFlags) insertRow.flags = insertFlags;
 
@@ -361,6 +380,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           size_bytes: plaintextSize,
           plaintext_sha256: sha256Param,
           modified_at: nowIso,
+          extracted_cardinality: extractedCardinality,
         };
         if (raceFlags) raceUpdateRow.flags = raceFlags;
         await withRetry(async () => {
@@ -421,6 +441,76 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }
 
     return paths;
+  }
+
+  // Lightweight metadata fetch for index builds. Returns (path, cardinality)
+  // for every alive file in one PostgREST round-trip — replaces the per-file
+  // readFile fanout (~1,600 ops for an 800-file vault) that dominated
+  // loadIndexData. Files written before the extracted_cardinality column
+  // existed return null and fall back to the legacy read path in
+  // loadIndexData (which then batch-writes the result back via
+  // batchUpdateCardinalities — one-time backfill).
+  //
+  // 1000-row cap matches listFiles() and TOTAL_FILE_LIMIT in index-tool;
+  // loadIndexData already renders a "Showing first 1000 files" notice when
+  // saturated. Pagination is out of scope for this change.
+  async listFilesMeta(subPath?: string): Promise<FileMeta[]> {
+    let query = this.supabase
+      .from("vault_files")
+      .select("path, extracted_cardinality")
+      .eq("workspace_id", this.workspaceId)
+      .is("deleted_at", null);
+
+    const trimmedSub = subPath?.trim();
+    const prefix = trimmedSub
+      ? trimmedSub.endsWith("/")
+        ? trimmedSub
+        : `${trimmedSub}/`
+      : null;
+    if (prefix) {
+      // Match listFiles H8 escaping: % _ \ must be escaped for LIKE.
+      const escapedPrefix = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+      query = query.like("path", `${escapedPrefix}%`);
+    }
+
+    const { data, error } = await query.limit(1000);
+    if (error) throw new Error(`listFilesMeta failed: ${error.message}`);
+    return (data ?? []).map((r) => ({
+      path: r.path as string,
+      cardinality: (r.extracted_cardinality as Cardinality | null) ?? null,
+    }));
+  }
+
+  // Fire-and-forget backfill writes from loadIndexData when it encounters
+  // files with null extracted_cardinality. Chunked Promise.all with
+  // concurrency=10 (same pattern as 0.1.7 sync push parallelism).
+  //
+  // The .is('extracted_cardinality', null) race-guard is mandatory:
+  // writeFile triggers a debounced 500ms flush, and a user could save the
+  // same file twice while a backfill is in flight. Without the guard, the
+  // backfill's UPDATE would clobber a fresh writeFile value with the stale
+  // one it read earlier. With the guard, backfill is a strict null-fill
+  // and never overwrites a populated row.
+  async batchUpdateCardinalities(
+    updates: Map<string, Cardinality>,
+  ): Promise<void> {
+    if (updates.size === 0) return;
+    const concurrency = 10;
+    const entries = [...updates.entries()];
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const chunk = entries.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(([filePath, cardinality]) =>
+          this.supabase
+            .from("vault_files")
+            .update({ extracted_cardinality: cardinality })
+            .eq("workspace_id", this.workspaceId)
+            .eq("path", filePath)
+            .is("deleted_at", null)
+            .is("extracted_cardinality", null),
+        ),
+      );
+    }
   }
 
   async exists(filePath: string): Promise<boolean> {

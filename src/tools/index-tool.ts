@@ -8,9 +8,11 @@ import {
 } from "./_rate-limit.js";
 import { parseFrontmatter } from "../utils/vault.js";
 import {
+  enrichCardinalitySummary,
   extractCardinality,
   renderCardinalityLine,
   MANAGED_INDEX_MARKER,
+  type Cardinality,
 } from "../utils/frontmatter.js";
 import {
   loadIgnorePatterns,
@@ -275,23 +277,120 @@ function parseDateValue(value: unknown): number | null {
 interface IndexData {
   root: string[];
   groups: Map<string, string[]>;
-  contents: Map<string, string | undefined>;
+  cardinalities: Map<string, Cardinality | null>;
   truncated: boolean;
   totalFiles: number;
 }
 
 /**
- * Load the file list + each file's content in a single pass so the two
- * synthesizers (MCP / disk) can render without re-reading. Without this,
- * a flush walks the entire vault twice — 2x the latency on big vaults
- * (Tom's at 800+ files).
+ * Load the file list + each file's cardinality in a single PostgREST round
+ * trip (Supabase) or directory walk (Local). Replaces the per-file readFile
+ * fanout — on an 800-file Supabase-mirrored vault that was ~1,600 ops per
+ * call; now it's 1 op + an opportunistic backfill for any files that
+ * predate the extracted_cardinality column.
+ *
+ * Kill switch: USE_STORED_CARDINALITY=0 routes through loadIndexDataLegacy
+ * (full readFile path). For when a render bug surfaces and clearing the
+ * column alone isn't enough — flip without redeploy.
  */
 async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
-  // Load ignore patterns FIRST so we can filter files out before doing the
-  // expensive per-file readFile loop. Patterns come from CLAUDE.md's
-  // TAPROOT-IGNORE block — see src/utils/taproot-ignore.ts for the contract.
   const ignorePatterns = await loadIgnorePatterns(backend);
 
+  if (process.env.USE_STORED_CARDINALITY === "0") {
+    return loadIndexDataLegacy(backend, ignorePatterns);
+  }
+
+  const allMetaUnfiltered = await backend.listFilesMeta();
+  const allMeta = allMetaUnfiltered.filter(
+    ({ path: filePath }) => !pathMatchesIgnore(filePath, ignorePatterns),
+  );
+
+  const truncated = allMeta.length >= TOTAL_FILE_LIMIT;
+  const groups = new Map<string, string[]>();
+  const root: string[] = [];
+  const cardinalities = new Map<string, Cardinality | null>();
+  const needsBackfill: string[] = [];
+
+  for (const { path: filePath, cardinality } of allMeta) {
+    const slash = filePath.indexOf("/");
+    if (slash === -1) {
+      root.push(filePath);
+    } else {
+      const folder = filePath.slice(0, slash);
+      const arr = groups.get(folder) ?? [];
+      arr.push(filePath);
+      groups.set(folder, arr);
+    }
+
+    if (cardinality !== null) {
+      cardinalities.set(filePath, cardinality);
+    } else {
+      needsBackfill.push(filePath);
+    }
+  }
+
+  // Backfill: read files whose cardinality wasn't stored yet, extract +
+  // enrich, hand back to the backend to persist async. On migration day
+  // this covers every existing file (one-time cost equal to the old hot
+  // path). After that, this list is normally empty.
+  if (needsBackfill.length > 0) {
+    const parallelismRaw = parseInt(
+      process.env.INDEX_BACKFILL_PARALLELISM ?? "10",
+      10,
+    );
+    const concurrency = Math.max(
+      1,
+      Number.isNaN(parallelismRaw) ? 10 : parallelismRaw,
+    );
+    const backfillUpdates = new Map<string, Cardinality>();
+
+    for (let i = 0; i < needsBackfill.length; i += concurrency) {
+      const chunk = needsBackfill.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(async (filePath) => {
+          try {
+            const content = await backend.readFile(filePath);
+            const card = enrichCardinalitySummary(
+              extractCardinality(content),
+              content,
+            );
+            cardinalities.set(filePath, card);
+            backfillUpdates.set(filePath, card);
+          } catch {
+            cardinalities.set(filePath, null);
+          }
+        }),
+      );
+    }
+
+    void backend
+      .batchUpdateCardinalities(backfillUpdates)
+      .catch((err) =>
+        console.error(`[index-tool] cardinality backfill failed: ${err}`),
+      );
+  }
+
+  root.sort();
+  for (const arr of groups.values()) arr.sort();
+
+  return {
+    root,
+    groups,
+    cardinalities,
+    truncated,
+    totalFiles: allMeta.length,
+  };
+}
+
+// Pre-migration code path, preserved verbatim as the kill-switch fallback.
+// Reads every file's contents — same cost as the legacy hot path. Routes
+// readers through enrichCardinalitySummary so the rendered output is byte-
+// identical to the new path. Delete one release after USE_STORED_CARDINALITY
+// has been default-on in prod without regressions.
+async function loadIndexDataLegacy(
+  backend: StorageBackend,
+  ignorePatterns: Awaited<ReturnType<typeof loadIgnorePatterns>>,
+): Promise<IndexData> {
   const allUnfiltered = await backend.listFiles();
   const all = allUnfiltered.filter(
     (filePath) => !pathMatchesIgnore(filePath, ignorePatterns),
@@ -299,7 +398,7 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
   const truncated = all.length >= TOTAL_FILE_LIMIT;
   const groups = new Map<string, string[]>();
   const root: string[] = [];
-  const contents = new Map<string, string | undefined>();
+  const cardinalities = new Map<string, Cardinality | null>();
 
   for (const filePath of all) {
     const slash = filePath.indexOf("/");
@@ -312,19 +411,18 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
       groups.set(folder, arr);
     }
     try {
-      contents.set(filePath, await backend.readFile(filePath));
+      const content = await backend.readFile(filePath);
+      cardinalities.set(
+        filePath,
+        enrichCardinalitySummary(extractCardinality(content), content),
+      );
     } catch {
-      contents.set(filePath, undefined);
+      cardinalities.set(filePath, null);
     }
   }
   root.sort();
   for (const arr of groups.values()) arr.sort();
-  return { root, groups, contents, truncated, totalFiles: all.length };
-}
-
-async function synthesizeIndex(backend: StorageBackend): Promise<string> {
-  const data = await loadIndexData(backend);
-  return renderIndexForMcp(data);
+  return { root, groups, cardinalities, truncated, totalFiles: all.length };
 }
 
 function renderIndexForMcp(data: IndexData): string {
@@ -344,7 +442,7 @@ function renderIndexForMcp(data: IndexData): string {
   if (data.root.length > 0) {
     lines.push(
       `## (root)`,
-      ...renderFolderSliceForMcp(data.root, data.contents),
+      ...renderFolderSliceForMcp(data.root, data.cardinalities),
       "",
     );
   }
@@ -353,7 +451,7 @@ function renderIndexForMcp(data: IndexData): string {
     const files = data.groups.get(folder) ?? [];
     lines.push(
       `## ${folder}/`,
-      ...renderFolderSliceForMcp(files, data.contents),
+      ...renderFolderSliceForMcp(files, data.cardinalities),
       "",
     );
   }
@@ -364,11 +462,11 @@ function renderIndexForMcp(data: IndexData): string {
 
 function renderFolderSliceForMcp(
   files: string[],
-  contents: Map<string, string | undefined>,
+  cardinalities: Map<string, Cardinality | null>,
 ): string[] {
   const sliced = files.slice(0, FILES_PER_FOLDER_LIMIT);
   const rendered: string[] = sliced.map((f) =>
-    buildFileEntry(f, contents.get(f)),
+    buildFileEntry(f, cardinalities.get(f) ?? null),
   );
 
   if (files.length > FILES_PER_FOLDER_LIMIT) {
@@ -379,26 +477,6 @@ function renderFolderSliceForMcp(
   }
 
   return rendered;
-}
-
-/**
- * Synthesize the human-readable index.md that gets written to the vault on
- * disk. Distinct from `synthesizeIndex` (which is the MCP tool response):
- *
- *   - No truncation hints (no "_(N more in this folder — call garden_survey)_")
- *   - No char-budget truncation stubs
- *   - No cardinality dumps in the entry line
- *   - No raw file path — just the wikilink + one-line summary
- *   - No per-folder limit — lists every file under each top-level folder
- *
- * Format matches the CLAUDE.md spec exactly:
- *   - [[<wikilink>]] — <one-line summary>
- */
-async function synthesizeIndexForDisk(
-  backend: StorageBackend,
-): Promise<string> {
-  const data = await loadIndexData(backend);
-  return renderIndexForDisk(data);
 }
 
 // Temporal folders excluded from the disk-written index.md.
@@ -415,7 +493,9 @@ function renderIndexForDisk(data: IndexData): string {
   if (data.root.length > 0) {
     lines.push(
       `## (root)`,
-      ...data.root.map((f) => buildFileEntryForDisk(f, data.contents.get(f))),
+      ...data.root.map((f) =>
+        buildFileEntryForDisk(f, data.cardinalities.get(f) ?? null),
+      ),
       "",
     );
   }
@@ -425,7 +505,9 @@ function renderIndexForDisk(data: IndexData): string {
     const files = data.groups.get(folder) ?? [];
     lines.push(
       `## ${folder}/`,
-      ...files.map((f) => buildFileEntryForDisk(f, data.contents.get(f))),
+      ...files.map((f) =>
+        buildFileEntryForDisk(f, data.cardinalities.get(f) ?? null),
+      ),
       "",
     );
   }
@@ -435,40 +517,40 @@ function renderIndexForDisk(data: IndexData): string {
 
 function buildFileEntryForDisk(
   filePath: string,
-  content: string | undefined,
+  cardinality: Cardinality | null,
 ): string {
   const base = path.basename(filePath, ".md");
   let summaryText = "(no description)";
 
-  if (content !== undefined && content.trim()) {
-    const card = extractCardinality(content);
-    summaryText =
-      card.summary ??
-      extractFirstH1(content) ??
-      truncateText(stripFrontmatter(content), 100) ??
-      "(no description)";
-    // CLAUDE.md spec: one-line summary under ~100 chars.
-    summaryText = truncateText(summaryText, 100) ?? summaryText;
+  if (cardinality !== null) {
+    // enrichCardinalitySummary (applied at write time + in legacy/backfill
+    // paths) guarantees summary is populated when extractable, so a single
+    // truncateText pass is sufficient — no H1/body fallback needed here.
+    if (cardinality.summary) {
+      summaryText =
+        truncateText(cardinality.summary, 100) ?? cardinality.summary;
+    }
   }
 
   return `- [[${base}]] — ${summaryText}`;
 }
 
-function buildFileEntry(filePath: string, content: string | undefined): string {
+function buildFileEntry(
+  filePath: string,
+  cardinality: Cardinality | null,
+): string {
   const base = path.basename(filePath, ".md");
   let cardLine = "";
   let summaryText = "(no description)";
 
-  if (content !== undefined && content.trim()) {
-    const card = extractCardinality(content);
-    const rendered = renderCardinalityLine(card);
+  if (cardinality !== null) {
+    const rendered = renderCardinalityLine(cardinality);
     if (rendered) cardLine = rendered;
 
-    summaryText =
-      card.summary ??
-      extractFirstH1(content) ??
-      truncateText(stripFrontmatter(content), 80) ??
-      "(no description)";
+    if (cardinality.summary) {
+      summaryText =
+        truncateText(cardinality.summary, 80) ?? cardinality.summary;
+    }
   }
 
   const parts: string[] = [`- [[${base}]] — \`${filePath}\``];
@@ -476,15 +558,6 @@ function buildFileEntry(filePath: string, content: string | undefined): string {
   parts.push(`— ${summaryText}`);
 
   return parts.join(" ");
-}
-
-function extractFirstH1(content: string): string | undefined {
-  const match = /^#\s+(.+)$/m.exec(content);
-  return match ? match[1].trim() : undefined;
-}
-
-function stripFrontmatter(content: string): string {
-  return content.replace(/^---[\s\S]*?---\n/, "").trim();
 }
 
 function truncateText(text: string, maxLen: number): string | undefined {
