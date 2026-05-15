@@ -245,6 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        SentryService.start()
+
         // Required for menubar-only behavior when launched as an unbundled SwiftPM
         // binary. LSUIElement in Info.plist only takes effect inside a .app bundle;
         // setActivationPolicy(.accessory) is the runtime equivalent.

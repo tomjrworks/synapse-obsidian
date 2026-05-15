@@ -9,9 +9,9 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.12</string>
+    <string>0.1.13</string>
     <key>CFBundleVersion</key>
-    <string>12</string>
+    <string>13</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -43,5 +43,7 @@
     <integer>21600</integer>
     <key>SUAutomaticallyUpdate</key>
     <false/>
+    <key>SentryDSN</key>
+    <string>https://2bfd3c70d315cf132d7dbdc5e23bbf31@o4511390897012736.ingest.us.sentry.io/4511390934040576</string>
 </dict>
 </plist>

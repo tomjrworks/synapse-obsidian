@@ -1,5 +1,6 @@
 import Foundation
 import os.lock
+import Sentry
 
 // MARK: - Wire types
 
@@ -210,6 +211,7 @@ actor SyncEngine {
             }
         } catch {
             NSLog("[Taproot] push: transport error: \(error) — drop, eventual consistency via next FSEvent")
+            SentrySDK.capture(error: error)
         }
     }
 
@@ -264,6 +266,7 @@ actor SyncEngine {
             response = try await httpClient.send(request)
         } catch {
             NSLog("[Taproot] pull: transport error: \(error) — Stage 1 drop, retry next tick")
+            SentrySDK.capture(error: error)
             return .transportError
         }
 
