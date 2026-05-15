@@ -9,8 +9,9 @@ export interface NudgeResult {
 }
 
 // Finds workspaces whose trial ended yesterday and sends a day-31 nudge email.
-// The date-range query (trial_ends_at in [yesterday 00:00, today 00:00)) ensures
-// each workspace is only targeted once — on the day after trial_ends_at.
+// The date-range query (trial_ends_at in [yesterday 00:00, today 00:00)) targets
+// each workspace on the day after trial_ends_at. The trial_warning_sent_at IS NULL
+// guard prevents double-sends if the server restarts after 09:00 UTC on the same day.
 export async function runDayThirtyOneNudge(): Promise<NudgeResult> {
   const sb = supabaseService();
   const now = new Date();
@@ -27,7 +28,8 @@ export async function runDayThirtyOneNudge(): Promise<NudgeResult> {
     .select("workspace_id")
     .eq("status", "trialing")
     .gte("trial_ends_at", yesterdayMidnight.toISOString())
-    .lt("trial_ends_at", todayMidnight.toISOString());
+    .lt("trial_ends_at", todayMidnight.toISOString())
+    .is("trial_warning_sent_at", null);
 
   if (error) {
     console.error("[nudge] query error:", error);
@@ -47,6 +49,16 @@ export async function runDayThirtyOneNudge(): Promise<NudgeResult> {
       if (!user?.email) continue;
       await sendTrialEndedEmail(user.email);
       sent++;
+      const { error: markErr } = await sb
+        .from("workspace_subscriptions")
+        .update({ trial_warning_sent_at: new Date().toISOString() })
+        .eq("workspace_id", row.workspace_id);
+      if (markErr) {
+        console.error(
+          `[nudge] sent email but failed to mark trial_warning_sent_at for ${row.workspace_id}:`,
+          markErr,
+        );
+      }
     } catch (err) {
       console.error(`[nudge] failed for workspace ${row.workspace_id}:`, err);
       errors++;

@@ -17,13 +17,21 @@ vi.mock("../../src/api/workspace.js", () => ({
     mockGetMembershipForWorkspace(...args),
 }));
 
-// Chainable Supabase query builder — last method resolves the promise.
+// Chainable Supabase query builder.
+// .is() is the terminal method for the select path (last filter applied).
+// .update() returns a separate chain for the trial_warning_sent_at mark.
 function makeQueryChain(result: { data: unknown; error: unknown }) {
+  const updateChain = {
+    eq: vi.fn().mockResolvedValue({ data: null, error: null }),
+  };
   const chain = {
     select: vi.fn().mockReturnThis(),
     eq: vi.fn().mockReturnThis(),
     gte: vi.fn().mockReturnThis(),
-    lt: vi.fn().mockResolvedValue(result),
+    lt: vi.fn().mockReturnThis(),
+    is: vi.fn().mockResolvedValue(result), // terminal for select path
+    update: vi.fn().mockReturnValue(updateChain),
+    _updateChain: updateChain,
   };
   return chain;
 }
@@ -147,7 +155,7 @@ describe("runDayThirtyOneNudge", () => {
     expect(mockSendTrialEndedEmail).not.toHaveBeenCalled();
   });
 
-  it("queries with yesterday UTC date range to prevent double-fire across days", async () => {
+  it("queries workspaces whose trial ended yesterday (UTC window) with no prior nudge sent", async () => {
     const queryChain = makeQueryChain({ data: [], error: null });
     mockFrom = vi.fn().mockReturnValue(queryChain);
 
@@ -170,6 +178,34 @@ describe("runDayThirtyOneNudge", () => {
 
     // gte must be exactly yesterday at 00:00 UTC (24h before lt)
     expect(ltDate.getTime() - gteDate.getTime()).toBe(24 * 60 * 60 * 1000);
+
+    // Idempotency guard — only workspaces with no prior nudge are targeted
+    expect(queryChain.is).toHaveBeenCalledWith("trial_warning_sent_at", null);
+  });
+
+  it("marks trial_warning_sent_at after successful send to prevent double-send on restart", async () => {
+    const queryChain = makeQueryChain({
+      data: [{ workspace_id: "ws-mark" }],
+      error: null,
+    });
+    mockFrom = vi.fn().mockReturnValue(queryChain);
+    mockGetMembershipForWorkspace.mockResolvedValue({
+      workspaceId: "ws-mark",
+      userId: "user-mark",
+      name: "test",
+      settings: {},
+    });
+
+    const result = await runDayThirtyOneNudge();
+
+    expect(result).toEqual({ sent: 1, errors: 0 });
+    expect(queryChain.update).toHaveBeenCalledWith(
+      expect.objectContaining({ trial_warning_sent_at: expect.any(String) }),
+    );
+    expect(queryChain._updateChain.eq).toHaveBeenCalledWith(
+      "workspace_id",
+      "ws-mark",
+    );
   });
 
   it("sends to multiple workspaces in one run", async () => {
