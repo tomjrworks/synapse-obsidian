@@ -39,7 +39,7 @@ export function feedbackRouter(): Router {
     }
 
     const sourceTag = source ? `[${source}] ` : "";
-    const fromLine = email ? ` — from ${email.replace(/@.+/, "@…")}` : "";
+    const fromLine = email ? ` — from ${email.replace(/^[^@]+/, "***")}` : "";
     const content = `💬 Feedback ${sourceTag}${fromLine}\n\n> ${message.slice(0, 1900)}`;
 
     fetch(webhookUrl, {

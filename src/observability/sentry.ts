@@ -14,6 +14,7 @@ const VAULT_FIELDS_TO_STRIP = [
   "keywords",
   "results",
   "candidates",
+  "remembered_text",
 ];
 
 function hashEmail(email: string): string {
