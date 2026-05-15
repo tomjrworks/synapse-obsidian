@@ -9,6 +9,25 @@ function resendClient(): Resend {
 const FROM_ADDRESS =
   process.env.EMAIL_FROM ?? "Taproot <noreply@taproothq.com>";
 
+export async function sendTrialEndedEmail(toEmail: string): Promise<void> {
+  const resend = resendClient();
+  await resend.emails.send({
+    from: FROM_ADDRESS,
+    to: toEmail,
+    subject: "Your Taproot trial ended — 7 days to keep going",
+    html: `
+      <p>Hey — your 30-day Taproot trial just ended.</p>
+      <p>You have a <strong>7-day grace window</strong> — your files and sync keep working until then.</p>
+      <p>
+        <a href="https://taproothq.com/dashboard/billing" style="background:#1a1a1a;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;display:inline-block;">
+          Subscribe to keep going →
+        </a>
+      </p>
+      <p style="color:#666;font-size:13px;">$12/month or $99/year. Cancel anytime.</p>
+    `,
+  });
+}
+
 export async function sendTrialWarningEmail(
   toEmail: string,
   daysRemaining: number,

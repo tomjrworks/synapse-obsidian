@@ -10,7 +10,7 @@ import { requireAuth, type AuthedMcpRequest } from "../oauth.js";
 import { respondError } from "./respond-error.js";
 import {
   getSubscriptionFallback,
-  isSubscriptionActive,
+  getSubscriptionGate,
   getDaysRemaining,
 } from "./subscription.js";
 
@@ -158,11 +158,13 @@ export const requireSubscription: RequestHandler = async (req, res, next) => {
     return;
   }
   const sub = await getSubscriptionFallback(supabaseService(), workspaceId);
-  if (!isSubscriptionActive(sub)) {
+  const gate = getSubscriptionGate(sub);
+  if (!gate.allowed) {
     res.status(402).json({
       error: "subscription_required",
       status: sub.status,
       days_remaining: getDaysRemaining(sub),
+      grace_period: gate.grace_period,
     });
     return;
   }

@@ -58,6 +58,8 @@ async function createMcpServer(
 
 export async function startServer(port: number): Promise<void> {
   initSentry();
+  const { startNudgeCron } = await import("./cron/nudge.js");
+  startNudgeCron();
 
   const app = express();
 
@@ -262,19 +264,18 @@ export async function startServer(port: number): Promise<void> {
     // Subscription gate: blocks expired/canceled workspaces from MCP tools.
     // workspaceId is already attached by requireAuth above.
     {
-      const {
-        getSubscriptionFallback,
-        isSubscriptionActive,
-        getDaysRemaining,
-      } = await import("./api/subscription.js");
+      const { getSubscriptionFallback, getSubscriptionGate, getDaysRemaining } =
+        await import("./api/subscription.js");
       const { supabaseService } = await import("./api/supabase.js");
       const { workspaceId } = req as AuthedMcpRequest;
       const sub = await getSubscriptionFallback(supabaseService(), workspaceId);
-      if (!isSubscriptionActive(sub)) {
+      const gate = getSubscriptionGate(sub);
+      if (!gate.allowed) {
         res.status(402).json({
           error: "subscription_required",
           status: sub.status,
           days_remaining: getDaysRemaining(sub),
+          grace_period: gate.grace_period,
         });
         return;
       }

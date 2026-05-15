@@ -35,14 +35,32 @@ export async function getSubscription(
   return data as WorkspaceSubscription | null;
 }
 
-// Returns true for: active, grandfathered, or trialing with trial_ends_at in the future.
+export interface SubscriptionGate {
+  allowed: boolean;
+  grace_period: boolean;
+}
+
+// Returns the subscription gate: allowed = access permitted (including grace window).
+// grace_period = true when trial has expired but the 7-day grace window is still open.
 // The status column never auto-updates in Postgres — must check trial_ends_at at runtime.
-export function isSubscriptionActive(sub: WorkspaceSubscription): boolean {
-  if (sub.status === "active" || sub.status === "grandfathered") return true;
-  if (sub.status === "trialing" && sub.trial_ends_at != null) {
-    return new Date(sub.trial_ends_at) > new Date();
+export function getSubscriptionGate(
+  sub: WorkspaceSubscription,
+): SubscriptionGate {
+  if (sub.status === "active" || sub.status === "grandfathered") {
+    return { allowed: true, grace_period: false };
   }
-  return false;
+  if (sub.status === "trialing" && sub.trial_ends_at != null) {
+    const now = new Date();
+    const trialEnd = new Date(sub.trial_ends_at);
+    if (trialEnd > now) return { allowed: true, grace_period: false };
+    const graceEnd = new Date(trialEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+    if (graceEnd > now) return { allowed: true, grace_period: true };
+  }
+  return { allowed: false, grace_period: false };
+}
+
+export function isSubscriptionActive(sub: WorkspaceSubscription): boolean {
+  return getSubscriptionGate(sub).allowed;
 }
 
 // Returns days remaining for trialing subs; negative if expired; null if not trialing.
