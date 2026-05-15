@@ -72,6 +72,17 @@ export function billingRouter(): Router {
     requireSupabaseAuth,
     requireWorkspace,
     asyncHandler(async (req, res) => {
+      if (process.env.STRIPE_DISABLED === "1") {
+        respondError(
+          res,
+          503,
+          "billing_disabled",
+          new Error("STRIPE_DISABLED is set"),
+          { logPrefix: "billing" },
+        );
+        return;
+      }
+
       const { membership } = req as AuthedWorkspaceRequest;
       const { interval } = req.body as { interval?: "month" | "year" };
 
@@ -135,8 +146,9 @@ export function billingRouter(): Router {
         customer: stripeCustomerId,
         line_items: [{ price: priceId, quantity: 1 }],
         mode: "subscription",
+        allow_promotion_codes: true,
         success_url: `${siteUrl}/dashboard/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${siteUrl}/dashboard/settings`,
+        cancel_url: `${siteUrl}/dashboard/billing`,
         metadata: { workspace_id: membership.workspaceId },
       });
 
@@ -150,6 +162,17 @@ export function billingRouter(): Router {
     requireSupabaseAuth,
     requireWorkspace,
     asyncHandler(async (req, res) => {
+      if (process.env.STRIPE_DISABLED === "1") {
+        respondError(
+          res,
+          503,
+          "billing_disabled",
+          new Error("STRIPE_DISABLED is set"),
+          { logPrefix: "billing" },
+        );
+        return;
+      }
+
       const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
       const sub = await getSubscription(sb, membership.workspaceId);
@@ -172,7 +195,9 @@ export function billingRouter(): Router {
 
       const portalSession = await stripe.billingPortal.sessions.create({
         customer: sub.stripe_customer_id,
-        return_url: `${siteUrl}/dashboard/settings`,
+        return_url:
+          process.env.STRIPE_PORTAL_RETURN_URL ??
+          `${siteUrl}/dashboard/billing`,
       });
 
       res.json({ url: portalSession.url });
