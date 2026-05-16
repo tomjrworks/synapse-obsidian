@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -29,6 +30,7 @@ export function dashboardRouter(): Router {
     "/dashboard/me",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const { user, membership } = req as AuthedWorkspaceRequest;
       const settings = membership.settings;

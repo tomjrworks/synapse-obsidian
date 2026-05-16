@@ -3,6 +3,7 @@ import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -39,6 +40,7 @@ export function onboardingRouter(): Router {
     "/onboarding/step",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const { step } = (req.body ?? {}) as { step?: unknown };
 
@@ -115,6 +117,7 @@ export function onboardingRouter(): Router {
     "/persona",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();

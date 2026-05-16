@@ -4,6 +4,7 @@ import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -37,6 +38,7 @@ export function billingRouter(): Router {
     "/billing",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10),
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
@@ -71,6 +73,7 @@ export function billingRouter(): Router {
     "/billing/checkout",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10),
     asyncHandler(async (req, res) => {
       if (process.env.STRIPE_DISABLED === "1") {
         respondError(
@@ -161,6 +164,7 @@ export function billingRouter(): Router {
     "/billing/portal",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(10),
     asyncHandler(async (req, res) => {
       if (process.env.STRIPE_DISABLED === "1") {
         respondError(

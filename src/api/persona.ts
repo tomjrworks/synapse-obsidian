@@ -3,6 +3,7 @@ import { composePersonaClaudeMd } from "../tools/persona-claudemd.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -40,6 +41,7 @@ export function personaRouter(): Router {
     "/persona/claudemd",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
       const workspaceId = membership.workspaceId;
@@ -62,6 +64,7 @@ export function personaRouter(): Router {
     "/persona/index-stub",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (_req, res) => {
       const stub = buildIndexStub();
       res.type("text/markdown").send(stub);

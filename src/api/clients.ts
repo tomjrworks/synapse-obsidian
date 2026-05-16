@@ -3,6 +3,7 @@ import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
   requireWorkspace,
+  workspaceLimitMiddleware,
   asyncHandler,
   type AuthedWorkspaceRequest,
 } from "./middleware.js";
@@ -113,6 +114,7 @@ export function clientsRouter(): Router {
     "/clients/setup-info",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const { membership } = req as AuthedWorkspaceRequest;
 
@@ -138,6 +140,7 @@ export function clientsRouter(): Router {
     "/clients/:client_id/connected",
     requireSupabaseAuth,
     requireWorkspace,
+    workspaceLimitMiddleware(30),
     asyncHandler(async (req, res) => {
       const clientIdRaw = req.params.client_id;
       const clientId =
