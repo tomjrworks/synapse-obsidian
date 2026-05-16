@@ -25,6 +25,7 @@ import { mountApiRoutes } from "./api/routes.js";
 import { initSentry, Sentry } from "./observability/sentry.js";
 import { stripeWebhookHandler } from "./api/stripe-webhook.js";
 import { getBackend } from "./utils/backend-cache.js";
+import { formatRequestBody } from "./utils/body-log.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
@@ -78,38 +79,8 @@ export async function startServer(port: number): Promise<void> {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ extended: true }));
 
-  // Add new credential-equivalent keys here; replacer applies at every nesting level.
-  const SENSITIVE_BODY_KEYS = new Set([
-    "password",
-    "email",
-    "code_verifier",
-    "client_secret",
-    "refresh_token",
-    "access_token",
-    "bearer",
-    "jwt",
-    "token",
-    "code",
-  ]);
-
-  // Routes whose request bodies contain user vault content (audit C1, Apr 29).
-  // We log a body=[skipped] sentinel — same timestamp/method/path signal as
-  // every other request, but no plaintext leak to stderr. Exact-match paths
-  // only; /mcp body logging is intentionally unchanged (separate hygiene pass).
-  const BODY_LOG_SKIP_PATHS = new Set<string>([
-    "/api/sync/push",
-    "/api/first-wow",
-  ]);
-
   app.use((req, _res, next) => {
-    let body = "";
-    if (BODY_LOG_SKIP_PATHS.has(req.path)) {
-      body = "[skipped]";
-    } else if (req.body) {
-      body = JSON.stringify(req.body, (key, value) =>
-        SENSITIVE_BODY_KEYS.has(key) ? "[redacted]" : value,
-      ).slice(0, 300);
-    }
+    const body = formatRequestBody(req.path, req.body);
     console.error(
       `[${new Date().toISOString()}] ${req.method} ${req.path} body=${body}`,
     );
