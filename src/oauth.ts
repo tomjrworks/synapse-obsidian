@@ -2,6 +2,7 @@ import {
   randomUUID,
   randomBytes,
   createHash,
+  createHmac,
   timingSafeEqual,
 } from "node:crypto";
 import type { Express, Request, Response } from "express";
@@ -42,6 +43,62 @@ const authCodes = new LRUCache<
     redirectUris: string[];
   }
 >({ max: 100_000, ttl: 5 * 60 * 1000 });
+
+// M1: bind the POST /authorize submission to a GET /authorize page that our
+// server actually rendered AND validated. The GET embeds an HMAC over the
+// request params + an issued-at timestamp as a hidden field; the POST
+// recomputes it and timing-safe-compares. Without this the consent screen is
+// decorative — a POST could carry params (e.g. a downgraded PKCE method) that
+// never passed the GET-side allowlist / PKCE gate, or be a replay of a stale
+// page.
+function oauthCsrfSecret(): string {
+  // Dedicated secret if set; otherwise the always-present KEK (the server
+  // refuses to boot without TAPROOT_KEK). The signed payload is label-
+  // prefixed, so reusing the KEK as an HMAC key is domain-separated from
+  // envelope-encryption use.
+  return process.env.OAUTH_CSRF_SECRET || process.env.TAPROOT_KEK || "";
+}
+
+const AUTHORIZE_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export function signAuthorizeRequest(params: {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  issuedAt: number;
+}): string {
+  const msg = [
+    "taproot-oauth-csrf-v1",
+    params.clientId,
+    params.redirectUri,
+    params.codeChallenge,
+    params.codeChallengeMethod,
+    String(params.issuedAt),
+  ].join("\n");
+  return createHmac("sha256", oauthCsrfSecret()).update(msg).digest("hex");
+}
+
+export function verifyAuthorizeRequest(
+  token: unknown,
+  issuedAt: number,
+  params: {
+    clientId: string;
+    redirectUri: string;
+    codeChallenge: string;
+    codeChallengeMethod: string;
+  },
+): boolean {
+  if (typeof token !== "string" || !token) return false;
+  if (!Number.isFinite(issuedAt)) return false;
+  const age = Date.now() - issuedAt;
+  if (age < 0 || age > AUTHORIZE_TOKEN_TTL_MS) return false;
+  const expected = signAuthorizeRequest({ ...params, issuedAt });
+  const got = Buffer.from(token, "hex");
+  const want = Buffer.from(expected, "hex");
+  if (got.length !== want.length || got.length === 0) return false;
+  return timingSafeEqual(got, want);
+}
 
 function authFailedHtml(title: string, message: string): string {
   return `<!DOCTYPE html>
@@ -209,6 +266,17 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
+    // M1: mint a signed request token binding this consent page to its
+    // params; POST /authorize re-verifies it before any credential check.
+    const issuedAt = Date.now();
+    const requestToken = signAuthorizeRequest({
+      clientId: client_id,
+      redirectUri: redirect_uri,
+      codeChallenge: code_challenge,
+      codeChallengeMethod: code_challenge_method,
+      issuedAt,
+    });
+
     // Show approval page — Taproot branded
     res.send(`<!DOCTYPE html>
 <html>
@@ -350,6 +418,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       <input type="hidden" name="code_challenge" value="${escapeHtml(code_challenge)}">
       <input type="hidden" name="code_challenge_method" value="${escapeHtml(code_challenge_method)}">
       <input type="hidden" name="state" value="${escapeHtml(state || "")}">
+      <input type="hidden" name="request_token" value="${requestToken}">
+      <input type="hidden" name="issued_at" value="${issuedAt}">
       <input type="email" name="email" placeholder="Email" autofocus required>
       <input type="password" name="password" placeholder="Password" required>
       <button type="submit">Let it grow →</button>
@@ -373,6 +443,8 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       state,
       email,
       password,
+      request_token,
+      issued_at,
     } = req.body || {};
 
     // H1 (05-01): validate client + redirect_uri BEFORE touching credentials.
@@ -391,6 +463,28 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
           authFailedHtml(
             "Invalid request",
             "redirect_uri is not registered for this client.",
+          ),
+        );
+      return;
+    }
+
+    // M1: verify the request token minted by GET /authorize, before any
+    // credential check. Rejects stale (>10 min), tampered, or
+    // never-rendered-by-us submissions — the consent step is now load-bearing.
+    if (
+      !verifyAuthorizeRequest(request_token, Number(issued_at), {
+        clientId: client_id,
+        redirectUri: redirect_uri,
+        codeChallenge: code_challenge,
+        codeChallengeMethod: code_challenge_method,
+      })
+    ) {
+      res
+        .status(400)
+        .send(
+          authFailedHtml(
+            "Expired or invalid request",
+            "This authorization page expired or was tampered with. Start the connection again from your AI client.",
           ),
         );
       return;

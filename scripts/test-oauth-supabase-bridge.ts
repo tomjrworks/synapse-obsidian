@@ -63,10 +63,32 @@ interface AuthorizePostResult {
   bodySnippet: string;
 }
 
+// The /authorize POST is bound (M1) to a request token minted by GET
+// /authorize. Fetch the consent page and pull the hidden request_token +
+// issued_at so the POST mirrors a real browser submission.
+async function getAuthorizeToken(
+  fields: Record<string, string>,
+): Promise<{ request_token: string; issued_at: string }> {
+  const qs = new URLSearchParams({
+    response_type: "code",
+    client_id: fields.client_id,
+    redirect_uri: fields.redirect_uri,
+    code_challenge: fields.code_challenge,
+    code_challenge_method: fields.code_challenge_method,
+    state: fields.state ?? "",
+  });
+  const html = await (await fetch(`${BASE}/authorize?${qs.toString()}`)).text();
+  return {
+    request_token: /name="request_token" value="([^"]+)"/.exec(html)?.[1] ?? "",
+    issued_at: /name="issued_at" value="([^"]+)"/.exec(html)?.[1] ?? "",
+  };
+}
+
 async function postAuthorize(
   fields: Record<string, string>,
 ): Promise<AuthorizePostResult> {
-  const form = new URLSearchParams(fields);
+  const csrf = await getAuthorizeToken(fields);
+  const form = new URLSearchParams({ ...fields, ...csrf });
   const r = await fetch(`${BASE}/authorize`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

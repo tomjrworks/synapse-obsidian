@@ -120,7 +120,23 @@ export async function obtainBearer({
     .update(codeVerifier)
     .digest("base64url");
 
-  // 3. /authorize — POST the form directly. Server returns 302 with `code`.
+  // 3. /authorize GET — fetch the consent page and extract the M1 request
+  // token + issued_at that bind the POST to a server-rendered, validated form.
+  const authQs = new URLSearchParams({
+    response_type: "code",
+    client_id,
+    redirect_uri: "http://localhost/oauth/callback",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    state: testName,
+  });
+  const authPage = await fetch(`${baseUrl}/authorize?${authQs.toString()}`);
+  const authHtml = await authPage.text();
+  const requestToken =
+    /name="request_token" value="([^"]+)"/.exec(authHtml)?.[1] ?? "";
+  const issuedAt = /name="issued_at" value="([^"]+)"/.exec(authHtml)?.[1] ?? "";
+
+  // 4. /authorize — POST the form. Server returns 302 with `code`.
   const authForm = new URLSearchParams({
     client_id,
     redirect_uri: "http://localhost/oauth/callback",
@@ -129,6 +145,8 @@ export async function obtainBearer({
     state: testName,
     email,
     password,
+    request_token: requestToken,
+    issued_at: issuedAt,
   });
   const authRes = await fetch(`${baseUrl}/authorize`, {
     method: "POST",
@@ -146,7 +164,7 @@ export async function obtainBearer({
   const code = new URL(location).searchParams.get("code");
   if (!code) throw new Error(`/authorize redirect missing code: ${location}`);
 
-  // 4. /token — exchange code for bearer
+  // 5. /token — exchange code for bearer
   const tokenForm = new URLSearchParams({
     grant_type: "authorization_code",
     code,
