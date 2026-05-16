@@ -24,7 +24,7 @@
  * Run via: `npm run smoke:sync-push`
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -45,7 +45,7 @@ import {
 
 const PORT = 3781;
 const BASE = `http://localhost:${PORT}`;
-const PASSWORD = "t11-3-smoke-pw-12345";
+const PASSWORD = `t11-3-smoke-pw-${randomBytes(12).toString("hex")}`;
 const KEYCHAIN_SERVICE = "com.taproot.helper.smoke";
 const VAULT_BLOBS_BUCKET = "vault-blobs";
 const HELPER_BINARY = process.env.TAPROOT_HELPER_BINARY ?? "";

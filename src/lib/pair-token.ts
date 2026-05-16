@@ -9,7 +9,9 @@ const CODE_REGEX = /^TAP-[A-HJ-NP-TV-Z2-9]{4}-[A-HJ-NP-TV-Z2-9]{4}$/i;
 export const PAIR_TTL_MS = 10 * 60 * 1000;
 export const PAIR_RATE_LIMIT = 5;
 
-// Generates a fresh "TAP-XXXX-XXXX" pair token (8 random chars, ~39.6 bits entropy).
+// Generates a fresh "TAP-XXXX-XXXX" pair token: 8 chars from a 31-char
+// alphabet ≈ 38.2 bits entropy. The 10-min TTL + PAIR_RATE_LIMIT (5/IP) are
+// load-bearing — they, not the token width, are what make brute force infeasible.
 export function generatePairToken(): string {
   const buf = randomBytes(8);
   const chars = Array.from(buf)

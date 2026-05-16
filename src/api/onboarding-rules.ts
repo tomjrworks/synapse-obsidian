@@ -31,6 +31,10 @@ import { scanFolders } from "../utils/folder-scan.js";
  *           { accept: false }                  — skip; no vault write
  *     Either way, advances workspace step from "rules-review" → "done".
  */
+// CLAUDE.md is small; cap a runaway/abusive `edits` body. The 10MB express
+// JSON limit is the only other bound on this owner-authored field.
+const MAX_EDITS_CHARS = 256 * 1024;
+
 export function onboardingRulesRouter(): Router {
   const router = Router();
 
@@ -72,6 +76,10 @@ export function onboardingRulesRouter(): Router {
         return;
       }
       const edits = typeof body.edits === "string" ? body.edits : undefined;
+      if (edits != null && edits.length > MAX_EDITS_CHARS) {
+        res.status(400).json({ error: "edits_too_large" });
+        return;
+      }
       const { membership } = req as AuthedWorkspaceRequest;
 
       const currentStep = membership.settings?.onboarding_step ?? "persona";

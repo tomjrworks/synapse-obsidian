@@ -39,7 +39,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   nukeWorkspace,
   SupabaseEncryptedMirrorBackend,
@@ -54,7 +54,7 @@ import {
 
 const PORT = 3782;
 const BASE = `http://localhost:${PORT}`;
-const PASSWORD = "t11-4-smoke-pw-12345";
+const PASSWORD = `t11-4-smoke-pw-${randomBytes(12).toString("hex")}`;
 const KEYCHAIN_SERVICE = "com.taproot.helper.smoke.pull";
 const USERDEFAULTS_SUITE = "com.taproot.helper.smoke.pull";
 const PULL_INTERVAL_MS = "500";

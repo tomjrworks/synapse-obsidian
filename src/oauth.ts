@@ -236,6 +236,13 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       return;
     }
 
+    // Hygiene: bound the opaque `state` param so it can't bloat the rendered
+    // form or the eventual redirect URL.
+    if (typeof state === "string" && state.length > 512) {
+      res.status(400).send("state parameter too long");
+      return;
+    }
+
     const client = pendingClients.get(client_id);
     if (!client) {
       res.status(400).send("Unknown client_id");
