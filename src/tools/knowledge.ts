@@ -19,11 +19,33 @@ import { fetchUrlAsText } from "../utils/fetch.js";
 import { getFilingHintCached, LOCAL_TENANT_KEY } from "../utils/cache.js";
 import { buildFrontmatter, stripControls } from "../utils/yaml.js";
 import { withTimeout } from "../utils/with-timeout.js";
+import { checkProtected } from "../utils/path-guard.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
 const SETUP_TIP =
   "\n\n> **Tip:** Run `taproot_setup_scan` to configure Taproot for your vault.";
+
+// M2: taproot_seed / taproot_save_url build filePath from a tool-supplied
+// folder + a slugified title. slugify can still produce `claude.md` /
+// `index.md`, so a prompt-injected agent could steer a write onto a protected
+// file (persistent AI instructions / vault config). Reject any protected or
+// invalid path. Unlike garden_plant these tools have no acknowledgeRoot
+// escape — they never legitimately write a protected file.
+function rejectProtectedWrite(filePath: string) {
+  const guard = checkProtected(filePath);
+  if (guard.kind === "ok") return null;
+  const text =
+    guard.kind === "invalid"
+      ? `Invalid path '${filePath}': ${guard.reason}`
+      : `Refusing to write '${filePath}' — it resolves to the protected ` +
+        `file '${guard.canonical}' (persistent AI instructions / vault ` +
+        `config). Choose a different title or folder.`;
+  return {
+    isError: true as const,
+    content: [{ type: "text" as const, text }],
+  };
+}
 
 // --- taproot_harvest helpers ---
 
@@ -196,6 +218,8 @@ export function registerKnowledgeTools(
 
         const fullContent = `${frontmatter}\n\n# ${stripControls(title)}\n\n${body}`;
 
+        const blockedSeed = rejectProtectedWrite(filePath);
+        if (blockedSeed) return blockedSeed;
         await writeVaultFile(backend, filePath, fullContent);
 
         const wordCount = body.split(/\s+/).length;
@@ -1172,6 +1196,8 @@ export function registerKnowledgeTools(
 
         const fullContent = `${frontmatter}\n\n# ${stripControls(resolvedTitle)}\n\n${fetched.body}`;
 
+        const blockedSave = rejectProtectedWrite(filePath);
+        if (blockedSave) return blockedSave;
         await writeVaultFile(backend, filePath, fullContent);
 
         const filingHint = await getFilingHintCached(

@@ -443,7 +443,12 @@ async function scaffoldStructuredVault(
     }
   }
 
-  // Create personalized CLAUDE.md
+  // Create personalized CLAUDE.md.
+  // M2: these scaffold writes intentionally target the protected files
+  // CLAUDE.md / index.md. They are NOT routed through checkProtected — the
+  // paths are hardcoded literals (no agent/user-derived input, no injection
+  // surface) and scaffolding is the legitimate creator of these files. The
+  // exists() guard means they are only written when absent.
   if (!(await backend.exists("CLAUDE.md"))) {
     const claudeContent = generateClaudeMd(opts);
     await backend.writeFile("CLAUDE.md", claudeContent);
