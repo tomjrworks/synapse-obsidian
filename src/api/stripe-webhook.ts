@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import Stripe from "stripe";
 import { supabaseService } from "./supabase.js";
+import { respondError } from "./respond-error.js";
 
 function stripeClient(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -79,6 +80,20 @@ export async function stripeWebhookHandler(
   }
 
   const sb = supabaseService();
+
+  // C3: idempotency — Stripe redelivers events (its own retries + our C4
+  // non-2xx retries). Skip any event already handled. An event is recorded in
+  // processed_webhook_events only AFTER its handler succeeds (below), so a
+  // failed event is left unrecorded and a Stripe retry reprocesses it.
+  const { data: alreadyProcessed } = await sb
+    .from("processed_webhook_events")
+    .select("event_id")
+    .eq("event_id", event.id)
+    .maybeSingle();
+  if (alreadyProcessed) {
+    res.status(200).json({ received: true, deduped: true });
+    return;
+  }
 
   try {
     switch (event.type) {
@@ -211,13 +226,30 @@ export async function stripeWebhookHandler(
       }
 
       default:
-        // Unhandled event — still return 200 so Stripe doesn't retry
+        // Unhandled event — recorded as processed below so a redelivery is
+        // skipped rather than reprocessed.
         break;
     }
+
+    // Handler succeeded — record the event so a redelivery is deduped above.
+    // ignoreDuplicates handles the rare concurrent-delivery race (two
+    // deliveries both pass the dedupe SELECT) without a PK-conflict error.
+    await sb
+      .from("processed_webhook_events")
+      .upsert(
+        { event_id: event.id, event_type: event.type },
+        { onConflict: "event_id", ignoreDuplicates: true },
+      );
   } catch (err) {
-    console.error(`[stripe-webhook] error handling ${event.type}:`, err);
-    // Still return 200 — we've acknowledged receipt. Log the error for debugging.
-    // Returning non-2xx causes Stripe to retry, which would re-trigger the error.
+    // C4: return non-2xx so Stripe retries — silently dropping a
+    // subscription.deleted / payment_failed event to a transient DB error is a
+    // real billing bug. Safe to retry: the event was not recorded above, and
+    // C3's dedupe keeps a later successful reprocess idempotent. respondError
+    // also fires the Discord 5xx alert.
+    respondError(res, 500, "stripe_webhook_error", err, {
+      logPrefix: "stripe-webhook",
+    });
+    return;
   }
 
   res.status(200).json({ received: true });
