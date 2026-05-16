@@ -3,6 +3,7 @@
   "version": "0.4.0",
   "description": "Taproot — the memory layer for your AI. MCP server that connects any AI client (Claude, ChatGPT, Cursor, Windsurf) to your notes.",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "bin": {
     "synapse": "dist/index.js",
     "synapse-obsidian": "dist/index.js"
@@ -72,8 +73,10 @@
     "stripe": "^22.1.1",
     "zod": "^3.25.0"
   },
-  "overrides": {
-    "hono": "^4.12.14"
+  "pnpm": {
+    "overrides": {
+      "hono": "^4.12.18"
+    }
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

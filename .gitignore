@@ -4,6 +4,7 @@ dist/
 .env
 .env.local
 .env.*.local
+package-lock.json
 .DS_Store
 .gstack/
 .wrangler/
