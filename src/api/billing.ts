@@ -126,6 +126,22 @@ export function billingRouter(): Router {
 
       // Get or create Stripe customer
       let sub = await getSubscription(sb, membership.workspaceId);
+
+      // Guard: already subscribed — second checkout would create a duplicate subscription
+      if (
+        sub?.stripe_subscription_id &&
+        (sub.status === "active" || sub.status === "past_due")
+      ) {
+        respondError(
+          res,
+          409,
+          "already_subscribed",
+          new Error("workspace already has an active subscription"),
+          { logPrefix: "billing" },
+        );
+        return;
+      }
+
       let stripeCustomerId = sub?.stripe_customer_id ?? null;
 
       if (!stripeCustomerId) {
