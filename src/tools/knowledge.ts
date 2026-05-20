@@ -20,6 +20,7 @@ import { getFilingHintCached, LOCAL_TENANT_KEY } from "../utils/cache.js";
 import { buildFrontmatter, stripControls } from "../utils/yaml.js";
 import { withTimeout } from "../utils/with-timeout.js";
 import { checkProtected } from "../utils/path-guard.js";
+import { newFenceNonce, safeFenceFile } from "./_format.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
@@ -402,11 +403,13 @@ export function registerKnowledgeTools(
         }
 
         if (schema) {
+          const statusNonce = newFenceNonce();
+          const schemaBody =
+            schema.length > 4000
+              ? `${schema.slice(0, 4000)}\n... (truncated)`
+              : schema.slice(0, 4000);
           output.push("### Wiki Schema (CLAUDE.md)");
-          output.push(`<vault-file path="${schemaPath}">`);
-          output.push(schema.slice(0, 4000));
-          if (schema.length > 4000) output.push("... (truncated)");
-          output.push("</vault-file>");
+          output.push(safeFenceFile(schemaPath, schemaBody, statusNonce));
           output.push("");
         }
 
@@ -494,6 +497,11 @@ export function registerKnowledgeTools(
           schema = await readVaultFile(backend, schemaPath);
         }
 
+        const waterNonce = newFenceNonce();
+        const sourceBody =
+          content.length > 15000
+            ? `${content.slice(0, 15000)}\n... (truncated)`
+            : content.slice(0, 15000);
         const output = [
           "## Ingest Task Ready",
           "",
@@ -501,21 +509,22 @@ export function registerKnowledgeTools(
           `**Already processed:** ${alreadyProcessed ? "YES — update existing pages" : "NO — create new pages"}`,
           "",
           "### Source Content",
-          `<vault-file path="${sourcePath}">`,
-          content.slice(0, 15000),
-          content.length > 15000 ? "... (truncated)" : "",
-          "</vault-file>",
+          safeFenceFile(sourcePath, sourceBody, waterNonce),
           "",
           "### Source Frontmatter",
           JSON.stringify(fm, null, 2),
           "",
           "### Current Index",
           existingIndex
-            ? `<vault-file path="index.md">\n${existingIndex.slice(0, 5000)}\n</vault-file>`
+            ? safeFenceFile(
+                "index.md",
+                existingIndex.slice(0, 5000),
+                waterNonce,
+              )
             : "(No index yet — this is the first ingest)",
           "",
           schema
-            ? `### Schema (CLAUDE.md)\n<vault-file path="${schemaPath}">\n${schema.slice(0, 3000)}\n</vault-file>`
+            ? `### Schema (CLAUDE.md)\n${safeFenceFile(schemaPath, schema.slice(0, 3000), waterNonce)}`
             : "",
           "",
           "### Instructions",
@@ -782,6 +791,7 @@ export function registerKnowledgeTools(
           }
         };
 
+        const harvestNonce = newFenceNonce();
         const relevantFiles = [...allResults.entries()].slice(0, 10);
         const pageContents: string[] = [];
         for (let i = 0; i < relevantFiles.length; i += concurrency) {
@@ -790,7 +800,7 @@ export function registerKnowledgeTools(
             chunk.map(async ([file]) => {
               const resolved = await readWithFallback(file);
               if (!resolved) return null;
-              return `### ${resolved.path}\n<vault-file path="${resolved.path}">\n${resolved.content.slice(0, 3000)}\n</vault-file>`;
+              return `### ${resolved.path}\n${safeFenceFile(resolved.path, resolved.content.slice(0, 3000), harvestNonce)}`;
             }),
           );
           for (const c of chunkContents) {
@@ -803,7 +813,7 @@ export function registerKnowledgeTools(
           "",
           "### Index",
           index
-            ? `<vault-file path="index.md">\n${index.slice(0, 5000)}\n</vault-file>`
+            ? safeFenceFile("index.md", index.slice(0, 5000), harvestNonce)
             : "(No index found — run taproot_cultivate first)",
           "",
           ...(partialResults

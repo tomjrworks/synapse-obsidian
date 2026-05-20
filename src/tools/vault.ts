@@ -29,6 +29,7 @@ import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
+import { newFenceNonce, safeFenceFile } from "./_format.js";
 
 export function parseForageHints(
   indexContent: string,
@@ -82,7 +83,7 @@ export function registerVaultTools(
           content: [
             {
               type: "text",
-              text: `<vault-file path="${filePath}">\n${content}\n</vault-file>`,
+              text: safeFenceFile(filePath, content, newFenceNonce()),
             },
           ],
         };
@@ -408,6 +409,7 @@ export function registerVaultTools(
           };
         }
 
+        const forageNonce = newFenceNonce();
         const fileBlocks = collectedResults.map((r) => {
           const matchLines = r.matches
             .slice(0, 3)
@@ -416,7 +418,8 @@ export function registerVaultTools(
           const modifiedSuffix = r.dateModified
             ? ` (modified ${r.dateModified})`
             : "";
-          return `<vault-file path="${r.file}">\n${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}\n</vault-file>`;
+          const body = `${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}`;
+          return safeFenceFile(r.file, body, forageNonce);
         });
 
         const headerLines: string[] = [];
@@ -645,12 +648,13 @@ export function registerVaultTools(
           };
         }
 
+        const findNonce = newFenceNonce();
         const output = [
           `${results.length} match${results.length === 1 ? "" : "es"} for "${query}":`,
           "",
           ...results.map(
             (r) =>
-              `- **${r.title}** — ${r.file}${r.modified ? ` (modified ${r.modified})` : ""}${r.preview ? `\n  <vault-file path="${r.file}">${r.preview}</vault-file>` : ""}`,
+              `- **${r.title}** — ${r.file}${r.modified ? ` (modified ${r.modified})` : ""}${r.preview ? `\n${safeFenceFile(r.file, r.preview, findNonce)}` : ""}`,
           ),
           "",
           results.length === 1
