@@ -452,7 +452,42 @@ actor SyncEngine {
     nonisolated static func safeJoin(folder: URL, relative: String) -> URL? {
         if relative.hasPrefix("/") { return nil }
         if relative.split(separator: "/").contains("..") { return nil }
-        return folder.appendingPathComponent(relative)
+        let target = folder.appendingPathComponent(relative)
+        // S96: refuse if any existing ancestor of `target` (inclusive of
+        // intermediate directories under `folder`) is a symbolic link.
+        // A symlinked component would let a remote pull rewrite arbitrary
+        // files outside the vault via the helper's bearer.
+        if SyncEngine.pathContainsSymlink(under: folder, target: target, includeTarget: false) {
+            return nil
+        }
+        return target
+    }
+
+    /// S96 — walks every existing path component between `under` (exclusive)
+    /// and `target`. Returns `true` if any of those components, OR `target`
+    /// itself when `includeTarget=true`, is a symbolic link. Used by
+    /// `safeJoin` (intermediate-component check) AND `writeFileWithMkdir`
+    /// (leaf + intermediate check before any mkdir/write).
+    nonisolated static func pathContainsSymlink(under root: URL, target: URL, includeTarget: Bool) -> Bool {
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let targetPath = target.path
+        guard targetPath.hasPrefix(rootPath) else {
+            // Target is outside `root` — let the caller handle. This helper is
+            // purely about symlink-in-ancestor checks.
+            return false
+        }
+        let relative = String(targetPath.dropFirst(rootPath.count))
+        let components = relative.split(separator: "/")
+        let ancestorComponents = includeTarget ? components : components.dropLast()
+        var probe = root
+        for component in ancestorComponents {
+            probe.appendPathComponent(String(component))
+            if let res = try? probe.resourceValues(forKeys: [.isSymbolicLinkKey]),
+               res.isSymbolicLink == true {
+                return true
+            }
+        }
+        return false
     }
 
     /// Errors surfaced by `pushBatch` to the `InitialSyncCoordinator`. Maps

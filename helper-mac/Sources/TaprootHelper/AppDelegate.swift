@@ -1478,7 +1478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 workspace: snapshot,
                 cursor: cursor,
                 applyWrite: { [weak self] target, content in
-                    await self?.writeFileWithMkdir(at: target, content: content)
+                    await self?.writeFileWithMkdir(at: target, content: content, vaultRoot: snapshot.localFolder)
                 },
                 applyDelete: { [weak self] target in
                     await self?.deleteFileIfExists(at: target)
@@ -1535,7 +1535,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func writeFileWithMkdir(at target: URL, content: String) async {
+    func writeFileWithMkdir(at target: URL, content: String, vaultRoot: URL) async {
+        // S96: defense-in-depth against TOCTOU. `safeJoin` (in SyncEngine.pull)
+        // already rejects symlinked ancestors at decode time; this re-check
+        // runs at write time and additionally refuses when `target` itself
+        // exists as a symbolic link. A stolen bearer that injects a remote
+        // upsert at path `link/foo.md` (where `vault/link -> /tmp/elsewhere`)
+        // must not produce a write to `/tmp/elsewhere/foo.md`.
+        if SyncEngine.pathContainsSymlink(under: vaultRoot, target: target, includeTarget: false) {
+            NSLog("[Taproot] pull: refusing write — symlinked ancestor under \(vaultRoot.path) → \(target.path)")
+            return
+        }
+        if let res = try? target.resourceValues(forKeys: [.isSymbolicLinkKey]),
+           res.isSymbolicLink == true {
+            NSLog("[Taproot] pull: refusing symlink write at \(target.path)")
+            return
+        }
         let dir = target.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
