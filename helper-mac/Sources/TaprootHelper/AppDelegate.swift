@@ -128,6 +128,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         _ = alert.runModal()
     }
+    /// S85 test seam — fires when `/revoke` fails or returns non-200 during
+    /// `performSignOut`. Default presents an NSAlert; tests override to count
+    /// invocations without blocking the run loop on a modal.
+    var presentRevokeWarning: @MainActor () -> Void = {
+        let alert = NSAlert()
+        alert.messageText = "Sign-out couldn't reach the Taproot server"
+        alert.informativeText = "Your local session is cleared. The server may still trust this sign-in until it expires. Reconnect once you're online to fully sign out everywhere."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        _ = alert.runModal()
+    }
     /// Holds the paste-the-code window so it isn't deallocated mid-flow (B6).
     /// Nil when the window is closed or not yet opened.
     var pairWindowController: PairWindowController?
@@ -322,7 +334,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // its callback to keep AppDelegate alive past app shutdown.
         Task { [weak self] in
             await self?.syncEngine.setOnUnauthorized { [weak self] id in
-                self?.signOut(workspaceID: id)
+                Task { @MainActor [weak self] in
+                    await self?.signOut(workspaceID: id)
+                }
             }
         }
         startAllWatchers()
@@ -862,7 +876,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task { await coordinator.cancel() }
             }
             currentInitialSyncCoordinator = nil
-            performSignOut(workspaceID: workspaceID)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performSignOut(workspaceID: workspaceID)
+            }
             NSLog("[Taproot] First-run cancelled mid-sync for \(workspaceID.uuidString)")
             return
         }
@@ -883,15 +900,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// can't leave a running poller/watcher attached to a workspace we're
     /// trying to delete. Cancel poller first so an in-flight tick can't race
     /// a final pull through a stopped watcher.
-    func performSignOut(workspaceID: UUID) {
+    ///
+    /// S85: awaits `/revoke` with a 3s timeout (was fire-and-forget). On
+    /// failure or non-200, logs and presents `showRevokeWarningAlert()`.
+    /// Keychain delete + local state cleanup runs UNCONDITIONALLY below the
+    /// revoke do/catch — sign-out always completes locally (fail-open).
+    func performSignOut(workspaceID: UUID) async {
         stopPullPoller(for: workspaceID)
         stopHeartbeat(workspaceID: workspaceID)
         watchers[workspaceID]?.stop()
         watchers.removeValue(forKey: workspaceID)
 
-        // H1 (04-30): fire-and-forget /revoke before deleting from Keychain
-        // so the bearer is invalidated server-side (RFC 7009). Never blocks
-        // sign-out — a failed revoke still completes the local sign-out.
         let bearerToRevoke = workspaces.first(where: { $0.id == workspaceID })?.bearer
         if let bearer = bearerToRevoke {
             let revokeURL = services.baseURL.appendingPathComponent("revoke")
@@ -901,15 +920,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             req.httpBody = "token=\(bearer)".data(using: .utf8)
-            URLSession.shared.dataTask(with: req) { _, resp, err in
-                if let err = err {
-                    NSLog("[Taproot] /revoke fire-and-forget error: \(err.localizedDescription)")
-                } else if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-                    NSLog("[Taproot] /revoke returned HTTP \(http.statusCode)")
+            do {
+                let (_, response) = try await URLSession.shared.data(for: req)
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    NSLog("[Taproot] /revoke returned HTTP \(http.statusCode); proceeding with local sign-out")
+                    presentRevokeWarning()
                 } else {
                     NSLog("[Taproot] /revoke succeeded for workspace \(workspaceID.uuidString)")
                 }
-            }.resume()
+            } catch {
+                NSLog("[Taproot] /revoke failed: \(error.localizedDescription); proceeding with local sign-out")
+                presentRevokeWarning()
+            }
         }
 
         do {
@@ -927,9 +949,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Thin wrapper preserved for existing test surfaces + the 401 callback.
-    /// Equivalent to `performSignOut`.
-    func signOut(workspaceID: UUID) {
-        performSignOut(workspaceID: workspaceID)
+    /// Now async because `performSignOut` awaits `/revoke` (S85). The 401
+    /// callback path wraps this in a `Task { @MainActor }` at the call site
+    /// so the sync `onUnauthorized` handler signature can be preserved.
+    func signOut(workspaceID: UUID) async {
+        await performSignOut(workspaceID: workspaceID)
     }
 
     /// Reads pause-on-launch state from UserDefaults and marks any flagged
@@ -1233,7 +1257,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let workspace = workspaces.first(where: { $0.id == id })
         else { return }
         if confirmSignOut(workspace) {
-            performSignOut(workspaceID: id)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performSignOut(workspaceID: id)
+            }
         }
     }
 

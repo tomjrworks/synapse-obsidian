@@ -36,6 +36,10 @@ final class AppDelegateTests: XCTestCase {
         try keychain.deleteAllForService()
         fake = FakeHTTPClient()
         app = AppDelegate(services: makeServices(keychain: keychain, httpClient: fake))
+        // S85: stub the revoke-failure alert so async sign-out doesn't hang
+        // on NSAlert.runModal() inside headless xctest. /revoke fails fast
+        // against the localhost:0 base URL — this seam just suppresses the UI.
+        app.presentRevokeWarning = {}
     }
 
     override func tearDownWithError() throws {
@@ -307,7 +311,7 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(try keychain.retrieveAll().count, 0)
     }
 
-    func testSignOutClearsKeychainAndRemovesWorkspace() throws {
+    func testSignOutClearsKeychainAndRemovesWorkspace() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
@@ -316,13 +320,13 @@ final class AppDelegateTests: XCTestCase {
         app.applyBearer(workspaceID: id, bearer: kBearerToClear)
         XCTAssertEqual(app.workspaces.count, 1)
 
-        app.signOut(workspaceID: id)
+        await app.signOut(workspaceID: id)
 
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
         XCTAssertTrue(app.workspaces.isEmpty)
     }
 
-    func testSignOutOnlyAffectsTargetWorkspace() throws {
+    func testSignOutOnlyAffectsTargetWorkspace() async throws {
         let id1 = UUID()
         let id2 = UUID()
         defer { cleanSettingsDefaults(for: id1) }
@@ -333,7 +337,7 @@ final class AppDelegateTests: XCTestCase {
         app.applyBearer(workspaceID: id1, bearer: kBearerKeep)
         app.applyBearer(workspaceID: id2, bearer: kBearerRemove)
 
-        app.signOut(workspaceID: id2)
+        await app.signOut(workspaceID: id2)
 
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces.first?.id, id1)
@@ -375,7 +379,7 @@ final class AppDelegateTests: XCTestCase {
         freshApp.watchers.values.forEach { $0.stop() }
     }
 
-    func testSignOutStopsAndRemovesWatcher() throws {
+    func testSignOutStopsAndRemovesWatcher() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
@@ -387,7 +391,7 @@ final class AppDelegateTests: XCTestCase {
         app.startAllWatchers()
         XCTAssertNotNil(app.watchers[id])
 
-        app.signOut(workspaceID: id)
+        await app.signOut(workspaceID: id)
 
         XCTAssertNil(app.watchers[id])
         XCTAssertTrue(app.workspaces.isEmpty)
@@ -599,7 +603,8 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.lastSync.\(id.uuidString)"))
 
         let sendsBeforeSignOut = await localFake.sendCount
-        testApp.signOut(workspaceID: id)
+        testApp.presentRevokeWarning = {}
+        await testApp.signOut(workspaceID: id)
 
         XCTAssertNil(testApp.pullPollers[id], "signOut must remove poller from dict")
         XCTAssertNil(testApp.pullCursors[id], "signOut must clear in-memory cursor")
@@ -701,8 +706,11 @@ final class AppDelegateTests: XCTestCase {
         )
 
         // Wire onUnauthorized as production does in applicationDidFinishLaunching.
+        testApp.presentRevokeWarning = {}
         await testApp.syncEngine.setOnUnauthorized { [weak testApp] id in
-            testApp?.signOut(workspaceID: id)
+            Task { @MainActor [weak testApp] in
+                await testApp?.signOut(workspaceID: id)
+            }
         }
 
         // T11.7 fixup: route handleAuthURL's new-workspace branch through
@@ -735,10 +743,10 @@ final class AppDelegateTests: XCTestCase {
             events: [FileChangeEvent(path: filePath, kind: .created, mtime: nil)]
         )
 
-        // Direct user-driven sign-out runs first on MainActor (synchronous from
-        // here). The 401 callback is queued on MainActor and runs after this
-        // returns; it must be idempotent.
-        testApp.signOut(workspaceID: id)
+        // Direct user-driven sign-out (now async — awaits /revoke with 3s timeout).
+        // The 401 callback is queued on MainActor and runs after this returns;
+        // it must be idempotent.
+        await testApp.signOut(workspaceID: id)
         XCTAssertTrue(testApp.workspaces.isEmpty, "Direct signOut should have cleaned state")
 
         // Wait for HTTP send + 401 callback dispatch to settle. Re-entrant
@@ -754,7 +762,7 @@ final class AppDelegateTests: XCTestCase {
 
     // MARK: - T11.5 commit 4 (sign-out + pause + open-folder)
 
-    func testPerformSignOutMatchesSignOutBehavior() throws {
+    func testPerformSignOutMatchesSignOutBehavior() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
@@ -763,7 +771,7 @@ final class AppDelegateTests: XCTestCase {
         app.applyBearer(workspaceID: id, bearer: kBearerToClear)
         XCTAssertEqual(app.workspaces.count, 1)
 
-        app.performSignOut(workspaceID: id)
+        await app.performSignOut(workspaceID: id)
 
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
         XCTAssertTrue(app.workspaces.isEmpty)
@@ -788,7 +796,7 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(try keychain.retrieve(workspaceID: id), kBearerKeep)
     }
 
-    func testMenuSignOutInvokesPerformWhenConfirmed() throws {
+    func testMenuSignOutInvokesPerformWhenConfirmed() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
@@ -802,9 +810,23 @@ final class AppDelegateTests: XCTestCase {
         let item = NSMenuItem(title: "Sign out", action: nil, keyEquivalent: "")
         item.representedObject = id
         app.menuSignOut(item)
+        // S85: menuSignOut wraps performSignOut in Task { @MainActor in await ... }
+        // so the spawned work must drain before assertions run.
+        await drainMainActor()
 
         XCTAssertTrue(app.workspaces.isEmpty)
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
+    }
+
+    /// Drains queued MainActor work spawned by sync action handlers (e.g.
+    /// `menuSignOut` -> `Task { @MainActor in await performSignOut }`). Polls
+    /// briefly so async sign-out can complete; bails after ~3s if not idle.
+    private func drainMainActor(maxAttempts: Int = 30) async {
+        for _ in 0..<maxAttempts {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            await Task.yield()
+            if app.workspaces.isEmpty { return }
+        }
     }
 
     func testPauseToggleStopsWatcherAndPoller() throws {
@@ -964,7 +986,7 @@ final class AppDelegateTests: XCTestCase {
         app.stopPullPoller(for: id)
     }
 
-    func testSignOutClearsPausedOnLaunchKey() throws {
+    func testSignOutClearsPausedOnLaunchKey() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         let folder = try makeTempFolder()
@@ -975,7 +997,7 @@ final class AppDelegateTests: XCTestCase {
         app.togglePauseSync(workspaceID: id)
         XCTAssertTrue(UserDefaults.standard.bool(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"))
 
-        app.signOut(workspaceID: id)
+        await app.signOut(workspaceID: id)
 
         XCTAssertNil(
             UserDefaults.standard.object(forKey: "taproot.pausedOnLaunch.\(id.uuidString)"),
@@ -1233,7 +1255,7 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(testApp.workspaces[0].syncStatus, .error("Can't reach Taproot"))
     }
 
-    func testRebuildMenuFiresOnSignOut() throws {
+    func testRebuildMenuFiresOnSignOut() async throws {
         let id1 = UUID()
         let id2 = UUID()
         defer { cleanSettingsDefaults(for: id1) }
@@ -1245,7 +1267,7 @@ final class AppDelegateTests: XCTestCase {
         app.applyBearer(workspaceID: id2, bearer: kBearerBravo)
         XCTAssertEqual(app.currentMenu?.items.count, 5, "Pre-signOut: nested 5-item menu")
 
-        app.signOut(workspaceID: id2)
+        await app.signOut(workspaceID: id2)
 
         // After sign-out the count drops to 1 → flat 11-item shape (name, status, sep, 5 actions, sep, updates, quit).
         let after = try XCTUnwrap(app.currentMenu)
@@ -1483,14 +1505,14 @@ final class AppDelegateTests: XCTestCase {
         )
     }
 
-    func testSignOutClearsWorkspaceNameKey() throws {
+    func testSignOutClearsWorkspaceNameKey() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
         app.settingsStore.setWorkspaceName("X", for: id)
         XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.workspaceName.\(id.uuidString)"))
 
-        app.signOut(workspaceID: id)
+        await app.signOut(workspaceID: id)
 
         XCTAssertNil(
             UserDefaults.standard.object(forKey: "taproot.workspaceName.\(id.uuidString)"),
@@ -1498,14 +1520,14 @@ final class AppDelegateTests: XCTestCase {
         )
     }
 
-    func testSignOutClearsVaultFolderKey() throws {
+    func testSignOutClearsVaultFolderKey() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
         app.settingsStore.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
         XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.vaultFolder.\(id.uuidString)"))
 
-        app.signOut(workspaceID: id)
+        await app.signOut(workspaceID: id)
 
         XCTAssertNil(
             UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
@@ -1920,5 +1942,42 @@ final class AppDelegateTests: XCTestCase {
         let ws = makeWorkspace(syncStatus: .syncing, pendingCount: 4, lastSyncAt: nil)
         let text = app.syncStatusText(for: ws)
         XCTAssertEqual(text, "Syncing… (4 files)")
+    }
+
+    // MARK: - S85 revoke-on-sign-out (fail-open + visible)
+
+    /// /revoke fails (localhost:0 → URLError.cannotConnectToHost). The
+    /// revoke-warning presenter must fire AND local state must still be fully
+    /// cleared.
+    func testRevokeFailureSurfacesWarningAndStillSignsOutLocally() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        wireFirstRunForTest(app, folder: folder)
+        app.applyBearer(workspaceID: id, bearer: "bearer-to-revoke-S85")
+        XCTAssertEqual(app.workspaces.count, 1)
+
+        var alertCount = 0
+        app.presentRevokeWarning = { alertCount += 1 }
+
+        await app.signOut(workspaceID: id)
+
+        XCTAssertEqual(alertCount, 1, "Warning presenter must fire on revoke failure")
+        XCTAssertNil(try keychain.retrieve(workspaceID: id))
+        XCTAssertTrue(app.workspaces.isEmpty, "Workspace must be removed even when revoke failed")
+    }
+
+    /// No bearer for the workspace → no revoke attempt → no warning.
+    func testNoBearerSkipsRevokeAndNoWarning() async throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        // No applyBearer — workspaces stays empty, no bearer to revoke.
+        var alertCount = 0
+        app.presentRevokeWarning = { alertCount += 1 }
+
+        await app.performSignOut(workspaceID: id)
+
+        XCTAssertEqual(alertCount, 0, "No revoke attempt → no warning")
     }
 }
