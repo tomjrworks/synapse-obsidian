@@ -37,6 +37,8 @@ export function htmlToText(html: string): string {
   return text;
 }
 
+import { Agent, fetch as undiciFetch } from "undici";
+
 const USER_AGENT =
   "Mozilla/5.0 (compatible; Taproot/1.0; +https://github.com/tomjrworks/synapse-obsidian)";
 
@@ -75,7 +77,10 @@ function isPrivateIpv6(ip: string): boolean {
   return false;
 }
 
-async function assertNotPrivate(hostname: string): Promise<void> {
+// S63 (2026-05-21): assertNotPrivate now returns the resolved IP list so the
+// caller can PIN that IP through the dispatcher, eliminating the TOCTOU window
+// between validate-time DNS and fetch-time DNS (textbook rebinding).
+export async function assertNotPrivate(hostname: string): Promise<string[]> {
   const { promises: dns } = await import("node:dns");
   let addrs: string[];
   try {
@@ -89,9 +94,18 @@ async function assertNotPrivate(hostname: string): Promise<void> {
       throw new Error(`blocked private IP: ${hostname} resolves to ${addr}`);
     }
   }
+  return addrs;
 }
 
-async function validateUrl(raw: string): Promise<URL> {
+export interface ValidatedUrl {
+  url: URL;
+  // null = "use globalThis.fetch with no pin" — reserved for the localhost
+  // allow-path (already a literal address; no rebinding surface). Lets the
+  // existing fetch-bounded.test.ts vi.spyOn(globalThis, "fetch") keep working.
+  validatedIp: string | null;
+}
+
+export async function validateUrl(raw: string): Promise<ValidatedUrl> {
   let u: URL;
   try {
     u = new URL(raw);
@@ -100,14 +114,55 @@ async function validateUrl(raw: string): Promise<URL> {
   }
   const allowPrivate = process.env.TAPROOT_ALLOW_PRIVATE_NETWORKS === "1";
   if (u.protocol === "https:") {
-    if (!allowPrivate) await assertNotPrivate(u.hostname);
-    return u;
+    if (!allowPrivate) {
+      const addrs = await assertNotPrivate(u.hostname);
+      return { url: u, validatedIp: addrs[0] };
+    }
+    // allowPrivate https: — best-effort pin so private targets still work
+    // when DNS resolution succeeds. Tolerate failure (returns null = no pin).
+    try {
+      const addrs = await assertNotPrivate(u.hostname);
+      return { url: u, validatedIp: addrs[0] };
+    } catch {
+      return { url: u, validatedIp: null };
+    }
   }
   if (u.protocol === "http:") {
     const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
-    if (allowPrivate || localHosts.has(u.hostname)) return u;
+    if (allowPrivate || localHosts.has(u.hostname)) {
+      return { url: u, validatedIp: null };
+    }
   }
   throw new Error(`blocked private IP: only https: URLs are permitted`);
+}
+
+// S63: pin the TCP connect to the IP we already validated. Hostname stays in
+// the URL so TLS SNI + virtual hosting still work; only the underlying socket
+// uses the pinned IP. One Agent per fetch — close eagerly to avoid socket
+// leaks under sustained load.
+async function fetchWithPinnedIp(
+  url: URL,
+  validatedIp: string,
+  init: RequestInit,
+): Promise<Response> {
+  const family = validatedIp.includes(":") ? 6 : 4;
+  const agent = new Agent({
+    connect: {
+      lookup: (
+        _hostname: string,
+        _opts: unknown,
+        cb: (err: Error | null, address: string, family: number) => void,
+      ) => cb(null, validatedIp, family),
+    },
+  });
+  try {
+    return (await undiciFetch(url, {
+      ...init,
+      dispatcher: agent,
+    } as Parameters<typeof undiciFetch>[1])) as unknown as Response;
+  } finally {
+    void agent.close().catch(() => {});
+  }
 }
 
 // 10 MB default — p99 markdown article ~200 KB, 50× headroom.
@@ -162,27 +217,35 @@ async function readBoundedText(
  * blocklist before fetching (H4 05-01 / H2 04-30).
  */
 export async function fetchUrlAsText(rawUrl: string): Promise<FetchedUrl> {
-  let current = await validateUrl(rawUrl);
+  let { url: current, validatedIp } = await validateUrl(rawUrl);
 
   const MAX_REDIRECTS = 5;
   let response: Response | undefined;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    response = await fetch(current.toString(), {
+    const init: RequestInit = {
       headers: {
         "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml,text/plain,*/*",
       },
       signal: AbortSignal.timeout(15000),
       redirect: "manual",
-    });
+    };
+
+    response = validatedIp
+      ? await fetchWithPinnedIp(current, validatedIp, init)
+      : await fetch(current.toString(), init);
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) throw new Error("Redirect with no Location header");
       if (hop === MAX_REDIRECTS) throw new Error("Too many redirects");
-      // Resolve relative redirects against current URL, then re-validate.
-      current = await validateUrl(new URL(location, current).toString());
+      // S63: re-validate AND re-pin per hop. Without re-pin, an attacker can
+      // redirect to a hostile-DNS hostname and bypass the original pin —
+      // hop-N IP validated, hop-N+1 connect goes wherever undici resolves.
+      ({ url: current, validatedIp } = await validateUrl(
+        new URL(location, current).toString(),
+      ));
       continue;
     }
     break;
