@@ -164,7 +164,7 @@ actor SyncEngine {
 
     func push(workspace: WorkspaceSnapshot, events: [FileChangeEvent]) async {
         guard !events.isEmpty else { return }
-        let ops = events.compactMap { toOp(event: $0, localFolder: workspace.localFolder) }
+        let ops = events.compactMap { toOp(event: $0, localFolder: workspace.localFolder, workspaceID: workspace.id) }
         guard !ops.isEmpty else { return }
 
         let url = baseURL.appendingPathComponent("api/sync/push")
@@ -531,7 +531,7 @@ actor SyncEngine {
     /// `localFolder`. Returns nil for paths outside the watched folder, the
     /// folder root itself, or upserts whose file content can't be read (file
     /// vanished mid-coalesce — subsequent FSEvents tick reports the delete).
-    nonisolated func toOp(event: FileChangeEvent, localFolder: URL) -> PushOp? {
+    nonisolated func toOp(event: FileChangeEvent, localFolder: URL, workspaceID: UUID) -> PushOp? {
         let folderPath = localFolder.path.hasSuffix("/") ? localFolder.path : localFolder.path + "/"
         let absPath = event.path.path
         guard absPath.hasPrefix(folderPath) else {
@@ -556,6 +556,15 @@ actor SyncEngine {
         case .deleted:
             return PushOp(kind: .delete, path: relative, content: nil, mtime: nil)
         case .created, .modified:
+            // S82: refuse to read files larger than MAX_FILE_BYTES. Record in
+            // the tracker so the menubar can surface "· N skipped" and the
+            // one-shot NSAlert fires from the post-push tick.
+            if let res = try? event.path.resourceValues(forKeys: [.fileSizeKey]),
+               let size = res.fileSize,
+               Int64(size) > Constants.MAX_FILE_BYTES {
+                LargeFileSkipTracker.shared.record(workspace: workspaceID, path: relative, size: Int64(size))
+                return nil
+            }
             guard let data = try? Data(contentsOf: event.path),
                   let content = String(data: data, encoding: .utf8) else {
                 NSLog("[Taproot] push: read failed for \(relative); skipping")

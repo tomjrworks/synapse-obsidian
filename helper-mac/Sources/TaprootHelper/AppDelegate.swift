@@ -795,6 +795,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.startHeartbeat(for: workspace)
                 self.firstRun.currentFirstRunWindowController?.dismissAfterInitialSync()
                 self.currentInitialSyncCoordinator = nil
+                // S82: if the walk skipped any files over MAX_FILE_BYTES,
+                // surface the one-shot NSAlert so the user knows.
+                self.showLargeFileSkipAlertIfNeeded(for: workspaceID)
                 NSLog("[Taproot] First-run complete for \(workspaceID.uuidString) at \(canonical.path)")
             } catch is CancellationError {
                 // User closed the FirstRun window mid-sync. cancelFirstRun
@@ -1017,6 +1020,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Sync status line shown as the first item in each workspace's action list.
     /// Surfaces: "Synced · 3:45 PM", "Syncing… (12 files)", "Error · Last synced 3:45 PM", etc.
     func syncStatusText(for workspace: Workspace) -> String {
+        let base = syncStatusBaseText(for: workspace)
+        // S82: append "· N skipped" when LargeFileSkipTracker has any
+        // size-cap skips for this workspace.
+        let skipped = LargeFileSkipTracker.shared.count(for: workspace.id)
+        if skipped > 0 {
+            return "\(base) · \(skipped) skipped"
+        }
+        return base
+    }
+
+    private func syncStatusBaseText(for workspace: Workspace) -> String {
         switch workspace.syncStatus {
         case .idle:
             // Blocker 1 — between-tick "X files behind". Pre-tick fetch seeds
@@ -1043,6 +1057,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .paused:
             return "Paused"
         }
+    }
+
+    /// S82: present a non-blocking, one-shot NSAlert when `LargeFileSkipTracker`
+    /// has skipped at least one file for `workspaceID` and the alert has not
+    /// yet been shown this process. Subsequent skips during the same session
+    /// only update the menubar "· N skipped" counter — no modal storm.
+    func showLargeFileSkipAlertIfNeeded(for workspaceID: UUID) {
+        guard LargeFileSkipTracker.shared.shouldAlertOnce(for: workspaceID) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Some files were skipped"
+        alert.informativeText = "Taproot skipped one or more files larger than 50 MB. The rest of your vault still syncs. Smaller files in the same folders are unaffected."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func formatSyncTime(_ date: Date) -> String {
@@ -1251,6 +1279,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     wks[i].syncStatus = .idle
                 }
             }
+            // S82: surface a one-shot NSAlert when this push (or the initial
+            // sync that fed it) skipped any file over MAX_FILE_BYTES. Tracker
+            // guarantees the alert fires once per workspace per process.
+            self?.showLargeFileSkipAlertIfNeeded(for: workspaceID)
         }
     }
 

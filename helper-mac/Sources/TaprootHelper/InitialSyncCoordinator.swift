@@ -86,7 +86,7 @@ actor InitialSyncCoordinator {
         if cancelled { throw CancellationError() }
         try Task.checkCancellation()
 
-        let ops = walkWorkspace(folder: workspace.localFolder)
+        let ops = walkWorkspace(folder: workspace.localFolder, workspaceID: workspace.id)
         let total = ops.count
 
         if cancelled { throw CancellationError() }
@@ -174,7 +174,7 @@ actor InitialSyncCoordinator {
     /// Walk `folder` and produce upsert ops for every regular non-hidden file.
     /// Filter mirrors `WorkspaceWatcher.swift:140-149` so files queued here are
     /// the same set the watcher would push on edit (no drift).
-    private func walkWorkspace(folder: URL) -> [PushOp] {
+    private func walkWorkspace(folder: URL, workspaceID: UUID) -> [PushOp] {
         var ops: [PushOp] = []
 
         // Canonicalize once: FileManager.enumerator vends canonical paths
@@ -225,7 +225,7 @@ actor InitialSyncCoordinator {
 
             let resource: URLResourceValues
             do {
-                resource = try url.resourceValues(forKeys: Set(resourceKeys))
+                resource = try url.resourceValues(forKeys: Set(resourceKeys + [.fileSizeKey]))
             } catch {
                 NSLog("[Taproot] InitialSync: resource lookup failed for \(url.path): \(error)")
                 continue
@@ -247,6 +247,14 @@ actor InitialSyncCoordinator {
             // Defense in depth — refuse anything that would escape after relativize.
             guard SyncEngine.safeJoin(folder: folder, relative: relative) != nil else {
                 NSLog("[Taproot] InitialSync: refusing path-escape: \(relative)")
+                continue
+            }
+
+            // S82: refuse to read files larger than MAX_FILE_BYTES. Tracker
+            // surfaces "· N skipped" in the menubar and triggers the one-shot
+            // NSAlert from the post-push tick.
+            if let size = resource.fileSize, Int64(size) > Constants.MAX_FILE_BYTES {
+                LargeFileSkipTracker.shared.record(workspace: workspaceID, path: relative, size: Int64(size))
                 continue
             }
 
