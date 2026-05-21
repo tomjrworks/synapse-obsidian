@@ -31,9 +31,16 @@ final class InfoPlistTests: XCTestCase {
                        "SUPublicEDKey must decode to 32 bytes (Ed25519); got \(decoded.count)")
     }
 
-    /// S29 — guards the sandbox entitlements file. Missing keys or a typo
-    /// in the keychain-access-group would break the helper at runtime once
-    /// the sandbox is applied.
+    /// S29 — guards the sandbox entitlements file. Missing keys would break
+    /// the helper at runtime once the sandbox is applied.
+    ///
+    /// IMPORTANT: do NOT add `keychain-access-groups` — it is a restricted
+    /// entitlement for Developer ID-distributed apps and requires an
+    /// embedded provisioning profile. AMFI rejects launch with
+    /// `AppleMobileFileIntegrityError -413 "No matching profile found"`
+    /// when present without a profile (the 0.2.0 → 0.2.1 incident,
+    /// 2026-05-21). Sandboxed apps implicitly receive the team-prefixed
+    /// bundle-ID keychain group; the explicit entitlement is not needed.
     func testSandboxEntitlementsAreWellFormed() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let entitlementsURL = testFile
@@ -54,8 +61,7 @@ final class InfoPlistTests: XCTestCase {
         XCTAssertEqual(dict["com.apple.security.files.bookmarks.app-scope"] as? Bool, true,
                        "app-scope bookmarks required to remember the vault folder across launches")
 
-        let groups = try XCTUnwrap(dict["keychain-access-groups"] as? [String])
-        XCTAssertEqual(groups, ["5ALAY5V34U.com.taproot.helper"],
-                       "Team-prefixed keychain access group must match Tom's signing identity")
+        XCTAssertNil(dict["keychain-access-groups"],
+                     "keychain-access-groups is RESTRICTED on Developer ID; AMFI -413 if present without provisioning profile (0.2.0 rollback root cause)")
     }
 }

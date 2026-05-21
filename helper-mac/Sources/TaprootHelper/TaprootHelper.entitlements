@@ -10,9 +10,5 @@
     <true/>
     <key>com.apple.security.files.bookmarks.app-scope</key>
     <true/>
-    <key>keychain-access-groups</key>
-    <array>
-        <string>5ALAY5V34U.com.taproot.helper</string>
-    </array>
 </dict>
 </plist>
