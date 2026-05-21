@@ -71,6 +71,20 @@ export function workspaceCreateRouter(): Router {
       }
 
       res.status(201).json({ workspace_id: workspaceId });
+
+      const signupWebhookUrl = process.env.DISCORD_SIGNUPS_WEBHOOK_URL;
+      if (signupWebhookUrl) {
+        const maskedEmail = user.email
+          ? user.email.replace(/^[^@]+/, "***")
+          : "unknown";
+        fetch(signupWebhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: `🌱 New signup | ${maskedEmail} | workspace=${workspaceId}`,
+          }),
+        }).catch(() => {});
+      }
     }),
   );
 
