@@ -12,6 +12,8 @@ import { personaRenderRouter } from "./persona-render.js";
 import { dashboardRouter } from "./dashboard.js";
 import { billingRouter } from "./billing.js";
 import { feedbackRouter } from "./feedback.js";
+import { accountRouter } from "./account.js";
+import { digestPrefRouter } from "./digest-pref.js";
 
 export function mountApiRoutes(app: Express): void {
   const api = Router();
@@ -33,6 +35,8 @@ export function mountApiRoutes(app: Express): void {
   api.use("/", dashboardRouter());
   api.use("/", billingRouter());
   api.use("/", feedbackRouter());
+  api.use("/", accountRouter());
+  api.use("/", digestPrefRouter());
 
   app.use("/api", api);
 }

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { nukeWorkspace } from "../utils/supabase-mirror.js";
 import { evict, getBackend } from "../utils/backend-cache.js";
+import { cancelWorkspaceSubscription } from "../utils/stripe-cancel.js";
 import { supabaseService } from "./supabase.js";
 import {
   requireSupabaseAuth,
@@ -76,6 +77,20 @@ export function firstWowRouter(): Router {
       // member who is the owner. Stage 2 will need an owner-only gate
       // here (members of a teamed workspace shouldn't be able to nuke
       // someone else's mirror). Tracked under T2 follow-ups.
+
+      // PR #5 (S05): cancel Stripe subscription BEFORE nuking the mirror.
+      // Fail-closed — if Stripe returns an error, do NOT nuke; surface 500
+      // so the user can retry. A paying user who clicks "Leave Taproot"
+      // must stop being billed; the mirror nuke without the cancel would
+      // generate chargebacks.
+      try {
+        await cancelWorkspaceSubscription(sb, membership.workspaceId);
+      } catch (err) {
+        respondError(res, 500, "stripe_cancel_failed", err, {
+          logPrefix: "first-wow",
+        });
+        return;
+      }
 
       try {
         const result = await nukeWorkspace(
