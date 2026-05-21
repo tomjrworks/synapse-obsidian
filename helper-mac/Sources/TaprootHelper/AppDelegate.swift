@@ -233,6 +233,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_: Notification) {
+        // S84: refuse to run if another instance of TaprootHelper is already
+        // alive. Two helpers competing for Keychain bearers and cursor state
+        // would race; we guard at the earliest hook so the duplicate exits
+        // BEFORE registering the AppleEvent handler (which would otherwise
+        // steal taproot:// URLs from the original instance).
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.taproot.helper"
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+        if AppDelegate.shouldExitIfDuplicate(currentBundleId: bundleId, runningApps: running.count) {
+            NSLog("[Taproot] another instance is running — exiting")
+            NSApp.terminate(nil)
+            return
+        }
+
         // Register the AppleEvent URL handler before AppKit posts kAEGetURL.
         // If the helper is launched *via* a taproot:// URL, the event arrives
         // between will- and didFinishLaunching; registering in did- would miss it.
@@ -242,6 +255,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+    }
+
+    /// Test seam for the S84 single-instance guard. Returns true when a
+    /// duplicate instance is detected (i.e., `runningApps > 1`). Factored
+    /// out so XCTest can drive the decision without forking a second
+    /// AppDelegate / NSApplication.
+    nonisolated static func shouldExitIfDuplicate(currentBundleId: String, runningApps: Int) -> Bool {
+        return runningApps > 1
     }
 
     func applicationDidFinishLaunching(_: Notification) {

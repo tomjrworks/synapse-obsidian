@@ -271,6 +271,13 @@ Minimum:
 - Receive a Sparkle update notification (point appcast at this build's
   signature, observe Sparkle dialog appearing in-app).
 - Sync 1 file from the connected Obsidian vault → server confirms write.
+- **S84 single-instance smoke:** with the helper running, run
+  `open -n /Applications/TaprootHelper.app`. The second instance must
+  exit immediately (Console logs `[Taproot] another instance is running
+— exiting`); the first instance remains alive in the menubar.
+- **S82 size-cap smoke:** drop a >50 MB file (e.g., a 60 MB MP4) into
+  the vault. Menubar must show "· 1 skipped" and a one-shot NSAlert
+  must fire. Smaller files in the same folder continue to sync.
 
 Any regression here is a P0 — universal binary must not break the existing
 arm64 ship path.
