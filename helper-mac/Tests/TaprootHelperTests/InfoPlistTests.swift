@@ -30,4 +30,32 @@ final class InfoPlistTests: XCTestCase {
         XCTAssertEqual(decoded.count, 32,
                        "SUPublicEDKey must decode to 32 bytes (Ed25519); got \(decoded.count)")
     }
+
+    /// S29 — guards the sandbox entitlements file. Missing keys or a typo
+    /// in the keychain-access-group would break the helper at runtime once
+    /// the sandbox is applied.
+    func testSandboxEntitlementsAreWellFormed() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let entitlementsURL = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/TaprootHelper/TaprootHelper.entitlements")
+        let data = try Data(contentsOf: entitlementsURL)
+        let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
+        let dict = try XCTUnwrap(plist as? [String: Any])
+
+        XCTAssertEqual(dict["com.apple.security.app-sandbox"] as? Bool, true,
+                       "app-sandbox must be true")
+        XCTAssertEqual(dict["com.apple.security.network.client"] as? Bool, true,
+                       "network.client required for connect.taproothq.com")
+        XCTAssertEqual(dict["com.apple.security.files.user-selected.read-write"] as? Bool, true,
+                       "user-selected.read-write required for the vault folder picker")
+        XCTAssertEqual(dict["com.apple.security.files.bookmarks.app-scope"] as? Bool, true,
+                       "app-scope bookmarks required to remember the vault folder across launches")
+
+        let groups = try XCTUnwrap(dict["keychain-access-groups"] as? [String])
+        XCTAssertEqual(groups, ["5ALAY5V34U.com.taproot.helper"],
+                       "Team-prefixed keychain access group must match Tom's signing identity")
+    }
 }

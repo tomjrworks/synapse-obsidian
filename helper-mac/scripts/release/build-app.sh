@@ -173,11 +173,28 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_PATH/Content
 SPARKLE_FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
 SPARKLE_VER_DIR="$SPARKLE_FW/Versions/B"
 
+# S29: sign() optionally takes an --entitlements path. Only the outer .app
+# gets the new sandbox entitlements; Sparkle's bundled XPC services ship
+# with their own sandbox-ready entitlements and must NOT be overridden, or
+# the update flow breaks at runtime.
 sign() {
     local target="$1"
-    echo "    codesign: $target"
-    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$target"
+    local entitlements="${2:-}"
+    if [[ -n "$entitlements" ]]; then
+        echo "    codesign: $target (entitlements: $entitlements)"
+        codesign --force --options runtime --timestamp \
+            --entitlements "$entitlements" --sign "$IDENTITY" "$target"
+    else
+        echo "    codesign: $target"
+        codesign --force --options runtime --timestamp --sign "$IDENTITY" "$target"
+    fi
 }
+
+ENTITLEMENTS_PATH="$HELPER_MAC_ROOT/Sources/TaprootHelper/TaprootHelper.entitlements"
+if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
+    echo "ERROR: entitlements file missing at $ENTITLEMENTS_PATH" >&2
+    exit 1
+fi
 
 echo "==> Inside-out codesign"
 sign "$SPARKLE_VER_DIR/XPCServices/Downloader.xpc"
@@ -185,7 +202,7 @@ sign "$SPARKLE_VER_DIR/XPCServices/Installer.xpc"
 sign "$SPARKLE_VER_DIR/Updater.app"
 sign "$SPARKLE_VER_DIR/Autoupdate"
 sign "$SPARKLE_FW"
-sign "$APP_PATH"
+sign "$APP_PATH" "$ENTITLEMENTS_PATH"
 
 echo "==> codesign --verify --deep --strict"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
