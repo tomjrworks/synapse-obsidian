@@ -12,8 +12,21 @@ import { respondError } from "./respond-error.js";
 import {
   getSubscription,
   getDaysRemaining,
+  type SubscriptionStatus,
   type WorkspaceSubscription,
 } from "./subscription.js";
+
+// S10: deny-list of statuses where re-checkout is blocked. Re-checkout from
+// any of these would create a duplicate Stripe subscription under the same
+// customer. `canceled` + `grandfathered` are deliberately allowed through so
+// those users can start a fresh sub. Adding a new SubscriptionStatus enum
+// value defaults to "allowed" — by design (deny-list).
+const BLOCKED_RECHECKOUT_STATUSES: ReadonlySet<SubscriptionStatus> = new Set([
+  "active",
+  "past_due",
+  "trialing",
+  "paused",
+]);
 
 function stripeClient(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -127,16 +140,18 @@ export function billingRouter(): Router {
       // Get or create Stripe customer
       let sub = await getSubscription(sb, membership.workspaceId);
 
-      // Guard: already subscribed — second checkout would create a duplicate subscription
+      // Guard: already subscribed — second checkout would create a duplicate
+      // subscription. Deny-list: trialing + paused users are also blocked
+      // (S10 — original d8a4d25 guard missed those statuses).
       if (
         sub?.stripe_subscription_id &&
-        (sub.status === "active" || sub.status === "past_due")
+        BLOCKED_RECHECKOUT_STATUSES.has(sub.status)
       ) {
         respondError(
           res,
           409,
           "already_subscribed",
-          new Error("workspace already has an active subscription"),
+          new Error(`workspace already has a ${sub.status} subscription`),
           { logPrefix: "billing" },
         );
         return;

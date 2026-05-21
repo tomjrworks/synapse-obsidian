@@ -124,14 +124,21 @@ export async function stripeWebhookHandler(
           }
         }
 
-        await sb.from("workspace_subscriptions").upsert({
-          workspace_id: workspaceId,
-          stripe_customer_id: session.customer as string | null,
-          stripe_subscription_id: session.subscription as string | null,
-          status: subStatus,
-          current_period_end: currentPeriodEnd,
-          updated_at: new Date().toISOString(),
-        });
+        const { error: upsertErr } = await sb
+          .from("workspace_subscriptions")
+          .upsert({
+            workspace_id: workspaceId,
+            stripe_customer_id: session.customer as string | null,
+            stripe_subscription_id: session.subscription as string | null,
+            status: subStatus,
+            current_period_end: currentPeriodEnd,
+            updated_at: new Date().toISOString(),
+          });
+        if (upsertErr) {
+          throw new Error(
+            `workspace_subscriptions upsert failed for ${workspaceId} on ${event.type}: ${upsertErr.message}`,
+          );
+        }
         break;
       }
 
@@ -144,7 +151,7 @@ export async function stripeWebhookHandler(
 
         // v22: current_period_end moved to SubscriptionItem
         const periodEnd = sub.items.data[0]?.current_period_end;
-        await sb
+        const { error: updateErr } = await sb
           .from("workspace_subscriptions")
           .update({
             status: mapStripeStatus(sub.status),
@@ -154,6 +161,11 @@ export async function stripeWebhookHandler(
             updated_at: new Date().toISOString(),
           })
           .eq("workspace_id", workspaceId);
+        if (updateErr) {
+          throw new Error(
+            `workspace_subscriptions update failed for ${workspaceId} on ${event.type}: ${updateErr.message}`,
+          );
+        }
         break;
       }
 
@@ -164,7 +176,7 @@ export async function stripeWebhookHandler(
         );
         if (!workspaceId) break;
 
-        await sb
+        const { error: updateErr } = await sb
           .from("workspace_subscriptions")
           .update({
             status: "canceled",
@@ -172,6 +184,11 @@ export async function stripeWebhookHandler(
             updated_at: new Date().toISOString(),
           })
           .eq("workspace_id", workspaceId);
+        if (updateErr) {
+          throw new Error(
+            `workspace_subscriptions update failed for ${workspaceId} on ${event.type}: ${updateErr.message}`,
+          );
+        }
         break;
       }
 
@@ -182,13 +199,18 @@ export async function stripeWebhookHandler(
         );
         if (!workspaceId) break;
 
-        await sb
+        const { error: updateErr } = await sb
           .from("workspace_subscriptions")
           .update({
             status: "past_due",
             updated_at: new Date().toISOString(),
           })
           .eq("workspace_id", workspaceId);
+        if (updateErr) {
+          throw new Error(
+            `workspace_subscriptions update failed for ${workspaceId} on ${event.type}: ${updateErr.message}`,
+          );
+        }
         break;
       }
 
@@ -214,7 +236,7 @@ export async function stripeWebhookHandler(
           }
         }
 
-        await sb
+        const { error: updateErr } = await sb
           .from("workspace_subscriptions")
           .update({
             status: "active",
@@ -222,6 +244,11 @@ export async function stripeWebhookHandler(
             updated_at: new Date().toISOString(),
           })
           .eq("workspace_id", workspaceId);
+        if (updateErr) {
+          throw new Error(
+            `workspace_subscriptions update failed for ${workspaceId} on ${event.type}: ${updateErr.message}`,
+          );
+        }
         break;
       }
 
@@ -230,25 +257,41 @@ export async function stripeWebhookHandler(
         // skipped rather than reprocessed.
         break;
     }
-
-    // Handler succeeded — record the event so a redelivery is deduped above.
-    // ignoreDuplicates handles the rare concurrent-delivery race (two
-    // deliveries both pass the dedupe SELECT) without a PK-conflict error.
-    await sb
-      .from("processed_webhook_events")
-      .upsert(
-        { event_id: event.id, event_type: event.type },
-        { onConflict: "event_id", ignoreDuplicates: true },
-      );
   } catch (err) {
     // C4: return non-2xx so Stripe retries — silently dropping a
     // subscription.deleted / payment_failed event to a transient DB error is a
-    // real billing bug. Safe to retry: the event was not recorded above, and
+    // real billing bug. Safe to retry: the event was not recorded below, and
     // C3's dedupe keeps a later successful reprocess idempotent. respondError
     // also fires the Discord 5xx alert.
     respondError(res, 500, "stripe_webhook_error", err, {
       logPrefix: "stripe-webhook",
     });
+    return;
+  }
+
+  // S98: dedupe write lives OUTSIDE the try/catch — only reached on full
+  // branch-write success. Prior shape (dedupe inside try) was structurally
+  // ambiguous; keeping it after the catch makes "only mark processed when
+  // every write succeeded" explicit. ignoreDuplicates handles the rare
+  // concurrent-delivery race (two deliveries both pass the dedupe SELECT)
+  // without a PK-conflict error.
+  const { error: dedupeErr } = await sb
+    .from("processed_webhook_events")
+    .upsert(
+      { event_id: event.id, event_type: event.type },
+      { onConflict: "event_id", ignoreDuplicates: true },
+    );
+  if (dedupeErr) {
+    // Idempotency-table write failed — return 500 so Stripe retries.
+    // Reprocess on retry is safe (all branch writes are upserts/updates
+    // keyed on workspace_id).
+    respondError(
+      res,
+      500,
+      "stripe_webhook_dedupe_failed",
+      new Error(dedupeErr.message),
+      { logPrefix: "stripe-webhook" },
+    );
     return;
   }
 

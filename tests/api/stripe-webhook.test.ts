@@ -31,7 +31,11 @@ const mockSelect = vi.fn().mockReturnValue({
 });
 
 // C3 dedupe table — in-memory fake. select/eq/maybeSingle reports whether an
-// event_id has been recorded; upsert records it.
+// event_id has been recorded; upsert records it. `dedupeUpsertResult`
+// controls what the upsert returns — defaults to { error: null }, but
+// individual tests can mutate it before posting to simulate a PostgREST
+// failure on the idempotency-marker write (S98).
+let dedupeUpsertResult: { error: { message: string } | null } = { error: null };
 const seenEvents = new Set<string>();
 function processedEventsTable() {
   return {
@@ -44,8 +48,10 @@ function processedEventsTable() {
       }),
     }),
     upsert: async (row: { event_id: string }) => {
-      seenEvents.add(row.event_id);
-      return { error: null };
+      if (dedupeUpsertResult.error === null) {
+        seenEvents.add(row.event_id);
+      }
+      return dedupeUpsertResult;
     },
   };
 }
@@ -119,6 +125,11 @@ describe("stripeWebhookHandler", () => {
     mockUpsert.mockClear();
     mockUpdate.mockClear();
     seenEvents.clear();
+    dedupeUpsertResult = { error: null };
+    mockUpsert.mockResolvedValue({ error: null });
+    mockUpdate.mockReturnValue({
+      eq: vi.fn().mockResolvedValue({ error: null }),
+    });
     ({ server, url } = await makeServer());
   });
 
@@ -299,6 +310,154 @@ describe("stripeWebhookHandler", () => {
     expect(res.status).toBe(500);
     // Event was NOT recorded — a Stripe retry must be able to reprocess it.
     expect(seenEvents.has("evt_transient_fail")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  // ── S98: supabase-js returns { error } (does NOT throw) → must surface ─
+  //
+  // PostgREST errors (RLS denial, schema mismatch, transient connection) come
+  // back as { error: {...} } on the resolved promise, not as a rejection.
+  // Before the S98 fix, the handler ignored `error` and proceeded to record
+  // the event as processed — Stripe stopped retrying and billing state
+  // permanently diverged. These tests assert the handler now returns 500 and
+  // does NOT mark the event processed.
+
+  it("S98: checkout.session.completed upsert {error} → 500, not deduped", async () => {
+    mockUpsert.mockResolvedValueOnce({
+      error: { message: "rls denied on workspace_subscriptions" },
+    });
+    const event = {
+      id: "evt_s98_checkout",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          metadata: { workspace_id: "ws-fixture" },
+          customer: "cus_test",
+          subscription: "sub_test",
+        },
+      },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    expect(seenEvents.has("evt_s98_checkout")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  it("S98: customer.subscription.updated update {error} → 500, not deduped", async () => {
+    mockUpdate.mockReturnValueOnce({
+      eq: vi.fn().mockResolvedValue({
+        error: { message: "rls denied on workspace_subscriptions" },
+      }),
+    });
+    const event = {
+      id: "evt_s98_updated",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          customer: "cus_test",
+          status: "active",
+          items: { data: [{ current_period_end: 1800000000 }] },
+        },
+      },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    expect(seenEvents.has("evt_s98_updated")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  it("S98: customer.subscription.deleted update {error} → 500, not deduped", async () => {
+    mockUpdate.mockReturnValueOnce({
+      eq: vi.fn().mockResolvedValue({
+        error: { message: "rls denied on workspace_subscriptions" },
+      }),
+    });
+    const event = {
+      id: "evt_s98_deleted",
+      type: "customer.subscription.deleted",
+      data: {
+        object: { customer: "cus_test", items: { data: [] } },
+      },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    expect(seenEvents.has("evt_s98_deleted")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  it("S98: invoice.payment_failed update {error} → 500, not deduped", async () => {
+    mockUpdate.mockReturnValueOnce({
+      eq: vi.fn().mockResolvedValue({
+        error: { message: "rls denied on workspace_subscriptions" },
+      }),
+    });
+    const event = {
+      id: "evt_s98_payfail",
+      type: "invoice.payment_failed",
+      data: { object: { customer: "cus_test", parent: null } },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    expect(seenEvents.has("evt_s98_payfail")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  it("S98: invoice.payment_succeeded update {error} → 500, not deduped", async () => {
+    mockUpdate.mockReturnValueOnce({
+      eq: vi.fn().mockResolvedValue({
+        error: { message: "rls denied on workspace_subscriptions" },
+      }),
+    });
+    const event = {
+      id: "evt_s98_paysucc",
+      type: "invoice.payment_succeeded",
+      data: { object: { customer: "cus_test", parent: null } },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    expect(seenEvents.has("evt_s98_paysucc")).toBe(false);
+
+    await new Promise((r) => server.close(r));
+  });
+
+  it("S98: processed_webhook_events upsert {error} → 500, retry-safe", async () => {
+    // Branch write succeeds; dedupe-marker write fails. Handler must return
+    // 500 so Stripe retries — reprocess is safe because all branch writes
+    // are upserts/updates keyed on workspace_id.
+    dedupeUpsertResult = {
+      error: { message: "rls denied on processed_webhook_events" },
+    };
+    const event = {
+      id: "evt_s98_dedupe",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          customer: "cus_test",
+          status: "active",
+          items: { data: [{ current_period_end: 1800000000 }] },
+        },
+      },
+    };
+
+    const res = await post(url, event);
+    expect(res.status).toBe(500);
+    // Dedupe write itself failed — the marker is NOT recorded, so a Stripe
+    // retry will reprocess the event (which is idempotent by design).
+    expect(seenEvents.has("evt_s98_dedupe")).toBe(false);
+    // Branch write DID succeed before the dedupe failure — assert that to
+    // catch a regression where the structural reordering breaks the happy
+    // path.
+    expect(mockUpdate).toHaveBeenCalledOnce();
 
     await new Promise((r) => server.close(r));
   });
