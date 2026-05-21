@@ -62,6 +62,12 @@ struct PullFileEntry: Decodable {
     let mtime: String
     let deleted: Bool
     let content: String?    // plaintext for non-deleted rows (D1.a)
+    /// PR #2 (S99) — server reports "row alive, blob within grace window" so the
+    /// helper MUST skip the local apply (do not write, do not delete). Server
+    /// recovers on a later pull (delivers content if blob lands, emits deleted
+    /// if grace expires). Optional for forward-compat against older servers
+    /// (nil decodes to "not pending").
+    let pending: Bool?
 }
 
 struct PullResponseBody: Decodable {
@@ -306,6 +312,17 @@ actor SyncEngine {
 
             if entry.deleted {
                 await applyDelete(target)
+                continue
+            }
+
+            // PR #2 (S99): server signals the blob is plausibly still being
+            // uploaded (row exists, blob missing, modified_at within grace
+            // window). Skip locally — do NOT write, do NOT delete. The
+            // next pull either delivers content (blob landed) or emits
+            // deleted: true (grace expired). This closes the cross-device
+            // ghost-delete race in PRODUCT writeFile.
+            if entry.pending == true {
+                NSLog("[Taproot] pull: pending blob for \(entry.path), skipping; server will re-offer on next tick")
                 continue
             }
 

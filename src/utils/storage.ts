@@ -38,6 +38,14 @@ export interface VaultFileChange {
   id: string; // UUID — tiebreaker for tuple cursor
   deleted: boolean;
   content?: string; // plaintext for non-deleted rows (D1.a inline content)
+  // S99 PR #2: row exists but blob is missing AND modified_at is within
+  // MISSING_BLOB_GRACE_MS — the upload is plausibly still in flight from a
+  // metadata-first write that crashed mid-flow. Helper MUST skip locally
+  // (do not write, do not delete); the server's grace-window-then-delete
+  // semantic plus cursor halt-on-pending (see listChanged) recovers either
+  // by serving content on the next pull or by emitting deleted: true once
+  // the grace window expires.
+  pending?: boolean;
 }
 
 export interface PullCursor {

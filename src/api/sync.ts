@@ -138,6 +138,7 @@ interface PullFileEntry {
   mtime: string; // ISO8601 of vault_files.modified_at
   deleted: boolean;
   content?: string; // plaintext for non-deleted rows (D1.a inline)
+  pending?: boolean; // PR #2 S99: row alive, blob within grace window — helper skips locally
 }
 
 interface PullResponse {
@@ -337,6 +338,7 @@ export function syncRouter(opts: SyncRouterOptions = {}): Router {
         mtime: f.modifiedAt,
         deleted: f.deleted,
         ...(f.content !== undefined ? { content: f.content } : {}),
+        ...(f.pending ? { pending: true } : {}),
       }));
 
       const response: PullResponse = {

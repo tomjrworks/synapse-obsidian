@@ -350,3 +350,250 @@ describe("getCursorHead", () => {
     expect(head!.modifiedAt).toBe("2026-05-09T15:00:00Z");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: PR #2 missing-blob semantic refactor (S95, S97, S99)
+// ---------------------------------------------------------------------------
+
+describe("listChanged — PR #2 missing-blob semantics", () => {
+  afterEach(() => {
+    delete process.env.PULL_PARALLELISM;
+    delete process.env.MISSING_BLOB_GRACE_MS;
+    delete process.env.MISSING_BLOB_LEGACY_BEHAVIOR;
+  });
+
+  it("S95: cursor halts at the first transient-skipped row even if later rows succeed", async () => {
+    process.env.PULL_PARALLELISM = "3";
+    const rows: MockRow[] = [
+      // A: success (decrypt will throw → maps to download success; use 404 to make it tombstone fast)
+      // We can't actually decrypt dummy bytes; mock by routing A to a deleted row.
+      {
+        id: "id-a",
+        path: "a.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:00Z",
+        deleted_at: "2026-05-20T00:00:01Z", // shortcut: deleted rows skip download → counted as success
+        storage_object: `${WS_ID}/id-a`,
+      },
+      {
+        id: "id-b",
+        path: "b.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:02Z",
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-b`,
+      },
+      {
+        id: "id-c",
+        path: "c.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:03Z",
+        deleted_at: "2026-05-20T00:00:04Z",
+        storage_object: `${WS_ID}/id-c`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockImplementation(async (obj: string) => {
+      if (obj.includes("id-b")) {
+        return {
+          data: null,
+          error: { message: "Service Unavailable", statusCode: "503" },
+        };
+      }
+      return { data: new Blob(["enc"]), error: null };
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    const result = await backend.listChanged(null, 500);
+    // A is the last contiguously-processed row; B was transient-skipped.
+    // Cursor MUST stop at A (id-a), not advance past C.
+    expect(result.next?.id).toBe("id-a");
+    // B should not appear in files at all (transient skip omits + halts).
+    expect(result.files.find((f) => f.path === "b.md")).toBeUndefined();
+  });
+
+  it("S99: missing blob (404) within grace window emits pending: true, NOT deleted", async () => {
+    const recentIso = new Date(Date.now() - 5_000).toISOString();
+    const rows: MockRow[] = [
+      {
+        id: "id-pending",
+        path: "in-flight.md",
+        size_bytes: 10,
+        modified_at: recentIso,
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-pending`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Object Not Found", statusCode: "404" },
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    const result = await backend.listChanged(null, 500);
+    expect(result.files.length).toBe(1);
+    const entry = result.files[0];
+    expect(entry.path).toBe("in-flight.md");
+    expect(entry.pending).toBe(true);
+    expect(entry.deleted).toBe(false);
+  });
+
+  it("S99: missing blob (404) older than grace window emits deleted: true (stale orphan cleanup)", async () => {
+    process.env.MISSING_BLOB_GRACE_MS = "1000"; // 1s grace
+    const oldIso = new Date(Date.now() - 60_000).toISOString();
+    const rows: MockRow[] = [
+      {
+        id: "id-orphan",
+        path: "orphan.md",
+        size_bytes: 10,
+        modified_at: oldIso,
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-orphan`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Object Not Found", statusCode: "404" },
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    const result = await backend.listChanged(null, 500);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0].deleted).toBe(true);
+    expect(result.files[0].pending).toBeUndefined();
+  });
+
+  it("S99: pending row halts the cursor — server re-offers on next pull", async () => {
+    const recentIso = new Date(Date.now() - 5_000).toISOString();
+    const rows: MockRow[] = [
+      {
+        id: "id-pending",
+        path: "in-flight.md",
+        size_bytes: 10,
+        modified_at: recentIso,
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-pending`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Object Not Found", statusCode: "404" },
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    // No prior cursor (initial pull). After processing a pending-only page,
+    // cursor must NOT advance — it should stay null so the next pull
+    // re-fetches starting from the same place.
+    const result = await backend.listChanged(null, 500);
+    expect(result.next).toBeNull();
+  });
+
+  it("kill switch: legacy mode collapses missing-blob to deleted regardless of grace", async () => {
+    process.env.MISSING_BLOB_LEGACY_BEHAVIOR = "1";
+    const recentIso = new Date(Date.now() - 5_000).toISOString();
+    const rows: MockRow[] = [
+      {
+        id: "id-pending",
+        path: "in-flight.md",
+        size_bytes: 10,
+        modified_at: recentIso,
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-pending`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: "Object Not Found", statusCode: "404" },
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    const result = await backend.listChanged(null, 500);
+    expect(result.files[0].deleted).toBe(true);
+    expect(result.files[0].pending).toBeUndefined();
+  });
+
+  it("kill switch: legacy mode advances cursor to last row even when middle row is transient-skipped (matches pre-PR-#2 behavior)", async () => {
+    process.env.MISSING_BLOB_LEGACY_BEHAVIOR = "1";
+    const rows: MockRow[] = [
+      {
+        id: "id-a",
+        path: "a.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:00Z",
+        deleted_at: "2026-05-20T00:00:01Z",
+        storage_object: `${WS_ID}/id-a`,
+      },
+      {
+        id: "id-b",
+        path: "b.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:02Z",
+        deleted_at: null,
+        storage_object: `${WS_ID}/id-b`,
+      },
+      {
+        id: "id-c",
+        path: "c.md",
+        size_bytes: 1,
+        modified_at: "2026-05-20T00:00:03Z",
+        deleted_at: "2026-05-20T00:00:04Z",
+        storage_object: `${WS_ID}/id-c`,
+      },
+    ];
+
+    const downloadFn = vi.fn().mockImplementation(async (obj: string) => {
+      if (obj.includes("id-b")) {
+        return {
+          data: null,
+          error: { message: "Service Unavailable", statusCode: "503" },
+        };
+      }
+      return { data: new Blob(["enc"]), error: null };
+    });
+
+    const sb = makeMockSupabase({ listRows: rows, downloadFn });
+    const backend = new SupabaseEncryptedMirrorBackend(
+      sb as never,
+      WS_ID,
+      DUMMY_DEK,
+    );
+
+    const result = await backend.listChanged(null, 500);
+    // Legacy: cursor advances to last row (id-c) even though id-b was skipped.
+    expect(result.next?.id).toBe("id-c");
+  });
+});

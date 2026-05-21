@@ -563,6 +563,83 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertNil(captured.get(), "transport errors must NOT trigger sign-out")
     }
 
+    // MARK: - PR #2 (S99) — pending handler
+
+    /// Pending entry (server reports row alive + blob missing within grace
+    /// window) MUST NOT trigger applyWrite or applyDelete. Helper skips
+    /// locally; server re-offers on the next pull.
+    func testPullPendingEntrySkipsWithoutWriteOrDelete() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"in-flight.md","size":42,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"pending":true}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        let deletes = await tracker.snapshotDeletes()
+        XCTAssertEqual(writes.count, 0, "pending entry must not call applyWrite")
+        XCTAssertEqual(deletes.count, 0, "pending entry must not call applyDelete (closes S97/S99 ghost-delete chain)")
+    }
+
+    /// pending: false (or omitted) entries behave as today — alive entries
+    /// write, deleted entries delete, no regression for the happy path.
+    func testPullPendingFalseEntryAppliesWriteAsBefore() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"hello.md","size":5,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"hello","pending":false}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.1, "hello")
+    }
+
+    /// Forward-compat: older servers omit the `pending` field entirely.
+    /// JSON decode succeeds (the field is Bool?) and the entry falls
+    /// through to applyWrite/applyDelete as today.
+    func testPullMissingPendingFieldIsBackwardsCompatible() async throws {
+        let fake = FakeHTTPClient()
+        let json = """
+        {"files":[{"path":"legacy.md","size":3,"mtime":"2026-04-29T05:00:00.000Z","deleted":false,"content":"old"}],
+         "next_since":"2026-04-29T05:00:00.000Z","next_since_id":"00000000-0000-4000-8000-000000000001"}
+        """
+        await fake.setStubbedResponse(.success(stubPullResponse(json)))
+        let engine = SyncEngine(httpClient: fake, baseURL: baseURL)
+        let tracker = ApplyTracker()
+
+        _ = await engine.pull(
+            workspace: makeSnapshot(),
+            cursor: nil,
+            applyWrite: { url, content in await tracker.recordWrite(url, content) },
+            applyDelete: { url in await tracker.recordDelete(url) }
+        )
+
+        let writes = await tracker.snapshotWrites()
+        XCTAssertEqual(writes.count, 1, "missing pending field decodes cleanly and applies as before")
+        XCTAssertEqual(writes.first?.1, "old")
+    }
+
     func testPullPathTraversalRejected() async throws {
         let fake = FakeHTTPClient()
         let json = """

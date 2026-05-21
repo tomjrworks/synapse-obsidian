@@ -65,6 +65,28 @@ function isTransientHttpStatus(status: unknown): boolean {
 const VAULT_BLOBS_BUCKET = "vault-blobs";
 const PG_UNIQUE_VIOLATION = "23505";
 
+// PR #2 (S99): grace window for "row exists, blob missing" classification.
+// A row whose blob 404s but whose modified_at is fresher than this window
+// is treated as a pending in-flight upload (helper skips locally); older
+// rows are treated as stale orphans (legacy deleted: true cleanup path).
+// Default 60s — multiple orders of magnitude greater than the largest
+// realistic blob upload latency. Tunable via env.
+const MISSING_BLOB_GRACE_MS_DEFAULT = 60_000;
+function missingBlobGraceMs(): number {
+  const raw = process.env.MISSING_BLOB_GRACE_MS;
+  if (!raw) return MISSING_BLOB_GRACE_MS_DEFAULT;
+  const n = parseInt(raw, 10);
+  if (isNaN(n) || n < 0) return MISSING_BLOB_GRACE_MS_DEFAULT;
+  return n;
+}
+
+// PR #2 kill switch: reverts listChanged classification, nukeWorkspace
+// order, and writeFile order to pre-PR-#2 production behavior. Single env
+// flip for full rollback. Delete one release after deploy if no rollback.
+function legacyMissingBlobBehavior(): boolean {
+  return process.env.MISSING_BLOB_LEGACY_BEHAVIOR === "1";
+}
+
 // Postgres bytea columns come back from PostgREST as `\x...hex...` strings.
 // (Older Supabase configs may use base64; handle both for resilience.)
 function bytesFromPg(value: unknown): Buffer {
@@ -197,14 +219,62 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       content,
     );
 
-    const { fileId, storageObject } = await this.upsertMetadata(
-      normalized,
-      plaintext.length,
+    const legacy = legacyMissingBlobBehavior();
+
+    // PR #2 (S99): determine the storage_object key BEFORE writing the
+    // metadata row so we can upload the ciphertext first. SELECT lookup
+    // up front: existing row → reuse its storage_object; new row →
+    // mint a UUID-derived key (computable client-side, no DB round-trip
+    // needed for derivation). Uploading first means a row can only ever
+    // exist when its blob exists; the next pull on any device cannot
+    // observe "row exists, blob missing" from a partial writeFile.
+    const existing = await this.selectExistingForPath(normalized);
+    const fileId = existing ? (existing.id as string) : randomUUID();
+    const storageObject = existing
+      ? (existing.storage_object as string)
+      : `${this.workspaceId}/${fileId}`;
+
+    const uploadBlob = async () => {
+      // 0.1.7 Phase 2: wrap with withRetry. supabase-js Storage returns
+      // errors via { error } rather than throwing, so the callback inspects
+      // the returned error and re-throws — transient-tagged for 429/5xx (so
+      // withRetry retries), or the user-facing error for non-transient (so
+      // withRetry's isTransient check fails fast and re-throws unchanged).
+      await withRetry(async () => {
+        const { error: uploadErr } = await this.supabase.storage
+          .from(VAULT_BLOBS_BUCKET)
+          .upload(storageObject, ciphertext, {
+            upsert: true,
+            contentType: "application/octet-stream",
+          });
+        if (!uploadErr) return;
+        const status = (uploadErr as { statusCode?: number | string })
+          .statusCode;
+        if (isTransientHttpStatus(status)) {
+          throw Object.assign(new Error(uploadErr.message), { status });
+        }
+        throw new Error(
+          `Storage upload failed for ${storageObject} (file_id=${fileId}): ${uploadErr.message}`,
+        );
+      });
+    };
+
+    if (!legacy) {
+      // Blob first, then metadata. If upload throws, no row is committed.
+      await uploadBlob();
+    }
+
+    await this.commitMetadataKnownKey({
+      filePath: normalized,
+      fileId,
+      storageObject,
+      existing,
+      plaintextSize: plaintext.length,
       sha256Param,
       nowIso,
       flagsUpdate,
-      enrichedCardinality,
-    );
+      extractedCardinality: enrichedCardinality,
+    });
 
     // V1.5a.1: Invalidate the index cache on any write except index.md itself
     // (writing index.md is the write-back path — triggering invalidation there
@@ -213,49 +283,23 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       invalidateIndexForWorkspace(this.workspaceId, this);
     }
 
-    // 0.1.7 Phase 2: wrap with withRetry. supabase-js Storage returns
-    // errors via { error } rather than throwing, so the callback inspects
-    // the returned error and re-throws — transient-tagged for 429/5xx (so
-    // withRetry retries), or the user-facing error for non-transient (so
-    // withRetry's isTransient check fails fast and re-throws unchanged).
-    await withRetry(async () => {
-      const { error: uploadErr } = await this.supabase.storage
-        .from(VAULT_BLOBS_BUCKET)
-        .upload(storageObject, ciphertext, {
-          upsert: true,
-          contentType: "application/octet-stream",
-        });
-      if (!uploadErr) return;
-      const status = (uploadErr as { statusCode?: number | string }).statusCode;
-      if (isTransientHttpStatus(status)) {
-        throw Object.assign(new Error(uploadErr.message), { status });
-      }
-      throw new Error(
-        `Storage upload failed for ${storageObject} (file_id=${fileId}): ${uploadErr.message}`,
-      );
-    });
+    if (legacy) {
+      // Legacy order (metadata first, blob second). Preserved behind
+      // MISSING_BLOB_LEGACY_BEHAVIOR=1 as a one-flip rollback gate.
+      await uploadBlob();
+    }
   }
 
-  // SELECT → UPDATE-or-INSERT for vault_files. Returns the file_id so the
-  // caller knows which storage_object key to upload the blob under. The
-  // partial unique index on (workspace_id, path) WHERE deleted_at IS NULL
-  // protects against concurrent writers — if two writers both miss the
-  // SELECT and both INSERT, one wins and the other gets PG 23505; the
-  // loser re-resolves via SELECT and falls through to UPDATE.
-  private async upsertMetadata(
-    filePath: string,
-    plaintextSize: number,
-    sha256Param: string,
-    nowIso: string,
-    flagsUpdate: FlagsUpdate | null = null,
-    extractedCardinality: Cardinality | null = null,
-  ): Promise<{ fileId: string; storageObject: string }> {
-    // 0.1.7 Phase 2: each PostgREST round-trip wrapped in withRetry. The
-    // callback inspects the returned `error` object, throws transient-tagged
-    // for 429/5xx HTTP statuses (so withRetry retries), or the user-facing
-    // error for non-transient (so withRetry's isTransient check fails fast
-    // and re-throws unchanged).
-    const existing = await withRetry(async () => {
+  // PR #2 (S99) split: hoisted SELECT so writeFile can pre-compute
+  // storageObject before the blob upload. Returns the existing alive row
+  // (with id, storage_object, flags) or null. withRetry-wrapped to match
+  // the prior upsertMetadata SELECT's transient-handling semantics.
+  private async selectExistingForPath(filePath: string): Promise<{
+    id: string;
+    storage_object: string;
+    flags?: Record<string, unknown>;
+  } | null> {
+    return await withRetry(async () => {
       const { data, error } = await this.supabase
         .from("vault_files")
         .select("id, storage_object, flags")
@@ -263,14 +307,53 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         .eq("path", filePath)
         .is("deleted_at", null)
         .maybeSingle();
-      if (!error) return data;
+      if (!error)
+        return data as {
+          id: string;
+          storage_object: string;
+          flags?: Record<string, unknown>;
+        } | null;
       const status = (error as { status?: number | string }).status;
       if (isTransientHttpStatus(status)) {
         throw Object.assign(new Error(error.message), { status });
       }
       throw new Error(`vault_files lookup failed: ${error.message}`);
     });
+  }
 
+  // PR #2 (S99): commit the metadata row for a writeFile whose blob has
+  // already been uploaded (in non-legacy mode) under a pre-known
+  // storageObject. Performs UPDATE for an existing row, INSERT otherwise.
+  // Race-lost INSERT (23505) re-resolves and UPDATEs through the racing
+  // row's existing storage_object — the blob we already uploaded under
+  // our minted fileId becomes orphan ciphertext (acceptable: low rate;
+  // closes S99 by eliminating the metadata-before-blob window).
+  private async commitMetadataKnownKey(args: {
+    filePath: string;
+    fileId: string;
+    storageObject: string;
+    existing: {
+      id: string;
+      storage_object: string;
+      flags?: Record<string, unknown>;
+    } | null;
+    plaintextSize: number;
+    sha256Param: string;
+    nowIso: string;
+    flagsUpdate: FlagsUpdate | null;
+    extractedCardinality: Cardinality | null;
+  }): Promise<void> {
+    const {
+      filePath,
+      fileId,
+      storageObject,
+      existing,
+      plaintextSize,
+      sha256Param,
+      nowIso,
+      flagsUpdate,
+      extractedCardinality,
+    } = args;
     if (existing) {
       const newFlags = mergeFlags(
         (existing as { flags?: Record<string, unknown> }).flags ?? {},
@@ -295,13 +378,12 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         }
         throw new Error(`vault_files UPDATE failed: ${updateErr.message}`);
       });
-      return { fileId: existing.id, storageObject: existing.storage_object };
+      return;
     }
 
-    // Mint id client-side so storage_object (NOT NULL) can be set in the
-    // same INSERT — saves a follow-up UPDATE round-trip per new file.
-    const fileId = randomUUID();
-    const storageObject = `${this.workspaceId}/${fileId}`;
+    // PR #2: fileId + storageObject were minted by the caller (writeFile)
+    // before the blob upload. We use them here directly so the INSERT
+    // carries the same key the ciphertext was uploaded under.
 
     // F5: fresh INSERT starts with empty flags; apply delta (set only —
     // remove is a no-op against an empty object).
@@ -397,12 +479,14 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
             `vault_files UPDATE after race failed: ${updateErr.message}`,
           );
         });
-        return { fileId: race.id, storageObject: race.storage_object };
+        // PR #2: the blob we uploaded under our minted fileId is now
+        // orphan ciphertext (the winning row points at its OWN
+        // storage_object). Acceptable: race rate is low and a future GC
+        // pass can sweep vault-blobs against vault_files.storage_object.
+        return;
       }
       throw new Error(`vault_files INSERT failed: ${insertMessage}`);
     }
-
-    return { fileId, storageObject };
   }
 
   async listFiles(subPath?: string, recursive = true): Promise<string[]> {
@@ -672,10 +756,19 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       isNaN(parallelismRaw) ? 10 : parallelismRaw,
     );
 
+    // PR #2 classification: processRow returns one of
+    //   { kind: "success", change }   genuine content (or tombstone) — cursor may advance
+    //   { kind: "pending", change }   missing-blob inside grace window — emit + halt cursor
+    //   { kind: "skip" }              transient error — omit + halt cursor
+    type RowOutcome =
+      | { kind: "success"; change: VaultFileChange }
+      | { kind: "pending"; change: VaultFileChange }
+      | { kind: "skip" };
+
+    const legacy = legacyMissingBlobBehavior();
+    const graceMs = missingBlobGraceMs();
     type RowType = NonNullable<typeof rows>[0];
-    const processRow = async (
-      row: RowType,
-    ): Promise<VaultFileChange | null> => {
+    const processRow = async (row: RowType): Promise<RowOutcome> => {
       const baseFields = {
         path: row.path as string,
         size: row.size_bytes as number,
@@ -683,7 +776,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         id: row.id as string,
         deleted: row.deleted_at !== null,
       };
-      if (baseFields.deleted) return baseFields;
+      if (baseFields.deleted) return { kind: "success", change: baseFields };
 
       let blob: Blob;
       try {
@@ -722,8 +815,8 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           return data;
         });
       } catch (err) {
-        // Post-retry classifier: distinguish transient (skip, preserve local
-        // copy) from a genuine missing blob (404 → mark deleted).
+        // Post-retry classifier: distinguish transient (skip, halt cursor)
+        // from missing blob (within grace = pending, else tombstone).
         const e = err as { statusCode?: unknown; message?: string };
         const statusCode = String(e.statusCode ?? "");
         const msg = (e.message ?? "").toLowerCase();
@@ -733,14 +826,41 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           msg.includes("gateway");
         if (isTransientErr) {
           console.error(
-            `[listChanged] transient storage error for ${row.path}, skipping: ${e.message ?? "no body"}`,
+            `[listChanged] transient storage error for ${row.path}, skipping (cursor halts): ${e.message ?? "no body"}`,
           );
-          return null;
+          return { kind: "skip" };
+        }
+        // Genuine missing blob (404). In legacy mode, preserve the binary
+        // mapping. Otherwise, classify by modified_at recency.
+        if (legacy) {
+          console.error(
+            `[listChanged] storage object missing for ${row.path} (legacy): ${e.message ?? "no body"}`,
+          );
+          return {
+            kind: "success",
+            change: { ...baseFields, deleted: true },
+          };
+        }
+        const modifiedAtMs = Date.parse(baseFields.modifiedAt);
+        const ageMs = isNaN(modifiedAtMs)
+          ? Infinity
+          : Date.now() - modifiedAtMs;
+        if (ageMs < graceMs) {
+          console.error(
+            `[listChanged] storage object missing for ${row.path} but row is ${ageMs}ms old (<${graceMs}ms grace); marking pending: ${e.message ?? "no body"}`,
+          );
+          return {
+            kind: "pending",
+            change: { ...baseFields, pending: true },
+          };
         }
         console.error(
-          `[listChanged] storage object missing for ${row.path}: ${e.message ?? "no body"}`,
+          `[listChanged] storage object missing for ${row.path}; row is ${ageMs}ms old (>=${graceMs}ms grace); marking deleted: ${e.message ?? "no body"}`,
         );
-        return { ...baseFields, deleted: true };
+        return {
+          kind: "success",
+          change: { ...baseFields, deleted: true },
+        };
       }
 
       const ciphertext = Buffer.from(await blob.arrayBuffer());
@@ -749,30 +869,58 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         this.dek,
         this.workspaceId,
       ).toString("utf8");
-      return { ...baseFields, content: plaintext };
+      return { kind: "success", change: { ...baseFields, content: plaintext } };
     };
 
+    // PR #2 cursor accounting: per-row `processed` boolean (true only for
+    // genuine successes). After processing all chunks, scan forward from
+    // index 0 to find the last contiguous success — that becomes the
+    // cursor. First non-success halts the advance, regardless of any later
+    // successes in the page (preserves in-order pull semantics).
+    const rowsArr = rows ?? [];
     const files: VaultFileChange[] = [];
-    for (let i = 0; i < (rows ?? []).length; i += concurrency) {
-      const chunk = (rows ?? []).slice(i, i + concurrency);
+    const processed: boolean[] = new Array(rowsArr.length).fill(false);
+    for (let i = 0; i < rowsArr.length; i += concurrency) {
+      const chunk = rowsArr.slice(i, i + concurrency);
       const chunkResults = await Promise.all(
         chunk.map((row) => processRow(row)),
       );
-      for (const result of chunkResults) {
-        if (result) files.push(result);
+      for (let j = 0; j < chunkResults.length; j++) {
+        const r = chunkResults[j];
+        if (r.kind === "skip") continue;
+        files.push(r.change);
+        if (r.kind === "success") processed[i + j] = true;
+        // pending: emitted to the helper for visibility but does NOT mark
+        // the row as processed — the cursor halts here so the next pull
+        // re-offers the row.
       }
     }
 
-    // Cursor: last row of returned page. Empty page echoes input cursor
-    // (so a polling helper that's caught up keeps re-asking with the same
-    // since/since_id and the server keeps returning empty).
+    // PR #2: cursor advances to the LAST contiguously-processed row.
+    // Legacy mode (kill switch) preserves the historical "advance to
+    // rows[length-1] regardless of skip" behavior.
     let next: PullCursor | null = cursor;
-    if (rows && rows.length > 0) {
-      const last = rows[rows.length - 1];
-      next = {
-        modifiedAt: normalizeIso(last.modified_at as string),
-        id: last.id as string,
-      };
+    if (legacy) {
+      if (rowsArr.length > 0) {
+        const last = rowsArr[rowsArr.length - 1];
+        next = {
+          modifiedAt: normalizeIso(last.modified_at as string),
+          id: last.id as string,
+        };
+      }
+    } else {
+      let lastSuccessIdx = -1;
+      for (let i = 0; i < rowsArr.length; i++) {
+        if (processed[i]) lastSuccessIdx = i;
+        else break; // first non-success halts cursor advance
+      }
+      if (lastSuccessIdx >= 0) {
+        const last = rowsArr[lastSuccessIdx];
+        next = {
+          modifiedAt: normalizeIso(last.modified_at as string),
+          id: last.id as string,
+        };
+      }
     }
 
     // S2: count rows remaining after this page so the helper can show
@@ -885,24 +1033,66 @@ export async function nukeWorkspace(
   }
   const storageObjects = (rows ?? []).map((r) => r.storage_object as string);
 
-  for (let i = 0; i < storageObjects.length; i += STORAGE_REMOVE_BATCH) {
-    const chunk = storageObjects.slice(i, i + STORAGE_REMOVE_BATCH);
-    const { error: rmErr } = await supabase.storage
-      .from(VAULT_BLOBS_BUCKET)
-      .remove(chunk);
-    if (rmErr) {
+  const legacy = legacyMissingBlobBehavior();
+
+  // PR #2 (S97): delete vault_files rows BEFORE removing Storage blobs.
+  // Closing the window where a concurrent helper pull sees "row exists,
+  // blob missing" → maps to deleted: true → helper destroys the user's
+  // local plaintext during "Leave Taproot". With rows gone first, the
+  // pull returns an empty page for those paths and no delete is emitted.
+  // The few seconds of orphan blobs are operationally fine — they're
+  // encrypted with the DEK that's about to die when tenant_keys is
+  // deleted. Legacy ordering preserved behind MISSING_BLOB_LEGACY_BEHAVIOR.
+  let deletedFileCount: number | null = null;
+  if (legacy) {
+    for (let i = 0; i < storageObjects.length; i += STORAGE_REMOVE_BATCH) {
+      const chunk = storageObjects.slice(i, i + STORAGE_REMOVE_BATCH);
+      const { error: rmErr } = await supabase.storage
+        .from(VAULT_BLOBS_BUCKET)
+        .remove(chunk);
+      if (rmErr) {
+        throw new Error(
+          `nuke: Storage remove batch (${i}-${i + chunk.length}) failed (legacy): ${rmErr.message}`,
+        );
+      }
+    }
+    const { count, error: filesDelErr } = await supabase
+      .from("vault_files")
+      .delete({ count: "exact" })
+      .eq("workspace_id", workspaceId);
+    if (filesDelErr) {
       throw new Error(
-        `nuke: Storage remove batch (${i}-${i + chunk.length}) failed: ${rmErr.message}`,
+        `nuke: vault_files delete failed (legacy): ${filesDelErr.message}`,
       );
     }
-  }
+    deletedFileCount = count ?? 0;
+  } else {
+    const { count, error: filesDelErr } = await supabase
+      .from("vault_files")
+      .delete({ count: "exact" })
+      .eq("workspace_id", workspaceId);
+    if (filesDelErr) {
+      throw new Error(
+        `nuke: vault_files delete failed: ${filesDelErr.message}`,
+      );
+    }
+    deletedFileCount = count ?? 0;
 
-  const { count: deletedFileCount, error: filesDelErr } = await supabase
-    .from("vault_files")
-    .delete({ count: "exact" })
-    .eq("workspace_id", workspaceId);
-  if (filesDelErr) {
-    throw new Error(`nuke: vault_files delete failed: ${filesDelErr.message}`);
+    for (let i = 0; i < storageObjects.length; i += STORAGE_REMOVE_BATCH) {
+      const chunk = storageObjects.slice(i, i + STORAGE_REMOVE_BATCH);
+      const { error: rmErr } = await supabase.storage
+        .from(VAULT_BLOBS_BUCKET)
+        .remove(chunk);
+      if (rmErr) {
+        // Rows are already gone — Storage failures here leave orphan
+        // ciphertext blobs (encrypted with the DEK we're about to drop).
+        // Better to surface the partial failure than to roll back deleted
+        // rows. Caller's audit_log still records the nuke attempt.
+        throw new Error(
+          `nuke: Storage remove batch (${i}-${i + chunk.length}) failed AFTER vault_files delete (rows gone, blobs orphaned): ${rmErr.message}`,
+        );
+      }
+    }
   }
 
   const { error: keysDelErr } = await supabase
