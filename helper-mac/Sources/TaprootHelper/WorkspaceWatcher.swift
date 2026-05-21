@@ -22,6 +22,15 @@ struct FileChangeEvent: Equatable {
 /// This preserves FIFO ordering with other main-queue work (a `Task { @MainActor }`
 /// would not).
 final class WorkspaceWatcher {
+    /// S83 — dotfolders that frequently hold credentials, secrets, version-
+    /// control history, or developer caches. Any FSEvent under one of these
+    /// names (anywhere in the path) is dropped before reaching `derive`.
+    static let sensitiveDotFolders: Set<String> = [
+        ".git", ".ssh", ".aws", ".gnupg", ".config", ".netrc",
+        ".kube", ".docker", ".npm", ".yarn", ".cache", ".gradle",
+        ".m2", ".cargo", ".rustup", ".nvm",
+    ]
+
     private let workspaceID: UUID
     private let folder: URL
     private let latency: TimeInterval
@@ -147,6 +156,11 @@ final class WorkspaceWatcher {
             // workspace state). Path-component compare — not substring — so
             // a sibling folder named "my.obsidian-notes" is NOT dropped.
             if url.pathComponents.contains(".obsidian") { continue }
+            // S83: refuse any event under a sensitive dotfolder so credentials,
+            // git history, SSH keys, etc. never reach the cloud mirror.
+            if url.pathComponents.contains(where: WorkspaceWatcher.sensitiveDotFolders.contains) {
+                continue
+            }
 
             if let event = watcher.derive(path: url, flag: flag) {
                 events.append(event)

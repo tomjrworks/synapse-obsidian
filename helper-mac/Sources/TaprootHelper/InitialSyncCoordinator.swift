@@ -222,6 +222,16 @@ actor InitialSyncCoordinator {
             if url.pathComponents.contains(".obsidian") {
                 continue
             }
+            // S83: refuse any file under a sensitive dotfolder (.git, .ssh,
+            // .aws, etc.). For directories, also skipDescendants so the
+            // enumerator doesn't waste cycles walking inside.
+            if url.pathComponents.contains(where: WorkspaceWatcher.sensitiveDotFolders.contains) {
+                if let resource = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+                   resource.isDirectory == true {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
 
             let resource: URLResourceValues
             do {
