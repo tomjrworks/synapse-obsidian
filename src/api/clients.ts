@@ -64,7 +64,7 @@ const CLIENTS: ClientDef[] = [
     label: "ChatGPT",
     path_type: "url-paste",
     instructions_md:
-      "Open ChatGPT → Custom GPTs → Add connector → paste this URL.",
+      "Open ChatGPT → Settings → Apps → Advanced settings → Create app → paste this URL.",
     screenshot_url: "/screenshots/connect/chatgpt.png",
   },
   {
