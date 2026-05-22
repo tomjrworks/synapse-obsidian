@@ -128,6 +128,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         _ = alert.runModal()
     }
+    /// 0.2.2 sandbox: test seam for the "couldn't bind to that folder" alert
+    /// presented when `confirmFirstRun` can't mint a security-scoped bookmark
+    /// from the picked URL (e.g. powerbox grant expired between pick and
+    /// confirm, or sandbox demoted at runtime). Default presents an NSAlert;
+    /// tests override to inspect copy without blocking on a modal.
+    var presentBookmarkBindError: @MainActor () -> Void = {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't bind Taproot to that folder"
+        alert.informativeText = "Pick the folder again from the welcome window. If it keeps failing, restart Taproot from the menu bar and try once more."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        _ = alert.runModal()
+    }
     /// S85 test seam — fires when `/revoke` fails or returns non-200 during
     /// `performSignOut`. Default presents an NSAlert; tests override to count
     /// invocations without blocking the run loop on a modal.
@@ -226,9 +240,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     vaultFolder: url
                 )
             },
-            defaultLocalFolderProvider: { [weak self] id, slug in
-                self?.defaultLocalFolder(for: id, slug: slug)
-                    ?? URL(fileURLWithPath: "/")
+            defaultLocalFolderProvider: { _, _ in
+                // 0.2.2: legacy ~/Documents/Taproot/<slug> auto-creation is
+                // retired (sandbox; the picker no longer pre-fills a folder
+                // it can read). This is only used as the FirstRunWindow's
+                // initial currentURL display — Get Started stays disabled
+                // until the user picks a real vault via NSOpenPanel.
+                URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
             }
         )
     }
@@ -293,7 +311,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         presentSettings = { [weak self] in
             guard let self else { return }
             if self.settingsWindowController == nil {
-                let url = self.workspaces.first?.localFolder
+                // 0.2.2 sandbox: thread the live handle's URL through so the
+                // Reveal-in-Finder path is downstream of an active
+                // start-access. The URL value is the same as localFolder, but
+                // routing through `vaultHandle.url` makes the dependency on a
+                // live handle explicit at the call site.
+                let url = self.workspaces.first?.vaultHandle?.url ?? self.workspaces.first?.localFolder
                 let interval = "\(self.pullIntervalMs / 1000)s"
                 let version = AppDelegate.resolveVersionLabel()
                 self.settingsWindowController = SettingsWindowController(
@@ -430,24 +453,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func loadWorkspacesFromKeychain() {
         do {
             let entries = try services.keychain.retrieveAll()
-            let loaded = entries.map { (id, bearer) -> Workspace in
+            var rehydrationFailures = 0
+            let loaded: [Workspace] = entries.compactMap { (id, bearer) -> Workspace? in
                 let storedName = settingsStore.workspaceName(for: id)
                 let nameValue = storedName ?? "Workspace"
-                let folderValue = settingsStore.vaultFolder(for: id)
-                    ?? defaultLocalFolder(for: id, slug: storedName.flatMap(Slug.from))
-                return Workspace(
-                    id: id,
-                    name: nameValue,
-                    bearer: bearer,
-                    // §5: canonicalize so prefix-comparison in SyncEngine.toOp
-                    // matches WorkspaceWatcher's already-canonicalized event paths.
-                    // `canonicalPath` uses realpath() so firmlinks (`/var` →
-                    // `/private/var` on macOS Catalina+) resolve, which
-                    // `resolvingSymlinksInPath()` alone does not.
-                    localFolder: folderValue.canonicalPath,
-                    lastSyncAt: loadLastSyncedAt(for: id),
-                    syncStatus: .idle
-                )
+                guard let bookmarkData = settingsStore.vaultBookmark(for: id) else {
+                    // Legacy pre-0.2.2 prefs path: consume + clear, drop the
+                    // workspace from the in-memory list so the menubar surfaces
+                    // "Sign in" instead of pretending a broken workspace is
+                    // alive. The Keychain bearer is left in place so a
+                    // future re-pair UX (0.3.x) can surface a one-click
+                    // resume; today the user signs in fresh.
+                    if let legacy = settingsStore.consumeLegacyVaultFolderPath(for: id) {
+                        NSLog("[Taproot] loadWorkspacesFromKeychain: dropping legacy unsandboxed vault path for \(id.uuidString) at \(legacy) — user must re-pair")
+                        rehydrationFailures += 1
+                    }
+                    return nil
+                }
+                do {
+                    let handle = try WorkspaceVaultHandle(bookmark: bookmarkData)
+                    if handle.isStale {
+                        NSLog("[Taproot] loadWorkspacesFromKeychain: stale bookmark for \(id.uuidString) — using anyway; re-mint is a 0.3.x follow-up")
+                    }
+                    return Workspace(
+                        id: id,
+                        name: nameValue,
+                        bearer: bearer,
+                        // §5: canonicalize so prefix-comparison in SyncEngine.toOp
+                        // matches WorkspaceWatcher's already-canonicalized event paths.
+                        // `canonicalPath` uses realpath() so firmlinks (`/var` →
+                        // `/private/var` on macOS Catalina+) resolve, which
+                        // `resolvingSymlinksInPath()` alone does not.
+                        localFolder: handle.url.canonicalPath,
+                        lastSyncAt: loadLastSyncedAt(for: id),
+                        syncStatus: .idle,
+                        vaultHandle: handle
+                    )
+                } catch {
+                    NSLog("[Taproot] loadWorkspacesFromKeychain: bookmark resolve failed for \(id.uuidString): \(error) — user must re-pair")
+                    rehydrationFailures += 1
+                    return nil
+                }
             }
             mutateWorkspaces { $0 = loaded }
             // Seed cursors from UserDefaults so the first pull tick after
@@ -458,30 +504,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     pullCursors[ws.id] = c
                 }
             }
-            NSLog("[Taproot] Loaded \(workspaces.count) workspace(s) from Keychain")
+            NSLog("[Taproot] Loaded \(workspaces.count) workspace(s) from Keychain; \(rehydrationFailures) needed re-pair")
         } catch {
             NSLog("[Taproot] Keychain retrieveAll failed: \(error)")
             mutateWorkspaces { $0 = [] }
         }
-    }
-
-    func defaultLocalFolder(for workspaceID: UUID, slug: String? = nil) -> URL {
-        // Post-B (Obsidian-required pivot): no longer the production path for
-        // *new* connects — FirstRunWindowController auto-detects the user's
-        // Obsidian vault via ObsidianVaultResolver. Retained as the
-        // fallback for `loadWorkspacesFromKeychain` when a stored
-        // vaultFolder is missing (legacy ~/Documents/Taproot/<slug>
-        // workspaces still resolve here until the user re-pairs).
-        // `TAPROOT_LOCAL_FOLDER_BASE` is a smoke-test seam (T11.3 §7); inert in
-        // production unless set, in which case the base directory is rooted
-        // wherever the smoke driver chose. Always logged at launch via the
-        // surrounding callers' workspace-load NSLog.
-        let base = ProcessInfo.processInfo.environment["TAPROOT_LOCAL_FOLDER_BASE"]
-            .flatMap { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        let leaf = slug ?? workspaceID.uuidString
-        return base.appendingPathComponent("Taproot/\(leaf)")
     }
 
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
@@ -756,8 +783,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// background Task that survives this method's return.
     func confirmFirstRun(workspaceID: UUID, bearer: String, name: String, vaultFolder: URL) {
         settingsStore.setWorkspaceName(name, for: workspaceID)
-        settingsStore.setVaultFolder(vaultFolder, for: workspaceID)
-        let canonical = vaultFolder.canonicalPath
+        // 0.2.2 sandbox: mint a security-scoped bookmark from the picked URL
+        // BEFORE any further state changes. Without this, the helper can't
+        // read or write the vault folder on its next launch (and may lose
+        // access mid-launch once the powerbox grant on the URL handle
+        // expires). Mint failure is unrecoverable for this pick — surface
+        // the alert and leave the FirstRunWindow open so the user can pick
+        // a different folder via "Choose another folder…" and try again.
+        let bookmark: Data
+        let handle: WorkspaceVaultHandle
+        do {
+            bookmark = try WorkspaceVaultHandle.mintBookmark(for: vaultFolder)
+            handle = try WorkspaceVaultHandle(bookmark: bookmark)
+        } catch {
+            NSLog("[Taproot] confirmFirstRun: failed to bind vault folder at \(vaultFolder.path): \(error)")
+            presentBookmarkBindError()
+            return
+        }
+        settingsStore.setVaultBookmark(bookmark, for: workspaceID)
+        let canonical = handle.url.canonicalPath
         // F0: migrate legacy `.synapse/` → `.taproot/` BEFORE startWatcher
         // attaches FSEvents to this vault. Same rationale as the launch-time
         // pass in applicationDidFinishLaunching; idempotent.
@@ -772,7 +816,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bearer: bearer,
             localFolder: canonical,
             lastSyncAt: loadLastSyncedAt(for: workspaceID),
-            syncStatus: .idle
+            syncStatus: .idle,
+            vaultHandle: handle
         )
         // C1: dedup against rapid double-confirm (double-click "Get started"
         // before the window dismisses, or two presentFirstRun Tasks racing
@@ -889,7 +934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("[Taproot] cancelFirstRun: keychain delete failed: \(error)")
         }
         settingsStore.clearWorkspaceName(for: workspaceID)
-        settingsStore.clearVaultFolder(for: workspaceID)
+        settingsStore.clearVaultBookmark(for: workspaceID)
         NSLog("[Taproot] First-run cancelled for \(workspaceID.uuidString)")
     }
 
@@ -941,7 +986,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clearCursor(for: workspaceID)
             settingsStore.clearPausedOnLaunch(for: workspaceID)
             settingsStore.clearWorkspaceName(for: workspaceID)
-            settingsStore.clearVaultFolder(for: workspaceID)
+            settingsStore.clearVaultBookmark(for: workspaceID)
             NSLog("[Taproot] Signed out workspace \(workspaceID.uuidString)")
         } catch {
             NSLog("[Taproot] signOut failed: \(error)")
@@ -1572,11 +1617,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Cursor persistence (UserDefaults)
 
-    /// Test seam matching `TAPROOT_BASE_URL` / `TAPROOT_KEYCHAIN_SERVICE` /
-    /// `TAPROOT_LOCAL_FOLDER_BASE`: when set, both cursor + settings
-    /// persistence route through `UserDefaults(suiteName:)` so the E2E
-    /// smoke can read shipped state via `defaults read <suite> ...` without
-    /// polluting the global domain. Inert in production unless set.
+    /// Test seam matching `TAPROOT_BASE_URL` / `TAPROOT_KEYCHAIN_SERVICE`:
+    /// when set, both cursor + settings persistence route through
+    /// `UserDefaults(suiteName:)` so the E2E smoke can read shipped state via
+    /// `defaults read <suite> ...` without polluting the global domain.
+    /// Inert in production unless set.
     private func taprootDefaults() -> UserDefaults {
         if let suite = ProcessInfo.processInfo.environment["TAPROOT_USERDEFAULTS_SUITE"],
            !suite.isEmpty,

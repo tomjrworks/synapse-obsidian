@@ -44,24 +44,46 @@ struct SettingsStore {
         defaults.removeObject(forKey: "taproot.workspaceName.\(id.uuidString)")
     }
 
-    func vaultFolder(for id: UUID) -> URL? {
-        guard let stored = defaults.string(forKey: "taproot.vaultFolder.\(id.uuidString)") else {
-            return nil
+    private func bookmarkKey(_ id: UUID) -> String {
+        "taproot.vaultBookmark.\(id.uuidString)"
+    }
+
+    private func legacyVaultFolderKey(_ id: UUID) -> String {
+        "taproot.vaultFolder.\(id.uuidString)"
+    }
+
+    /// Returns the persisted security-scoped bookmark blob for this workspace,
+    /// or nil if never set. Pre-0.2.2 prefs that contain only the legacy
+    /// `taproot.vaultFolder.<uuid>` path string return nil here — see
+    /// `consumeLegacyVaultFolderPath`.
+    func vaultBookmark(for id: UUID) -> Data? {
+        defaults.data(forKey: bookmarkKey(id))
+    }
+
+    func setVaultBookmark(_ data: Data, for id: UUID) {
+        defaults.set(data, forKey: bookmarkKey(id))
+        // Best-effort cleanup of the legacy path-string key on every bookmark
+        // write so a future helper version that drops the legacy reader entirely
+        // never sees stale data.
+        defaults.removeObject(forKey: legacyVaultFolderKey(id))
+    }
+
+    func clearVaultBookmark(for id: UUID) {
+        defaults.removeObject(forKey: bookmarkKey(id))
+        defaults.removeObject(forKey: legacyVaultFolderKey(id))
+    }
+
+    /// Read-and-clear the legacy pre-0.2.2 path-string vault folder. Returns
+    /// the stored path if present, removing the key as a side effect. Used by
+    /// the rehydration path at launch to detect workspaces that paired before
+    /// security-scoped bookmark persistence shipped, so AppDelegate can drop
+    /// the in-memory workspace and surface a re-pair prompt.
+    func consumeLegacyVaultFolderPath(for id: UUID) -> String? {
+        let key = legacyVaultFolderKey(id)
+        let value = defaults.string(forKey: key)
+        if value != nil {
+            defaults.removeObject(forKey: key)
         }
-        // N10: read via URL(fileURLWithPath:) so a corrupted or injected
-        // UserDefaults value (e.g., http://) is coerced into a file URL with
-        // a junk path rather than ever returning a non-file URL to the
-        // AppDelegate (which would feed it into FSEventStream / NSWorkspace).
-        return URL(fileURLWithPath: stored)
-    }
-
-    func setVaultFolder(_ url: URL, for id: UUID) {
-        // Pair with vaultFolder's URL(fileURLWithPath:) read by storing the
-        // raw filesystem path. Round-trip preserves the file:// URL.
-        defaults.set(url.path, forKey: "taproot.vaultFolder.\(id.uuidString)")
-    }
-
-    func clearVaultFolder(for id: UUID) {
-        defaults.removeObject(forKey: "taproot.vaultFolder.\(id.uuidString)")
+        return value
     }
 }

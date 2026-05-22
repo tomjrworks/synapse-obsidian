@@ -1,17 +1,22 @@
 import AppKit
 
-/// Welcome window shown on first connect. The vault is now sourced from the
-/// user's Obsidian config (B): the controller's `enterInitialState` reads
-/// `obsidian.json` and either pre-selects a vault, gates on missing-Obsidian,
-/// or polls for a brand-new install. The legacy single-default UX is preserved
-/// as the fallback after a manual NSOpenPanel pick — that path still routes
-/// through `applyChosenFolder`.
+/// Welcome window shown on first connect.
 ///
-/// `init` does NOT auto-detect. Production wiring calls `enterInitialState()`
-/// after construction (so seams can be overridden in tests). The pre-existing
-/// public surface — `handleCancel`, `handleGetStarted`, `applyChosenFolder`,
-/// `currentURL`, `isInConflict`, `isGetStartedEnabled`, `checkConflict` —
-/// is unchanged.
+/// 0.2.2 sandbox rewrite: the auto-detect / poll-for-vault-creation flow
+/// (read `obsidian.json` to pre-select a known vault) is retired. The App
+/// Sandbox blocks reads of `~/Library/Application Support/obsidian/` without
+/// either an XPC service or a user-granted NSOpenPanel pre-flight, both
+/// multi-day projects. For 0.2.2 the picker has exactly two top-level
+/// states: "Obsidian not installed" (gate the flow) and "Manual pick only"
+/// (NSOpenPanel for the vault folder). The user-pick path stays the same
+/// — `applyChosenFolder` validates the `.obsidian/` marker + conflict
+/// check, and Get Started fires `onConfirm` with the picked URL.
+///
+/// `init` does NOT call the install-check. Production wiring calls
+/// `enterInitialState()` after construction (so seams can be overridden in
+/// tests). The public surface — `handleCancel`, `handleGetStarted`,
+/// `applyChosenFolder`, `currentURL`, `isInConflict`, `isGetStartedEnabled`,
+/// `checkConflict` — is unchanged.
 @MainActor
 final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     let workspaceID: UUID
@@ -36,11 +41,9 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     private(set) var initialSyncProgress: InitialSyncCoordinator.Progress?
 
     /// The picker's current top-level state. Drives which content view is
-    /// rendered when `enterInitialState` runs.
+    /// rendered when `enterInitialState` runs. 0.2.2 sandbox: two states only.
     enum PickerState: Equatable {
         case obsidianNotInstalled
-        case pickingFromList(vaults: [DetectedVault], selectedID: String?)
-        case waitingForVaultCreation(elapsed: TimeInterval)
         case manualPickOnly
     }
 
@@ -49,14 +52,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - test seams
 
     var checkConflict: (URL) -> Bool = { ObsidianSyncCheck.hasConflict(at: $0) }
-    var resolver: () -> [DetectedVault] = { ObsidianVaultResolver.detect() }
     var isObsidianInstalled: () -> Bool = { ObsidianAppDetector.isInstalled() }
-    /// Open Obsidian; pass a vault URL to deep-link Obsidian to that folder
-    /// as a registered vault (`obsidian://open?path=...`). Pass nil to fall
-    /// back to bare `obsidian://`. The waitingForVaultCreation button passes
-    /// nil because the user is being prompted to create a vault — no
-    /// committed vault path yet. Tests can override the seam to capture the
-    /// passed URL?.
     var openObsidian: (URL?) -> Void = { ObsidianAppDetector.openObsidian(at: $0) }
     var openDownloadPage: () -> Void = {
         if let url = URL(string: "https://obsidian.md/download") {
@@ -72,9 +68,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         )
         return exists && isDir.boolValue
     }
-    /// Seam for the poll loop — production fires every 2s up to 5 min via Task.
-    /// Tests inject a synchronous closure to drive transitions deterministically.
-    var startPolling: ((@escaping () -> Void) -> Void)? = nil
 
     // MARK: - view refs
 
@@ -83,8 +76,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     private weak var markerWarning: NSTextField?
     private weak var getStartedButton: NSButton?
 
-    private var pollTask: Task<Void, Never>?
-
     init(workspaceID: UUID, bearer: String, workspaceName: String, defaultFolderURL: URL,
          onCancel: @escaping (UUID) -> Void,
          onConfirm: @escaping (UUID, String, URL) -> Void) {
@@ -92,10 +83,12 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         self.bearer = bearer
         self.workspaceName = workspaceName
         // The defaultFolderURL parameter is retained for binary-compat with
-        // FirstRunCoordinator's makeFirstRunWindow factory (Option A from the
-        // workstream-B plan §6). It seeds `currentURL` so legacy public-API
-        // callers that bypass `enterInitialState` still see a sensible value;
-        // production rewrites this once auto-detect lands on a vault.
+        // FirstRunCoordinator's makeFirstRunWindow factory. It seeds
+        // `currentURL` as a cosmetic initial value for the pathLabel; the
+        // user MUST pick a real vault via NSOpenPanel before Get Started
+        // enables (transition(to: .manualPickOnly) sets isGetStartedEnabled
+        // = false; applyChosenFolder re-enables it only after a successful
+        // marker + conflict check).
         self.currentURL = defaultFolderURL
         self.onCancel = onCancel
         self.onConfirm = onConfirm
@@ -119,7 +112,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
 
     func handleCancel() {
         didFinish = true
-        pollTask?.cancel()
         onCancel(workspaceID)
         window?.close()
     }
@@ -133,7 +125,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         // window. If the user closes the window during sync, didFinish stays
         // false and `windowWillClose` fires `onCancel` so AppDelegate can
         // unwind the partially-paired workspace.
-        pollTask?.cancel()
+        //
         // Seed an indeterminate ".walking" progress so the UI flips into the
         // sync state immediately — otherwise there's a perceptible blank
         // window between click and the first real progress callback.
@@ -142,9 +134,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         onConfirm(workspaceID, bearer, currentURL)
     }
 
-    /// True while the initial-sync run is queued or in flight. Drives the
-    /// Cancel-vs-Retry vs Get-Started button rendering and disables the
-    /// existing Cancel button from re-firing.
     var isSyncing: Bool {
         guard let p = initialSyncProgress else { return false }
         switch p.phase {
@@ -153,33 +142,22 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// True only after AppDelegate's initial-sync Task reports `.failed`.
-    /// Drives the retry button.
     var showsInitialSyncRetry: Bool {
         guard let p = initialSyncProgress else { return false }
         if case .failed = p.phase { return true }
         return false
     }
 
-    /// Called by AppDelegate to push a progress update into the controller.
-    /// MUST be called on the main actor.
     func setInitialSyncProgress(_ progress: InitialSyncCoordinator.Progress) {
         initialSyncProgress = progress
         rebuildContentView()
     }
 
-    /// Called by AppDelegate after a successful initial-sync run. Sets the
-    /// internal "user finished" flag so `windowWillClose` doesn't fire
-    /// `onCancel`, then closes the window.
     func dismissAfterInitialSync() {
         didFinish = true
-        pollTask?.cancel()
         window?.close()
     }
 
-    /// Retry button handler — re-fires onConfirm so AppDelegate can rerun the
-    /// initial-sync coordinator. Workspace is already added; AppDelegate's
-    /// dedup guard makes the re-append a no-op.
     @objc func handleRetryInitialSync() {
         guard showsInitialSyncRetry else { return }
         initialSyncProgress = .init(synced: 0, total: 0, phase: .walking)
@@ -188,7 +166,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        pollTask?.cancel()
         if !didFinish {
             onCancel(workspaceID)
         }
@@ -215,48 +192,20 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - state machine entry
 
-    /// Runs the auto-detect logic and transitions to the appropriate state.
-    /// Production calls this after construction; tests call it after
-    /// overriding seams. Idempotent — calling twice re-enters from scratch
-    /// (used by the "I've installed it" recheck button).
+    /// Drops into the install-gated picker. Production calls this after
+    /// construction; tests call it after overriding seams. Idempotent —
+    /// calling twice re-enters from scratch (used by the "I've installed it"
+    /// recheck button).
+    ///
+    /// 0.2.2 sandbox: no polling, no resolver. If Obsidian isn't installed
+    /// the user gates on installing it; otherwise the picker is immediately
+    /// in manual-pick mode and waits for an NSOpenPanel selection.
     func enterInitialState() {
-        pollTask?.cancel()
-        pollTask = nil
-
         guard isObsidianInstalled() else {
             transition(to: .obsidianNotInstalled)
             return
         }
-        let detected = resolver()
-        if detected.isEmpty {
-            transition(to: .waitingForVaultCreation(elapsed: 0))
-            beginPolling()
-        } else {
-            transition(to: .pickingFromList(vaults: detected, selectedID: detected.first?.id))
-        }
-    }
-
-    /// Test entry point: drive a single poll tick.
-    func pollTick(elapsed: TimeInterval) {
-        if elapsed >= 300 {
-            transition(to: .manualPickOnly)
-            pollTask?.cancel()
-            return
-        }
-        let detected = resolver()
-        if !detected.isEmpty {
-            pollTask?.cancel()
-            transition(to: .pickingFromList(vaults: detected, selectedID: detected.first?.id))
-        } else {
-            transition(to: .waitingForVaultCreation(elapsed: elapsed))
-        }
-    }
-
-    func selectVault(id: String) {
-        guard case .pickingFromList(let vaults, _) = pickerState else { return }
-        guard let v = vaults.first(where: { $0.id == id }) else { return }
-        transition(to: .pickingFromList(vaults: vaults, selectedID: id))
-        applyChosenFolder(v.path)
+        transition(to: .manualPickOnly)
     }
 
     private func transition(to state: PickerState) {
@@ -264,36 +213,11 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         switch state {
         case .obsidianNotInstalled:
             isGetStartedEnabled = false
-        case .pickingFromList(let vaults, let selectedID):
-            if let id = selectedID, let v = vaults.first(where: { $0.id == id }) {
-                applyChosenFolder(v.path)
-            } else {
-                isGetStartedEnabled = false
-            }
-        case .waitingForVaultCreation:
-            isGetStartedEnabled = false
         case .manualPickOnly:
             // Get-started stays disabled until applyChosenFolder lands a real path.
             isGetStartedEnabled = false
         }
         rebuildContentView()
-    }
-
-    private func beginPolling() {
-        if let custom = startPolling {
-            custom { [weak self] in self?.pollTask?.cancel() }
-            return
-        }
-        let started = Date()
-        pollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if Task.isCancelled { return }
-                self?.pollTick(elapsed: Date().timeIntervalSince(started))
-                if case .pickingFromList = self?.pickerState { return }
-                if case .manualPickOnly = self?.pickerState { return }
-            }
-        }
     }
 
     // MARK: - view actions
@@ -316,13 +240,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
     @objc private func iveInstalledClicked(_ sender: NSButton) { enterInitialState() }
     @objc private func openObsidianClicked(_ sender: NSButton) { openObsidian(nil) }
     @objc private func openDownloadClicked(_ sender: NSButton) { openDownloadPage() }
-    @objc private func manualPickClicked(_ sender: NSButton) {
-        transition(to: .manualPickOnly)
-        changeClicked(sender)
-    }
-    @objc private func vaultRowSelected(_ sender: NSButton) {
-        selectVault(id: sender.identifier?.rawValue ?? "")
-    }
     @objc private func retryClicked(_ sender: NSButton) { handleRetryInitialSync() }
 
     // MARK: - view construction
@@ -360,10 +277,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         switch pickerState {
         case .obsidianNotInstalled:
             buildObsidianMissingState(into: stack)
-        case .pickingFromList(let vaults, let selectedID):
-            buildPickingFromListState(vaults: vaults, selectedID: selectedID, into: stack)
-        case .waitingForVaultCreation(let elapsed):
-            buildWaitingState(elapsed: elapsed, into: stack)
         case .manualPickOnly:
             buildManualPickState(into: stack)
         }
@@ -393,48 +306,6 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
         installed.bezelStyle = .rounded
         installed.keyEquivalent = "\r"
         let row = NSStackView(views: [cancel, download, installed])
-        row.spacing = 8
-        stack.addArrangedSubview(row)
-    }
-
-    private func buildPickingFromListState(vaults: [DetectedVault], selectedID: String?, into stack: NSStackView) {
-        let body = NSTextField(labelWithString: "Pick a vault to connect:")
-        stack.addArrangedSubview(body)
-
-        for v in vaults {
-            let row = NSButton(radioButtonWithTitle: v.path.path, target: self, action: #selector(vaultRowSelected(_:)))
-            row.identifier = NSUserInterfaceItemIdentifier(v.id)
-            row.state = (v.id == selectedID) ? .on : .off
-            // §3a S1.1: full-path label, no truncation. NSButton radio titles
-            // wrap by default with multi-line behavior at this width.
-            stack.addArrangedSubview(row)
-        }
-
-        let path = NSTextField(wrappingLabelWithString: currentURL.path)
-        path.maximumNumberOfLines = 0
-        path.lineBreakMode = .byCharWrapping
-        pathLabel = path
-
-        addCommonRows(into: stack, includeChange: true)
-    }
-
-    private func buildWaitingState(elapsed: TimeInterval, into stack: NSStackView) {
-        let body = NSTextField(wrappingLabelWithString:
-            "Open Obsidian and create a vault — Taproot will pick it up automatically.")
-        stack.addArrangedSubview(body)
-
-        let elapsedLabel = NSTextField(labelWithString:
-            "Waiting… \(Int(elapsed))s / 5 min")
-        elapsedLabel.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(elapsedLabel)
-
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked(_:)))
-        cancel.bezelStyle = .rounded
-        let openObs = NSButton(title: "Open Obsidian", target: self, action: #selector(openObsidianClicked(_:)))
-        openObs.bezelStyle = .rounded
-        let pickManual = NSButton(title: "Pick folder manually", target: self, action: #selector(manualPickClicked(_:)))
-        pickManual.bezelStyle = .rounded
-        let row = NSStackView(views: [cancel, openObs, pickManual])
         row.spacing = 8
         stack.addArrangedSubview(row)
     }
@@ -507,7 +378,7 @@ final class FirstRunWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildManualPickState(into stack: NSStackView) {
         let body = NSTextField(wrappingLabelWithString:
-            "Couldn't auto-detect an Obsidian vault. Pick the folder where Obsidian saved your vault.")
+            "Pick the folder where Obsidian saves your vault.")
         stack.addArrangedSubview(body)
 
         let path = NSTextField(wrappingLabelWithString: currentURL.path)

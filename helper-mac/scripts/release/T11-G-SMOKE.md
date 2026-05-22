@@ -10,6 +10,24 @@ SHIPPED on prod R2.
 is skipped; Rosetta-on-Apple-Silicon is used as a partial proxy. Document
 the gap in the sign-off footer.
 
+> ## Mandatory gates before notarize (operationalized lessons)
+>
+> 1. **Any change to `Sources/` requires step T11-G.PAIR** (fresh-pair → first
+>    heartbeat → relaunch → second heartbeat) on the built `.app` BEFORE
+>    `notarize.sh --dmg`. The standing "permission boundary" smoke at the
+>    bottom of this doc passes against a `TAPROOT_LOCAL_FOLDER_BASE`-rooted
+>    test vault and won't catch pair-and-sync regressions like 0.2.1's
+>    sandbox-without-bookmark bug. T11-G.PAIR exercises the real
+>    NSOpenPanel → bookmark mint → `WorkspaceVaultHandle` → first-run sync
+>    path end-to-end.
+> 2. **Any entitlements-file or sandbox-related change additionally requires
+>    AMFI live-launch verification** — `codesign -d --entitlements -` is
+>    static introspection and does NOT exercise AMFI. Only an actual launch
+>    does. Per 0.2.1 hotfix retro (keychain-access-groups + Developer ID):
+>    `open built.app && pgrep TaprootHelper` must succeed before submitting
+>    the DMG to notarytool. If pgrep returns empty, `Console.app` will show
+>    `AMFI: ... No matching profile found` or similar — fix and rebuild.
+
 ---
 
 ## Step 0 — Verify PRODUCT server is on current main commit
@@ -281,6 +299,99 @@ Minimum:
 
 Any regression here is a P0 — universal binary must not break the existing
 arm64 ship path.
+
+---
+
+## Step 8b — T11-G.PAIR (sandbox pair-and-sync smoke) — MANDATORY for any Sources/ change
+
+Operationalized 2026-05-21 after the 0.2.1 helper-pair-regression incident
+(sandbox shipped without security-scoped bookmark plumbing → 0 callers across
+the entire helper-mac codebase → fresh-pair stuck at "5 min" waiting screen,
+no async.log entries, no menubar heartbeat). The permission-boundary smoke
+already in this doc passes regardless of this regression because it uses
+`TAPROOT_LOCAL_FOLDER_BASE` rather than going through `FirstRunWindowController`
+
+- NSOpenPanel + bookmark mint. T11-G.PAIR is the gap-closing step.
+
+Pre-flight: install the built DMG on a clean account (or nuke
+`~/Library/Containers/com.taproot.helper`, `com.taproot.helper.plist`, and
+the keychain entries — `security delete-generic-password -s "com.taproot.helper" -A`
+for each existing workspace bearer).
+
+1. **Pre-state assertion:** no workspaces in keychain, no bookmark prefs.
+
+   ```bash
+   defaults read com.taproot.helper 2>/dev/null | grep -E "vaultBookmark|vaultFolder" \
+       && echo "FAIL: stale bookmark/legacy prefs present" \
+       || echo "Clean prefs ✓"
+   security find-generic-password -s "com.taproot.helper" 2>&1 \
+       | grep -E "password|attributes" \
+       && echo "FAIL: stale keychain entries" \
+       || echo "Clean keychain ✓"
+   ```
+
+2. **Launch + observe initial picker state.** Open the helper. Sign in via
+   the deep-link/pair flow. FirstRunWindow appears. Assert by reading the
+   window state directly OR by visual inspection:
+   - State MUST be `.manualPickOnly` (or `.obsidianNotInstalled` if Obsidian
+     isn't installed). The string `Waiting… 0s / 5 min` MUST NOT appear.
+   - The window title is "Welcome to Taproot" with the body "Pick the folder
+     where Obsidian saves your vault."
+
+3. **Pick a real Obsidian vault** via NSOpenPanel (Choose another folder…
+   button). The window's path label updates to the picked folder's full path,
+   the conflict + marker warnings stay hidden, and the Get Started button
+   becomes enabled.
+
+4. **Click Get Started.** Within ~10s the window flips to the sync progress
+   UI ("Syncing your vault to the cloud" + progress bar + N/M counter).
+   The window dismisses on completion.
+
+5. **Pref + keychain assertions** (right after the window dismisses):
+
+   ```bash
+   # Workspace ID is the UUID embedded in the bookmark key. Replace <ws-id>
+   # below by inspecting `defaults read com.taproot.helper | grep vaultBookmark`.
+   defaults read com.taproot.helper | grep "vaultBookmark"
+   # Expected: at least one key matching taproot.vaultBookmark.<uuid>
+   # whose value is a non-empty `<data>` blob.
+
+   defaults read com.taproot.helper | grep "vaultFolder"
+   # Expected: NO output. Legacy path-string key must never be written.
+
+   security find-generic-password -s "com.taproot.helper" -a "<ws-id>" -g 2>&1 \
+       | grep "password:"
+   # Expected: password: "<bearer-string>"
+   ```
+
+6. **Heartbeat assertion** within 60s of Get Started: the menubar status
+   line for this workspace must read `Synced · <time>` (not `Paused`, not
+   `Syncing…`, and absolutely not stuck on the welcome window).
+
+7. **Quit + relaunch.** From the menubar, Quit. Wait ~3s. Open the helper
+   again (double-click the DMG-installed `.app`).
+   - The workspace MUST rehydrate (menubar shows it).
+   - Within 60s of relaunch a second `Synced · <time>` must appear (proves
+     the persisted bookmark resolves on launch and the
+     `WorkspaceVaultHandle` keeps the path readable across process
+     restarts — this is the step that catches a broken bookmark-persistence
+     shape, which step 6's first heartbeat does not).
+
+8. **Edit a file in the vault** (e.g., create `test.md` in the picked
+   folder). Within 30s the menubar must flip to `Syncing…` then back to
+   `Synced · <new-time>`. PRODUCT vault should reflect the new file.
+
+**Fail mode handling.** If any of steps 4-8 hang or error:
+
+- Check `~/Library/Logs/TaprootHelper/async.log` (or the equivalent
+  Sentry breadcrumbs in `Console.app` for `TaprootHelper`) for
+  bookmark-mint failures, `startAccessingSecurityScopedResource` returning
+  false, or sandbox-denied file IO errors.
+- Verify `codesign -d --entitlements -` on the installed `.app` lists
+  the 4 sandbox keys (`app-sandbox`, `network.client`,
+  `files.user-selected.read-write`, `files.bookmarks.app-scope`) and
+  does NOT list `keychain-access-groups` (the latter triggers AMFI -413
+  on Sparkle auto-update for Developer ID-distributed sandbox apps).
 
 ---
 

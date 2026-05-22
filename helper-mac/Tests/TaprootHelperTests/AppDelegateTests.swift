@@ -348,8 +348,26 @@ final class AppDelegateTests: XCTestCase {
     func testLoadWorkspacesFromKeychain() throws {
         let id1 = UUID()
         let id2 = UUID()
+        defer { cleanSettingsDefaults(for: id1) }
+        defer { cleanSettingsDefaults(for: id2) }
+        let folder1 = try makeTempFolder()
+        let folder2 = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder1) }
+        defer { try? FileManager.default.removeItem(at: folder2) }
         try keychain.store(workspaceID: id1, bearer: "bearer-1")
         try keychain.store(workspaceID: id2, bearer: "bearer-2")
+        // 0.2.2 sandbox: seed real bookmarks for both workspaces so rehydration
+        // succeeds. Without a bookmark, loadWorkspacesFromKeychain drops the
+        // workspace from the in-memory list (legacy defaultLocalFolder
+        // fallback retired).
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder1),
+            forKey: "taproot.vaultBookmark.\(id1.uuidString)"
+        )
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder2),
+            forKey: "taproot.vaultBookmark.\(id2.uuidString)"
+        )
 
         // Fresh delegate sharing the same keychain (simulates app relaunch).
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
@@ -363,8 +381,22 @@ final class AppDelegateTests: XCTestCase {
     func testStartAllWatchersStartsOnePerLoadedWorkspace() throws {
         let id1 = UUID()
         let id2 = UUID()
+        defer { cleanSettingsDefaults(for: id1) }
+        defer { cleanSettingsDefaults(for: id2) }
+        let folder1 = try makeTempFolder()
+        let folder2 = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder1) }
+        defer { try? FileManager.default.removeItem(at: folder2) }
         try keychain.store(workspaceID: id1, bearer: "bearer-1")
         try keychain.store(workspaceID: id2, bearer: "bearer-2")
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder1),
+            forKey: "taproot.vaultBookmark.\(id1.uuidString)"
+        )
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder2),
+            forKey: "taproot.vaultBookmark.\(id2.uuidString)"
+        )
 
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
@@ -374,8 +406,6 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertNotNil(freshApp.watchers[id1])
         XCTAssertNotNil(freshApp.watchers[id2])
 
-        // Cleanup: stop watchers (defaultLocalFolder paths likely don't exist,
-        // so they're idle no-ops, but stop() is still required for tidy teardown).
         freshApp.watchers.values.forEach { $0.stop() }
     }
 
@@ -490,6 +520,7 @@ final class AppDelegateTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
         UserDefaults.standard.removeObject(forKey: "taproot.workspaceName.\(id.uuidString)")
         UserDefaults.standard.removeObject(forKey: "taproot.vaultFolder.\(id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "taproot.vaultBookmark.\(id.uuidString)")
     }
 
     /// T11.7 fixup: routes the new-workspace branch of handleAuthURL through
@@ -1007,9 +1038,15 @@ final class AppDelegateTests: XCTestCase {
 
     func testApplicationDidFinishLaunchingResumesPausedWorkspaceAsPaused() throws {
         let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
         try keychain.store(workspaceID: id, bearer: "bearer-paused")
         UserDefaults.standard.set(true, forKey: "taproot.pausedOnLaunch.\(id.uuidString)")
-        defer { cleanSettingsDefaults(for: id) }
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder),
+            forKey: "taproot.vaultBookmark.\(id.uuidString)"
+        )
 
         // Fresh delegate sharing the same keychain (simulates app relaunch).
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
@@ -1421,31 +1458,26 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(v, "dev")
     }
 
-    func testDefaultLocalFolderUsesSlugWhenProvided() {
-        let id = UUID()
-        let url = app.defaultLocalFolder(for: id, slug: "toms-vault")
-        XCTAssertTrue(
-            url.path.hasSuffix("Taproot/toms-vault"),
-            "expected suffix Taproot/toms-vault, got \(url.path)"
-        )
-    }
-
-    func testDefaultLocalFolderFallsBackToUUIDWhenSlugNil() {
-        let id = UUID()
-        let url = app.defaultLocalFolder(for: id, slug: nil)
-        XCTAssertTrue(
-            url.path.hasSuffix("Taproot/\(id.uuidString)"),
-            "expected suffix Taproot/<uuid>, got \(url.path)"
-        )
-    }
+    // 0.2.2 sandbox: AppDelegate.defaultLocalFolder + its tests deleted.
+    // The auto-created ~/Documents/Taproot/<slug> path is retired because a
+    // sandboxed helper has no read access to that location without a
+    // security-scoped bookmark. The FirstRunCoordinator's slot for a default
+    // URL still exists (initial picker display) but now returns a static
+    // placeholder; the user must pick a real vault via NSOpenPanel.
 
     // MARK: - T11.7 read-side wiring (commit 3)
 
     func testLoadWorkspacesFromKeychainReadsNameFromSettingsStore() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
         try keychain.store(workspaceID: id, bearer: "x")
         UserDefaults.standard.set("My Vault", forKey: "taproot.workspaceName.\(id.uuidString)")
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder),
+            forKey: "taproot.vaultBookmark.\(id.uuidString)"
+        )
 
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
@@ -1456,7 +1488,13 @@ final class AppDelegateTests: XCTestCase {
     func testLoadWorkspacesFromKeychainFallsBackToWorkspaceWhenNameMissing() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
         try keychain.store(workspaceID: id, bearer: "x")
+        UserDefaults.standard.set(
+            try WorkspaceVaultHandle.mintBookmark(for: folder),
+            forKey: "taproot.vaultBookmark.\(id.uuidString)"
+        )
 
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
@@ -1464,30 +1502,61 @@ final class AppDelegateTests: XCTestCase {
         XCTAssertEqual(freshApp.workspaces.first?.name, "Workspace")
     }
 
-    func testLoadWorkspacesFromKeychainReadsFolderFromSettingsStore() throws {
+    /// 0.2.2 sandbox: workspaces rehydrate from a security-scoped bookmark
+    /// stored under `taproot.vaultBookmark.<uuid>`. Mint a real bookmark from
+    /// a tmp folder, persist it, then assert the rehydrated Workspace
+    /// resolves to the same path AND carries a live `vaultHandle`.
+    func testLoadWorkspacesFromKeychainRehydratesFromBookmark() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
-        let folder = URL(fileURLWithPath: "/tmp/xyz")
-        // N10: SettingsStore.setVaultFolder stores `url.path`; pre-seed the
-        // raw filesystem path the same way so vaultFolder's
-        // URL(fileURLWithPath:) read round-trips correctly.
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let bookmark = try WorkspaceVaultHandle.mintBookmark(for: folder)
+        UserDefaults.standard.set(bookmark, forKey: "taproot.vaultBookmark.\(id.uuidString)")
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        XCTAssertEqual(freshApp.workspaces.count, 1)
+        XCTAssertEqual(
+            freshApp.workspaces.first?.localFolder.path,
+            folder.canonicalPath.path
+        )
+        XCTAssertNotNil(freshApp.workspaces.first?.vaultHandle,
+                        "Rehydrated workspace must carry a live security-scoped handle")
+    }
+
+    /// 0.2.2 sandbox: legacy pre-0.2.2 prefs (path-string under
+    /// `taproot.vaultFolder.<uuid>` with NO bookmark) drop the workspace from
+    /// the in-memory list AND consume + clear the legacy key. The user
+    /// re-pairs via a fresh sign-in.
+    func testLoadWorkspacesFromKeychainDropsLegacyPathStringAndClearsKey() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
         UserDefaults.standard.set(
-            folder.path,
+            "/tmp/legacy-vault",
             forKey: "taproot.vaultFolder.\(id.uuidString)"
         )
 
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
 
-        // canonicalPath resolves /tmp -> /private/tmp via realpath() on macOS.
-        XCTAssertEqual(
-            freshApp.workspaces.first?.localFolder.path,
-            folder.canonicalPath.path
+        XCTAssertTrue(freshApp.workspaces.isEmpty,
+                      "Legacy-only prefs must NOT surface a broken in-memory workspace")
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
+            "Legacy key must be cleared as a one-shot migration side effect"
         )
     }
 
-    func testLoadWorkspacesFromKeychainFallsBackToDefaultFolderWhenNotPersisted() throws {
+    /// 0.2.2 sandbox: a Keychain bearer with NO bookmark and NO legacy key is
+    /// a half-paired workspace (handleAuthURL ran, confirmFirstRun never did
+    /// — or the user nuked just the prefs). Drop the in-memory workspace;
+    /// the menubar surfaces "Sign in" and the user re-pairs.
+    func testLoadWorkspacesFromKeychainSkipsWorkspaceWithoutVaultBinding() throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
@@ -1495,14 +1564,28 @@ final class AppDelegateTests: XCTestCase {
         let freshApp = AppDelegate(services: makeServices(keychain: keychain))
         freshApp.loadWorkspacesFromKeychain()
 
-        guard let path = freshApp.workspaces.first?.localFolder.path else {
-            XCTFail("expected loaded workspace")
-            return
-        }
-        XCTAssertTrue(
-            path.hasSuffix("Taproot/\(id.uuidString)"),
-            "expected default folder suffix, got \(path)"
+        XCTAssertTrue(freshApp.workspaces.isEmpty,
+                      "Half-paired workspaces must not appear in the in-memory list")
+    }
+
+    /// 0.2.2 sandbox: a malformed bookmark blob in prefs is treated as
+    /// unrecoverable for the workspace — drop it from the in-memory list and
+    /// let the user re-pair. The bearer survives in Keychain (future re-pair
+    /// UX can resume; today the user signs in fresh).
+    func testLoadWorkspacesFromKeychainSkipsWorkspaceWithMalformedBookmark() throws {
+        let id = UUID()
+        defer { cleanSettingsDefaults(for: id) }
+        try keychain.store(workspaceID: id, bearer: "x")
+        UserDefaults.standard.set(
+            Data(repeating: 0xFF, count: 32),
+            forKey: "taproot.vaultBookmark.\(id.uuidString)"
         )
+
+        let freshApp = AppDelegate(services: makeServices(keychain: keychain))
+        freshApp.loadWorkspacesFromKeychain()
+
+        XCTAssertTrue(freshApp.workspaces.isEmpty,
+                      "Unresolvable bookmark must not surface a broken in-memory workspace")
     }
 
     func testSignOutClearsWorkspaceNameKey() async throws {
@@ -1520,18 +1603,18 @@ final class AppDelegateTests: XCTestCase {
         )
     }
 
-    func testSignOutClearsVaultFolderKey() async throws {
+    func testSignOutClearsVaultBookmarkKey() async throws {
         let id = UUID()
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "x")
-        app.settingsStore.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
-        XCTAssertNotNil(UserDefaults.standard.string(forKey: "taproot.vaultFolder.\(id.uuidString)"))
+        app.settingsStore.setVaultBookmark(Data([0xAB, 0xCD]), for: id)
+        XCTAssertNotNil(UserDefaults.standard.data(forKey: "taproot.vaultBookmark.\(id.uuidString)"))
 
         await app.signOut(workspaceID: id)
 
         XCTAssertNil(
-            UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
-            "Sign-out must clear vault folder so reconnect starts clean"
+            UserDefaults.standard.object(forKey: "taproot.vaultBookmark.\(id.uuidString)"),
+            "Sign-out must clear vault bookmark so reconnect starts clean"
         )
     }
 
@@ -1680,16 +1763,20 @@ final class AppDelegateTests: XCTestCase {
         }
 
         XCTAssertEqual(app.settingsStore.workspaceName(for: id), "MyVault")
-        // N10: compare paths rather than absoluteStrings — for an existing
-        // directory, URL(fileURLWithPath:) appends a trailing slash that the
-        // input URL (built via appendingPathComponent) doesn't have. Path
-        // comparison is the canonical filesystem-identity check.
-        XCTAssertEqual(app.settingsStore.vaultFolder(for: id)?.path,
-                       folder.path)
+        // 0.2.2 sandbox: confirmFirstRun persists a security-scoped bookmark,
+        // not a path string. Assert the bookmark blob lands AND that the
+        // workspace constructed downstream carries a live vaultHandle whose
+        // resolved URL matches the picked folder.
+        XCTAssertNotNil(app.settingsStore.vaultBookmark(for: id),
+                        "confirmFirstRun must persist a security-scoped bookmark")
+        XCTAssertNil(UserDefaults.standard.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
+                     "confirmFirstRun must never write the legacy path-string key")
         XCTAssertEqual(app.workspaces.count, 1)
         XCTAssertEqual(app.workspaces.first?.name, "MyVault")
         XCTAssertEqual(app.workspaces.first?.localFolder.path, folder.canonicalPath.path)
         XCTAssertEqual(app.workspaces.first?.bearer, "B")
+        XCTAssertNotNil(app.workspaces.first?.vaultHandle,
+                        "Workspace built by confirmFirstRun must carry a live vaultHandle")
         XCTAssertNotNil(app.watchers[id], "Watcher must start on confirmFirstRun")
         XCTAssertNotNil(app.pullPollers[id], "Poller must start on confirmFirstRun")
     }
@@ -1750,13 +1837,13 @@ final class AppDelegateTests: XCTestCase {
         defer { cleanSettingsDefaults(for: id) }
         try keychain.store(workspaceID: id, bearer: "B")
         app.settingsStore.setWorkspaceName("X", for: id)
-        app.settingsStore.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
+        app.settingsStore.setVaultBookmark(Data([0xAB]), for: id)
 
         app.cancelFirstRun(workspaceID: id)
 
         XCTAssertNil(try keychain.retrieve(workspaceID: id))
         XCTAssertNil(app.settingsStore.workspaceName(for: id))
-        XCTAssertNil(app.settingsStore.vaultFolder(for: id))
+        XCTAssertNil(app.settingsStore.vaultBookmark(for: id))
         XCTAssertTrue(app.workspaces.isEmpty,
                       "Workspace was never appended, no removal needed")
     }

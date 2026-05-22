@@ -78,49 +78,63 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "taproot.workspaceName.\(id.uuidString)"))
     }
 
-    func testVaultFolderRoundTrips() {
+    // MARK: - vaultBookmark (0.2.2 sandbox)
+
+    func testVaultBookmarkReturnsNilWhenUnset() {
         let store = SettingsStore(defaults: defaults)
-        let id = UUID()
-        let url = URL(fileURLWithPath: "/tmp/x")
-
-        store.setVaultFolder(url, for: id)
-
-        XCTAssertEqual(
-            SettingsStore(defaults: defaults).vaultFolder(for: id)?.absoluteString,
-            url.absoluteString
-        )
+        XCTAssertNil(store.vaultBookmark(for: UUID()))
     }
 
-    func testVaultFolderDefaultsNilForUnknown() {
-        let store = SettingsStore(defaults: defaults)
-        XCTAssertNil(store.vaultFolder(for: UUID()))
-    }
-
-    /// N10 (build-audit-3): vaultFolder reads via URL(fileURLWithPath:) so a
-    /// corrupted or injected UserDefaults value (e.g., an http URL) is
-    /// coerced into a file URL with a junk path rather than ever returning a
-    /// non-file URL to the AppDelegate.
-    func testVaultFolderCoercesNonFileSchemeToFileURL() throws {
+    func testSetVaultBookmarkPersistsAndRetrievesData() {
         let store = SettingsStore(defaults: defaults)
         let id = UUID()
-        defaults.set("http://evil.example/x", forKey: "taproot.vaultFolder.\(id.uuidString)")
+        let blob = Data([0x01, 0x02, 0x03, 0x04])
 
-        let url = try XCTUnwrap(store.vaultFolder(for: id))
+        store.setVaultBookmark(blob, for: id)
 
-        XCTAssertTrue(url.isFileURL,
-                      "vaultFolder must always return a file URL, got \(url.absoluteString)")
-        XCTAssertNotEqual(url.scheme, "http")
+        XCTAssertEqual(SettingsStore(defaults: defaults).vaultBookmark(for: id), blob)
     }
 
-    func testClearVaultFolderRemovesKey() {
+    /// Defense-in-depth: writing a new bookmark always clears any stale legacy
+    /// path-string key so a future helper version that drops the legacy reader
+    /// can't see stale data.
+    func testSetVaultBookmarkClearsLegacyPathStringKey() {
         let store = SettingsStore(defaults: defaults)
         let id = UUID()
-        store.setVaultFolder(URL(fileURLWithPath: "/tmp/x"), for: id)
-        XCTAssertNotNil(store.vaultFolder(for: id))
+        defaults.set("/tmp/old-prefs", forKey: "taproot.vaultFolder.\(id.uuidString)")
 
-        store.clearVaultFolder(for: id)
+        store.setVaultBookmark(Data([0xAA]), for: id)
 
-        XCTAssertNil(store.vaultFolder(for: id))
+        XCTAssertNil(defaults.object(forKey: "taproot.vaultFolder.\(id.uuidString)"))
+        XCTAssertNotNil(store.vaultBookmark(for: id))
+    }
+
+    func testConsumeLegacyVaultFolderPathReturnsValueAndClearsKey() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        defaults.set("/tmp/legacy", forKey: "taproot.vaultFolder.\(id.uuidString)")
+
+        XCTAssertEqual(store.consumeLegacyVaultFolderPath(for: id), "/tmp/legacy")
+        XCTAssertNil(defaults.object(forKey: "taproot.vaultFolder.\(id.uuidString)"),
+                     "consumeLegacy must remove the key as a side effect (one-shot migration)")
+        XCTAssertNil(store.consumeLegacyVaultFolderPath(for: id),
+                     "second call is a no-op + returns nil")
+    }
+
+    func testConsumeLegacyVaultFolderPathReturnsNilAndIsNoOpWhenAbsent() {
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertNil(store.consumeLegacyVaultFolderPath(for: UUID()))
+    }
+
+    func testClearVaultBookmarkRemovesBothBookmarkAndLegacyKeys() {
+        let store = SettingsStore(defaults: defaults)
+        let id = UUID()
+        store.setVaultBookmark(Data([0xAB]), for: id)
+        defaults.set("/tmp/legacy-too", forKey: "taproot.vaultFolder.\(id.uuidString)")
+
+        store.clearVaultBookmark(for: id)
+
+        XCTAssertNil(store.vaultBookmark(for: id))
         XCTAssertNil(defaults.object(forKey: "taproot.vaultFolder.\(id.uuidString)"))
     }
 }
