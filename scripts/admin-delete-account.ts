@@ -21,6 +21,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { nukeWorkspace } from "../src/utils/supabase-mirror.js";
 import { cancelWorkspaceSubscription } from "../src/utils/stripe-cancel.js";
+import { getSubscription } from "../src/api/subscription.js";
 
 const email = process.argv[2];
 if (!email) {
@@ -89,10 +90,29 @@ console.log(
 for (const workspaceId of ownedWorkspaceIds) {
   console.log(`[admin-delete] workspace ${workspaceId} — starting cascade`);
 
-  const cancelResult = await cancelWorkspaceSubscription(sb, workspaceId);
-  console.log(
-    `[admin-delete]   stripe cancel: ${cancelResult.canceled ? "canceled" : "skipped"} (${cancelResult.reason})`,
-  );
+  // Stripe cancel: SITE endpoint fails-closed on this, but the admin tool
+  // should never block local cleanup over a missing STRIPE_SECRET_KEY. Log
+  // the subscription id loudly so the operator can manually cancel via the
+  // Stripe Dashboard if the API call below didn't fire.
+  const subRow = await getSubscription(sb, workspaceId);
+  if (subRow?.stripe_subscription_id) {
+    console.log(
+      `[admin-delete]   stripe subscription id (manual cancel if needed): ${subRow.stripe_subscription_id} (status=${subRow.status})`,
+    );
+  }
+  try {
+    const cancelResult = await cancelWorkspaceSubscription(sb, workspaceId);
+    console.log(
+      `[admin-delete]   stripe cancel: ${cancelResult.canceled ? "canceled" : "skipped"} (${cancelResult.reason})`,
+    );
+  } catch (err) {
+    console.warn(
+      `[admin-delete]   stripe cancel FAILED (continuing): ${(err as Error).message}`,
+    );
+    console.warn(
+      `[admin-delete]   IF SUB EXISTS, cancel via Stripe Dashboard using the id above`,
+    );
+  }
 
   const nukeResult = await nukeWorkspace(sb, workspaceId, userId, {
     ip: undefined,

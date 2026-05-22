@@ -99,7 +99,7 @@ export function billingRouter(): Router {
         return;
       }
 
-      const { membership } = req as AuthedWorkspaceRequest;
+      const { membership, user } = req as AuthedWorkspaceRequest;
       const { interval } = req.body as { interval?: "month" | "year" };
 
       if (interval !== "month" && interval !== "year") {
@@ -160,8 +160,20 @@ export function billingRouter(): Router {
       let stripeCustomerId = sub?.stripe_customer_id ?? null;
 
       if (!stripeCustomerId) {
+        // Seed the Stripe customer with the user's auth email so the
+        // Checkout page pre-fills with it (and the customer's labelled
+        // email matches the Supabase account from the start). Without
+        // this, Stripe Checkout asks for an email and the browser
+        // autofills with whatever Gmail is primary on the device — the
+        // resulting Stripe customer is then bound to that typed email,
+        // not the auth email, which makes Dashboard lookup confusing.
+        // Also attach the Supabase user id as metadata for ops grep.
         const customer = await stripe.customers.create({
-          metadata: { workspace_id: membership.workspaceId },
+          email: user.email,
+          metadata: {
+            workspace_id: membership.workspaceId,
+            supabase_user_id: user.id,
+          },
         });
         stripeCustomerId = customer.id;
 

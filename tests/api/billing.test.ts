@@ -37,6 +37,10 @@ vi.mock("../../src/api/middleware.js", async (importOriginal) => {
     (req as Record<string, unknown>).membership = {
       workspaceId: "ws-billing-test",
     };
+    (req as Record<string, unknown>).user = {
+      id: "user-billing-test",
+      email: "test-user@example.com",
+    };
     next();
   };
   return { ...actual, requireSupabaseAuth: pass, requireWorkspace: pass };
@@ -153,6 +157,25 @@ describe("POST /api/billing/checkout — S10 duplicate-checkout guard", () => {
     expect(res.status).toBe(200);
     expect(mockCheckoutCreate).toHaveBeenCalledOnce();
     expect(mockCustomersCreate).toHaveBeenCalledOnce(); // no customer yet
+  });
+
+  it("first checkout seeds Stripe customer with auth email + supabase_user_id metadata", async () => {
+    // Without this, Stripe Checkout asks for an email on the hosted page
+    // and the browser autofills with whatever Gmail is primary on the
+    // device — the resulting Stripe customer ends up bound to a different
+    // email than the Supabase auth account, which makes Dashboard lookup
+    // confusing and customer-support correlation harder.
+    subscriptionFixture = null;
+    const res = await postCheckout(baseUrl);
+    expect(res.status).toBe(200);
+    expect(mockCustomersCreate).toHaveBeenCalledOnce();
+    expect(mockCustomersCreate).toHaveBeenCalledWith({
+      email: "test-user@example.com",
+      metadata: {
+        workspace_id: "ws-billing-test",
+        supabase_user_id: "user-billing-test",
+      },
+    });
   });
 
   it("sub row with no stripe_subscription_id → 200 (customer created but never checked out)", async () => {
