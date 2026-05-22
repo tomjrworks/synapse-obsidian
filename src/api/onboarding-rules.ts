@@ -10,6 +10,7 @@ import {
 } from "./middleware.js";
 import { respondError } from "./respond-error.js";
 import { patchWorkspaceSettings } from "./workspace.js";
+import { coerceLegacyStep } from "./onboarding.js";
 import {
   classifyClaudeMdContent,
   composePersonaClaudeMd,
@@ -82,7 +83,8 @@ export function onboardingRulesRouter(): Router {
       }
       const { membership } = req as AuthedWorkspaceRequest;
 
-      const currentStep = membership.settings?.onboarding_step ?? "persona";
+      const rawStep = membership.settings?.onboarding_step ?? "clients";
+      const currentStep = coerceLegacyStep(rawStep);
       if (currentStep !== "rules-review") {
         res.status(400).json({
           error: "invalid_step",

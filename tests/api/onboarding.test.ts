@@ -6,9 +6,12 @@ describe("coerceLegacyStep", () => {
     expect(coerceLegacyStep("vault")).toBe("obsidian");
   });
 
+  it('maps legacy "persona" step to "clients"', () => {
+    expect(coerceLegacyStep("persona")).toBe("clients");
+  });
+
   it("passes through current onboarding steps unchanged", () => {
     for (const step of [
-      "persona",
       "clients",
       "obsidian",
       "helper",

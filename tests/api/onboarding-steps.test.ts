@@ -25,7 +25,6 @@ describe("ONBOARDING_STEPS structural invariants", () => {
     // any of these breaks the corresponding /onboarding/* page on the
     // first POST to /api/onboarding/step.
     for (const step of [
-      "persona",
       "clients",
       "obsidian",
       "helper",
@@ -78,6 +77,15 @@ describe("ONBOARDING_STEPS structural invariants", () => {
     // (legacy ones the coerceLegacyStep shim covers) skip the shim and
     // reach inconsistent state.
     expect(ONBOARDING_STEPS).not.toContain("vault");
+  });
+
+  it("does not include the legacy 'persona' step (replaced by 'clients' on 2026-05-11)", () => {
+    // Trait removal deleted the persona wizard step in favor of clients.
+    // Migration 0028 seeds new workspaces with "clients" and backfills any
+    // persona rows. Re-introducing "persona" here would let workspaces with
+    // onboarding_step="persona" bypass the coerceLegacyStep shim and reach
+    // an inconsistent state (analogous to the vault case above).
+    expect(ONBOARDING_STEPS).not.toContain("persona");
   });
 });
 

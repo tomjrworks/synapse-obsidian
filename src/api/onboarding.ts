@@ -11,7 +11,6 @@ import { patchWorkspaceSettings } from "./workspace.js";
 import { respondError } from "./respond-error.js";
 
 export const ONBOARDING_STEPS = [
-  "persona",
   "clients",
   "obsidian",
   "helper",
@@ -25,12 +24,17 @@ export const ONBOARDING_STEPS = [
 ] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
-// Compat shim: workspaces created before the Obsidian-required pivot
-// (2026-05-06) may have onboarding_step="vault" stuck in settings.
-// Treat as "obsidian" on read; forward-bumps on next /onboarding/step write.
-// See projects/taproot/build/2026-05-07-workstream-a-onboarding-rewrite-task.md
+// Compat shim: workspaces may have legacy step names persisted in settings:
+//   - "vault"   -> "obsidian"  (Obsidian-required pivot, 2026-05-06)
+//   - "persona" -> "clients"   (trait removal + persona step deleted, 2026-05-11)
+// Treat as canonical on read; forward-bumps on next /onboarding/step write.
+// Migration 0028 seeds new workspaces with "clients" and backfills both legacy
+// values, so the population still needing this shim is bounded — but kept for
+// defense-in-depth against unseen DB rows or skipped backfills in non-prod envs.
 export function coerceLegacyStep(step: string): OnboardingStep {
-  return step === "vault" ? "obsidian" : (step as OnboardingStep);
+  if (step === "vault") return "obsidian";
+  if (step === "persona") return "clients";
+  return step as OnboardingStep;
 }
 
 export function onboardingRouter(): Router {
@@ -59,11 +63,13 @@ export function onboardingRouter(): Router {
       const sb = supabaseService();
 
       // Monotonicity guard: forward-or-equal only.
-      // Note: forward-or-equal allows skip-ahead (e.g. persona → complete).
+      // Note: forward-or-equal allows skip-ahead (e.g. clients → complete).
       // The /onboarding/done bypass is closed at the SITE proxy by a
       // precondition that requires current_step === "done".
+      // Default to "clients" when missing — migration 0028 seeds this for all
+      // new workspaces; the fallback covers any row with NULL settings.
       const currentStep = coerceLegacyStep(
-        membership.settings?.onboarding_step ?? "persona",
+        membership.settings?.onboarding_step ?? "clients",
       );
       const currentIdx = ONBOARDING_STEPS.indexOf(currentStep);
       const nextIdx = ONBOARDING_STEPS.indexOf(step as OnboardingStep);
