@@ -74,14 +74,18 @@ export function workspaceCreateRouter(): Router {
 
       const signupWebhookUrl = process.env.DISCORD_SIGNUPS_WEBHOOK_URL;
       if (signupWebhookUrl) {
-        const maskedEmail = user.email
-          ? user.email.replace(/^[^@]+/, "***")
-          : "unknown";
+        // S64 originally masked the local-part of the email here because
+        // Discord channels weren't classified as PII storage. Unmasked
+        // 2026-05-26 because operator outreach to new signups needs the
+        // full email and #taproot-signups is an invite-only solo-operator
+        // channel. KEEP THAT CHANNEL PRIVATE — adding teammates or
+        // contractors to it re-opens the S64 finding.
+        const signupEmail = user.email ?? "unknown";
         fetch(signupWebhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            content: `🌱 New signup | ${maskedEmail} | workspace=${workspaceId}`,
+            content: `🌱 New signup | ${signupEmail} | workspace=${workspaceId}`,
           }),
         }).catch(() => {});
       }

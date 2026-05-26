@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
-// S64 — Discord signup ping uses dedicated DISCORD_SIGNUPS_WEBHOOK_URL channel
-// (not the Sentry 5xx channel) and masks the local-part of the email before
-// it leaves the server. Matches the S18 pattern in src/api/feedback.ts.
+// Discord signup ping (originally S64).
+// - Uses dedicated DISCORD_SIGNUPS_WEBHOOK_URL channel (not the Sentry 5xx
+//   channel) — defense-in-depth against accidentally posting PII into the
+//   shared error channel.
+// - Sends the FULL email (unmasked since 2026-05-26). The original S64
+//   masking stripped the local-part; reverted because operator outreach to
+//   new signups requires the full email and #taproot-signups is an
+//   invite-only solo-operator channel. KEEP THE CHANNEL PRIVATE — adding
+//   teammates or contractors re-opens the S64 PII finding.
 // ---------------------------------------------------------------------------
 
 const WEBHOOK_URL = "https://discord.test/webhook";
@@ -118,7 +124,7 @@ describe("workspace-create Discord signup ping (S64)", () => {
     vi.clearAllMocks();
   });
 
-  it("pings Discord when a new workspace is created (201) with masked email", async () => {
+  it("pings Discord when a new workspace is created (201) with the full email", async () => {
     mockGetMembership.mockResolvedValue(null);
     await mockSupabaseSuccess();
 
@@ -137,10 +143,10 @@ describe("workspace-create Discord signup ping (S64)", () => {
     expect(init.method).toBe("POST");
     const body = JSON.parse(init.body as string) as { content: string };
     expect(body.content).toMatch(/New signup/);
-    // S64: local-part stripped, domain preserved
-    expect(body.content).toMatch(/\*\*\*@taproothq\.com/);
-    // S64: raw local-part MUST NOT leak
-    expect(body.content).not.toMatch(/test@taproothq\.com/);
+    // Full email sent — operator outreach needs it (channel is private).
+    expect(body.content).toMatch(/test@taproothq\.com/);
+    // Regression guard against re-introducing the local-part mask.
+    expect(body.content).not.toMatch(/\*\*\*@/);
   });
 
   it("does NOT ping Discord when workspace already exists (200)", async () => {
@@ -172,7 +178,7 @@ describe("workspace-create Discord signup ping (S64)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("masks the local-part for arbitrary email addresses (tom@example.com → ***@example.com)", async () => {
+  it("sends the full email for arbitrary addresses (tom@example.com appears unmasked)", async () => {
     mockUser.email = "tom@example.com";
     mockGetMembership.mockResolvedValue(null);
     await mockSupabaseSuccess();
@@ -187,8 +193,8 @@ describe("workspace-create Discord signup ping (S64)", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { content: string };
-    expect(body.content).toMatch(/\*\*\*@example\.com/);
-    expect(body.content).not.toMatch(/tom@example\.com/);
+    expect(body.content).toMatch(/tom@example\.com/);
+    expect(body.content).not.toMatch(/\*\*\*@/);
   });
 
   it("falls back to 'unknown' when user.email is undefined", async () => {
