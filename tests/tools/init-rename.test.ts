@@ -61,11 +61,25 @@ describe("F8 — taproot_plant deprecation shim", () => {
     expect(canonical?.config.description ?? "").not.toContain("[deprecated");
   });
 
-  it("both names point at the same handler reference (shared closure)", () => {
+  // Pass 1 amendment A1 (2026-05-28): the two registrations are now
+  // independent withTelemetry wrappers around a shared `setupScanLogic`
+  // body, so telemetry can distinguish alias-invocations from canonical
+  // invocations. Handler references are intentionally distinct.
+  // The shared-body invariant is asserted behaviorally below.
+  it("both handlers return identical response bodies (shared logic)", async () => {
     const { server, registered } = captureRegistrations();
     registerInitTools(server, makeBackend());
     const a = registered.get("taproot_setup_scan");
     const b = registered.get("taproot_plant");
-    expect(a?.handler).toBe(b?.handler);
+    // Now references differ — wrappers are independent.
+    expect(a?.handler).not.toBe(b?.handler);
+    // Behavior is shared via setupScanLogic — same response text.
+    const resA = (await a!.handler({})) as {
+      content: { type: string; text: string }[];
+    };
+    const resB = (await b!.handler({})) as {
+      content: { type: string; text: string }[];
+    };
+    expect(resA.content[0].text).toBe(resB.content[0].text);
   });
 });

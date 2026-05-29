@@ -1,11 +1,8 @@
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import {
-  checkToolRateLimit,
-  rateLimitToolError,
-  respondToolError,
-} from "./_rate-limit.js";
+import { respondToolError } from "./_rate-limit.js";
+import { withTelemetry } from "../observability/tool-telemetry.js";
 import { parseFrontmatter } from "../utils/vault.js";
 import {
   enrichCardinalitySummary,
@@ -184,50 +181,87 @@ export function registerIndexTool(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_index",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        // 1. In-memory cache (1h TTL)
-        const cached = indexCache.get(backend);
-        if (cached && Date.now() - cached.cachedAt < INDEX_TTL_MS) {
-          return {
-            content: [{ type: "text", text: cached.rendered }],
-          };
-        }
+    withTelemetry(
+      {
+        tool: "garden_index",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          // 1. In-memory cache (1h TTL)
+          const cached = indexCache.get(backend);
+          if (cached && Date.now() - cached.cachedAt < INDEX_TTL_MS) {
+            ctx.flags.cache_hit = true;
+            ctx.flags.served_verbatim = false;
+            ctx.flags.served_synthesized = false;
+            ctx.flags.truncated = false;
+            ctx.flags.char_budget_exceeded =
+              cached.rendered.length >= INDEX_CHAR_BUDGET;
+            ctx.resultCount = cached.rendered.length;
+            ctx.noResults = false;
+            return {
+              content: [{ type: "text", text: cached.rendered }],
+            };
+          }
+          ctx.flags.cache_hit = false;
 
-        // 2+3. Read index.md: managed marker → verbatim; user-authored fresh → verbatim
-        const existing = await tryReadFreshIndex(backend);
-        if (existing) {
-          const wrapped = wrap(existing, "index.md");
+          // 2+3. Read index.md: managed marker → verbatim; user-authored fresh → verbatim
+          const existing = await tryReadFreshIndex(backend);
+          if (existing) {
+            const wrapped = wrap(existing, "index.md");
+            indexCache.set(backend, {
+              rendered: wrapped,
+              cachedAt: Date.now(),
+            });
+            ctx.flags.served_verbatim = true;
+            ctx.flags.served_synthesized = false;
+            ctx.flags.truncated = false;
+            ctx.flags.char_budget_exceeded =
+              wrapped.length >= INDEX_CHAR_BUDGET;
+            ctx.resultCount = wrapped.length;
+            ctx.noResults = false;
+            return { content: [{ type: "text", text: wrapped }] };
+          }
+          ctx.flags.served_verbatim = false;
+
+          // 4. Single-pass load — both renderers share the same file/content data
+          const data = await loadIndexData(backend);
+          const mcpRendered = renderIndexForMcp(data);
+          const wrapped = wrap(mcpRendered, "synthesized");
           indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
-          return { content: [{ type: "text", text: wrapped }] };
-        }
 
-        // 4. Single-pass load — both renderers share the same file/content data
-        const data = await loadIndexData(backend);
-        const mcpRendered = renderIndexForMcp(data);
-        const wrapped = wrap(mcpRendered, "synthesized");
-        indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
-
-        if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
-          // DISK-format (clean) for the user's vault, computed from the same
-          // data we already loaded. No re-read.
-          const diskRendered = renderIndexForDisk(data);
-          void maybeWriteIndexMd(backend, diskRendered).catch((err) =>
-            console.error(`[index-tool] write-back error: ${err}`),
+          ctx.flags.served_synthesized = true;
+          ctx.flags.truncated = data.truncated;
+          // applyCharBudget injects "*Truncated — N file" markers when the
+          // raw render exceeds INDEX_CHAR_BUDGET. Presence of any such marker
+          // is the unambiguous signal that section-stub replacement happened.
+          ctx.flags.char_budget_exceeded = /\*Truncated — \d+ file/.test(
+            mcpRendered,
           );
-        }
+          ctx.resultCount = data.totalFiles;
+          ctx.noResults = data.totalFiles === 0;
 
-        return { content: [{ type: "text", text: wrapped }] };
-      } catch (err) {
-        return respondToolError("garden_index_failed", err);
-      }
-    },
+          if (process.env.INDEX_WRITEBACK_DISABLED !== "1") {
+            // DISK-format (clean) for the user's vault, computed from the same
+            // data we already loaded. No re-read.
+            const diskRendered = renderIndexForDisk(data);
+            void maybeWriteIndexMd(backend, diskRendered).catch((err) =>
+              // A5: infrastructure write-back error — outside the tool-call
+              // lifecycle. Telemetry does NOT capture this; stderr only.
+              console.error(`[index-tool] write-back error: ${err}`),
+            );
+          }
+
+          return { content: [{ type: "text", text: wrapped }] };
+        } catch (err) {
+          ctx.errorCode = "garden_index_failed";
+          return respondToolError("garden_index_failed", err);
+        }
+      },
+    ),
   );
 }
 

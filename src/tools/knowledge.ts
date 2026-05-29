@@ -2,11 +2,27 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import type { StorageBackend } from "../utils/storage.js";
-import {
-  checkToolRateLimit,
-  rateLimitToolError,
-  respondToolError,
-} from "./_rate-limit.js";
+import { respondToolError } from "./_rate-limit.js";
+import { withTelemetry } from "../observability/tool-telemetry.js";
+
+// Coarse cardinality bucket — used by taproot_status, taproot_cultivate,
+// taproot_prune for branch_flags. Exact counts can be a fingerprint;
+// buckets keep enough signal for Pass 2-3 analysis without leaking volume.
+function countBucket(n: number): "0" | "1-10" | "11-50" | "51-200" | "200+" {
+  if (n === 0) return "0";
+  if (n <= 10) return "1-10";
+  if (n <= 50) return "11-50";
+  if (n <= 200) return "51-200";
+  return "200+";
+}
+
+function urlHostOnly(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "(invalid)";
+  }
+}
 import {
   readVaultFile,
   writeVaultFile,
@@ -167,86 +183,112 @@ export function registerKnowledgeTools(
         openWorldHint: true,
       },
     },
-    async ({ title, url, content, folder }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_seed",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        if (!url && !content) {
+    withTelemetry(
+      {
+        tool: "taproot_seed",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ url, content, folder }) => ({
+          has_url: typeof url === "string" && url.length > 0,
+          has_content: typeof content === "string" && content.length > 0,
+          content_len: typeof content === "string" ? content.length : 0,
+          has_folder_override: typeof folder === "string" && folder.length > 0,
+        }),
+      },
+      async ({ title, url, content, folder }, ctx) => {
+        ctx.flags.error_stage = null;
+        ctx.flags.fetch_failed = false;
+        ctx.flags.protected_blocked = false;
+        try {
+          if (!url && !content) {
+            ctx.errorCode = "taproot_seed_missing_input";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "Error: Provide either a `url` to fetch or `content` to save directly.",
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const config = await loadConfig(backend);
+          const defaults = getDefaultConfig();
+          const targetFolder =
+            folder || config?.sourcesFolder || defaults.sourcesFolder;
+          const filename = slugify(title) + ".md";
+          const filePath = `${targetFolder}/${filename}`;
+
+          let body: string;
+          let sourceUrl = url || "";
+
+          if (url) {
+            try {
+              const fetched = await fetchUrlAsText(url);
+              body = fetched.body;
+            } catch (fetchErr) {
+              // A3: preserve two-step error code. Pass 2 honesty contract
+              // distinguishes "URL fetch broke" (network/retry) from
+              // "writeVaultFile broke" (vault state).
+              ctx.flags.error_stage = "fetch";
+              ctx.flags.fetch_failed = true;
+              ctx.errorCode = "taproot_seed_fetch_failed";
+              return respondToolError("taproot_seed_fetch_failed", fetchErr);
+            }
+          } else {
+            body = content!;
+          }
+
+          const frontmatter = buildFrontmatter({
+            title,
+            source: sourceUrl,
+            date_created: TODAY(),
+            type: "article",
+            status: "raw",
+            tags: ["raw"],
+          });
+
+          const fullContent = `${frontmatter}\n\n# ${stripControls(title)}\n\n${body}`;
+
+          const blockedSeed = rejectProtectedWrite(filePath);
+          if (blockedSeed) {
+            ctx.flags.protected_blocked = true;
+            ctx.errorCode = "taproot_seed_protected";
+            return blockedSeed;
+          }
+          await writeVaultFile(backend, filePath, fullContent);
+
+          const wordCount = body.split(/\s+/).length;
+
+          const responseText = [
+            `Saved to: ${filePath}`,
+            `Words: ~${wordCount}`,
+            sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
+            "",
+            '**Next:** Run `taproot_water({ sourcePath: "' +
+              filePath +
+              '" })` to process this into the wiki.',
+          ].join("\n");
+
           return {
             content: [
               {
                 type: "text",
-                text: "Error: Provide either a `url` to fetch or `content` to save directly.",
+                text: config ? responseText : responseText + SETUP_TIP,
               },
             ],
-            isError: true,
           };
+        } catch (err) {
+          // A3: the post-fetch failure path. error_stage="write" disambiguates
+          // from the fetch path above for dashboards.
+          ctx.flags.error_stage = "write";
+          ctx.errorCode = "taproot_seed_failed";
+          return respondToolError("taproot_seed_failed", err);
         }
-
-        const config = await loadConfig(backend);
-        const defaults = getDefaultConfig();
-        const targetFolder =
-          folder || config?.sourcesFolder || defaults.sourcesFolder;
-        const filename = slugify(title) + ".md";
-        const filePath = `${targetFolder}/${filename}`;
-
-        let body: string;
-        let sourceUrl = url || "";
-
-        if (url) {
-          try {
-            const fetched = await fetchUrlAsText(url);
-            body = fetched.body;
-          } catch (fetchErr) {
-            return respondToolError("taproot_seed_fetch_failed", fetchErr);
-          }
-        } else {
-          body = content!;
-        }
-
-        const frontmatter = buildFrontmatter({
-          title,
-          source: sourceUrl,
-          date_created: TODAY(),
-          type: "article",
-          status: "raw",
-          tags: ["raw"],
-        });
-
-        const fullContent = `${frontmatter}\n\n# ${stripControls(title)}\n\n${body}`;
-
-        const blockedSeed = rejectProtectedWrite(filePath);
-        if (blockedSeed) return blockedSeed;
-        await writeVaultFile(backend, filePath, fullContent);
-
-        const wordCount = body.split(/\s+/).length;
-
-        const responseText = [
-          `Saved to: ${filePath}`,
-          `Words: ~${wordCount}`,
-          sourceUrl ? `Source: ${sourceUrl}` : "Source: direct input",
-          "",
-          '**Next:** Run `taproot_water({ sourcePath: "' +
-            filePath +
-            '" })` to process this into the wiki.',
-        ].join("\n");
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: config ? responseText : responseText + SETUP_TIP,
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("taproot_seed_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   // ── taproot_status ──────────────────────────────────────────────────
@@ -263,184 +305,207 @@ export function registerKnowledgeTools(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_status",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config = await loadConfig(backend);
+    withTelemetry(
+      {
+        tool: "taproot_status",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          const config = await loadConfig(backend);
+          ctx.flags.config_exists = config != null;
 
-        const hasClaudeMd = await backend.exists("CLAUDE.md");
+          const hasClaudeMd = await backend.exists("CLAUDE.md");
 
-        // Use config-aware paths for file counting
-        const sourcesFolder = config?.sourcesFolder || "sources";
-        const notesFolder = config?.wikiFolder || "notes";
+          // Use config-aware paths for file counting
+          const sourcesFolder = config?.sourcesFolder || "sources";
+          const notesFolder = config?.wikiFolder || "notes";
 
-        // File counts
-        const allFiles = await listVaultFiles(backend);
-        const rawFiles = await listVaultFiles(backend, sourcesFolder);
-        const notesFiles = (await backend.exists(notesFolder))
-          ? await listVaultFiles(backend, notesFolder)
-          : [];
+          // File counts
+          const allFiles = await listVaultFiles(backend);
+          const rawFiles = await listVaultFiles(backend, sourcesFolder);
+          const notesFiles = (await backend.exists(notesFolder))
+            ? await listVaultFiles(backend, notesFolder)
+            : [];
 
-        // Count unprocessed sources by comparing against notes
-        const notesBasenames = new Set(
-          notesFiles.map((f) => path.basename(f, ".md").toLowerCase()),
-        );
-        let unprocessedCount = 0;
-        for (const rawFile of rawFiles) {
-          const basename = path.basename(rawFile, ".md").toLowerCase();
-          const isProcessed = [...notesBasenames].some(
-            (s) => s.includes(basename) || basename.includes(s),
+          // A6: setup_state_bucket — Pass 2 honesty contract + Pass 6 priors
+          // both behave differently per workspace maturity level.
+          ctx.flags.sources_count_bucket = countBucket(rawFiles.length);
+          ctx.flags.notes_count_bucket = countBucket(notesFiles.length);
+          let setupState: string;
+          if (!config && !hasClaudeMd && allFiles.length === 0) {
+            setupState = "empty";
+          } else if (!config) {
+            setupState = "unconfigured";
+          } else if (rawFiles.length === 0 && notesFiles.length === 0) {
+            setupState = "configured_empty";
+          } else if (notesFiles.length > 5) {
+            setupState = "active";
+          } else {
+            setupState = "configured_populated";
+          }
+          ctx.flags.setup_state_bucket = setupState;
+
+          // Count unprocessed sources by comparing against notes
+          const notesBasenames = new Set(
+            notesFiles.map((f) => path.basename(f, ".md").toLowerCase()),
           );
-          if (!isProcessed) unprocessedCount++;
-        }
+          let unprocessedCount = 0;
+          for (const rawFile of rawFiles) {
+            const basename = path.basename(rawFile, ".md").toLowerCase();
+            const isProcessed = [...notesBasenames].some(
+              (s) => s.includes(basename) || basename.includes(s),
+            );
+            if (!isProcessed) unprocessedCount++;
+          }
 
-        // Recent activity from log
-        const logPath = config?.wikiFolder
-          ? `${config.wikiFolder}/log.md`
-          : "log.md";
-        let recentLog = "(No log yet)";
-        if (await backend.exists(logPath)) {
-          const logContent = await readVaultFile(backend, logPath);
-          const logLines = logContent
-            .split("\n")
-            .filter((l) => l.startsWith("## ["));
-          recentLog =
-            logLines.length > 0
-              ? logLines.slice(-5).reverse().join("\n")
-              : "(No entries yet)";
-        }
+          // Recent activity from log
+          const logPath = config?.wikiFolder
+            ? `${config.wikiFolder}/log.md`
+            : "log.md";
+          let recentLog = "(No log yet)";
+          if (await backend.exists(logPath)) {
+            const logContent = await readVaultFile(backend, logPath);
+            const logLines = logContent
+              .split("\n")
+              .filter((l) => l.startsWith("## ["));
+            recentLog =
+              logLines.length > 0
+                ? logLines.slice(-5).reverse().join("\n")
+                : "(No entries yet)";
+          }
 
-        // CLAUDE.md schema
-        let schema = "";
-        const schemaPath = config?.schemaPath || "CLAUDE.md";
-        if (await backend.exists(schemaPath)) {
-          schema = await readVaultFile(backend, schemaPath);
-        }
+          // CLAUDE.md schema
+          let schema = "";
+          const schemaPath = config?.schemaPath || "CLAUDE.md";
+          if (await backend.exists(schemaPath)) {
+            schema = await readVaultFile(backend, schemaPath);
+          }
 
-        const output: string[] = ["## Taproot Knowledge Base Status", ""];
+          const output: string[] = ["## Taproot Knowledge Base Status", ""];
 
-        // Config section
-        if (config) {
+          // Config section
+          if (config) {
+            output.push(
+              `**Mode:** ${config.mode}`,
+              `**Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
+              `**Sources folder:** ${config.sourcesFolder}`,
+              `**Outputs folder:** ${config.outputsFolder}`,
+              `**Notes folder:** ${config.wikiFolder || "(vault root)"}`,
+              config.topic ? `**Topic:** ${config.topic}` : "",
+              `**Configured:** ${config.configuredAt || "unknown"}`,
+              "",
+            );
+          } else {
+            output.push(
+              "**Taproot hasn't been configured yet.** Run `taproot_setup_scan` to get started.",
+              "",
+            );
+          }
+
+          // Check initialization based on mode
+          const hasSourcesDir = await backend.exists(sourcesFolder);
+          const hasNotesDir = await backend.exists(notesFolder);
+          const initialized = config
+            ? true
+            : hasSourcesDir && hasNotesDir && hasClaudeMd;
+
           output.push(
-            `**Mode:** ${config.mode}`,
-            `**Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
-            `**Sources folder:** ${config.sourcesFolder}`,
-            `**Outputs folder:** ${config.outputsFolder}`,
-            `**Notes folder:** ${config.wikiFolder || "(vault root)"}`,
-            config.topic ? `**Topic:** ${config.topic}` : "",
-            `**Configured:** ${config.configuredAt || "unknown"}`,
+            `**Total vault files:** ${allFiles.length}`,
+            `**Sources:** ${rawFiles.length}`,
+            `**Notes:** ${notesFiles.length}`,
+            `**Unprocessed sources:** ${unprocessedCount}`,
             "",
           );
-        } else {
+
+          if (recentLog !== "(No log yet)") {
+            output.push("### Recent Activity");
+            output.push(recentLog);
+            output.push("");
+          }
+
+          // Build suggested actions
+          const actions: string[] = [];
+          if (!config) {
+            actions.push(
+              "1. **Set up Taproot:** Run `taproot_setup_scan` to configure Taproot for your vault.",
+            );
+          }
+          if (rawFiles.length === 0) {
+            const saveFolder = config?.sourcesFolder || "sources";
+            actions.push(
+              `1. **Add sources:** Save articles with \`taproot_seed\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
+            );
+          }
+          if (unprocessedCount > 0) {
+            actions.push(
+              `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`taproot_cultivate\` to see them, then \`taproot_water\` each one.`,
+            );
+          }
+          if (initialized && rawFiles.length > 0 && notesFiles.length <= 3) {
+            actions.push(
+              "2. **Build the wiki:** Run `taproot_cultivate` to process sources into organized pages.",
+            );
+          }
+          if (initialized && notesFiles.length > 5) {
+            actions.push(
+              "3. **Query:** Ask questions with `taproot_harvest` to research your knowledge base.",
+            );
+            actions.push(
+              "4. **Health check:** Run `taproot_prune` to check for broken links, orphan pages, and stale content.",
+            );
+          }
+
+          if (actions.length > 0) {
+            output.push("### Suggested Next Actions");
+            output.push(...actions);
+            output.push("");
+          }
+
+          if (schema) {
+            const statusNonce = newFenceNonce();
+            const schemaBody =
+              schema.length > 4000
+                ? `${schema.slice(0, 4000)}\n... (truncated)`
+                : schema.slice(0, 4000);
+            output.push("### Wiki Schema (CLAUDE.md)");
+            output.push(safeFenceFile(schemaPath, schemaBody, statusNonce));
+            output.push("");
+          }
+
+          output.push("### How to Use Taproot");
+          output.push("");
           output.push(
-            "**Taproot hasn't been configured yet.** Run `taproot_setup_scan` to get started.",
-            "",
+            "Taproot turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
           );
-        }
-
-        // Check initialization based on mode
-        const hasSourcesDir = await backend.exists(sourcesFolder);
-        const hasNotesDir = await backend.exists(notesFolder);
-        const initialized = config
-          ? true
-          : hasSourcesDir && hasNotesDir && hasClaudeMd;
-
-        output.push(
-          `**Total vault files:** ${allFiles.length}`,
-          `**Sources:** ${rawFiles.length}`,
-          `**Notes:** ${notesFiles.length}`,
-          `**Unprocessed sources:** ${unprocessedCount}`,
-          "",
-        );
-
-        if (recentLog !== "(No log yet)") {
-          output.push("### Recent Activity");
-          output.push(recentLog);
           output.push("");
-        }
-
-        // Build suggested actions
-        const actions: string[] = [];
-        if (!config) {
-          actions.push(
-            "1. **Set up Taproot:** Run `taproot_setup_scan` to configure Taproot for your vault.",
+          output.push(
+            "1. **Save** sources with `taproot_seed` (URL or pasted text) or add files to your sources folder",
           );
-        }
-        if (rawFiles.length === 0) {
-          const saveFolder = config?.sourcesFolder || "sources";
-          actions.push(
-            `1. **Add sources:** Save articles with \`taproot_seed\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
+          output.push(
+            "2. **Process** them with `taproot_cultivate` + `taproot_water` to build organized pages",
           );
-        }
-        if (unprocessedCount > 0) {
-          actions.push(
-            `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`taproot_cultivate\` to see them, then \`taproot_water\` each one.`,
+          output.push(
+            "3. **Query** your knowledge with `taproot_harvest` — get answers with citations",
           );
-        }
-        if (initialized && rawFiles.length > 0 && notesFiles.length <= 3) {
-          actions.push(
-            "2. **Build the wiki:** Run `taproot_cultivate` to process sources into organized pages.",
+          output.push(
+            "4. **Maintain** quality with `taproot_prune` — finds broken links, orphans, stale content",
           );
-        }
-        if (initialized && notesFiles.length > 5) {
-          actions.push(
-            "3. **Query:** Ask questions with `taproot_harvest` to research your knowledge base.",
-          );
-          actions.push(
-            "4. **Health check:** Run `taproot_prune` to check for broken links, orphan pages, and stale content.",
-          );
-        }
-
-        if (actions.length > 0) {
-          output.push("### Suggested Next Actions");
-          output.push(...actions);
           output.push("");
+          output.push(
+            "**Available tools:** taproot_setup_scan, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
+          );
+
+          return { content: [{ type: "text", text: output.join("\n") }] };
+        } catch (err) {
+          ctx.errorCode = "taproot_status_failed";
+          return respondToolError("taproot_status_failed", err);
         }
-
-        if (schema) {
-          const statusNonce = newFenceNonce();
-          const schemaBody =
-            schema.length > 4000
-              ? `${schema.slice(0, 4000)}\n... (truncated)`
-              : schema.slice(0, 4000);
-          output.push("### Wiki Schema (CLAUDE.md)");
-          output.push(safeFenceFile(schemaPath, schemaBody, statusNonce));
-          output.push("");
-        }
-
-        output.push("### How to Use Taproot");
-        output.push("");
-        output.push(
-          "Taproot turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
-        );
-        output.push("");
-        output.push(
-          "1. **Save** sources with `taproot_seed` (URL or pasted text) or add files to your sources folder",
-        );
-        output.push(
-          "2. **Process** them with `taproot_cultivate` + `taproot_water` to build organized pages",
-        );
-        output.push(
-          "3. **Query** your knowledge with `taproot_harvest` — get answers with citations",
-        );
-        output.push(
-          "4. **Maintain** quality with `taproot_prune` — finds broken links, orphans, stale content",
-        );
-        output.push("");
-        output.push(
-          "**Available tools:** taproot_setup_scan, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
-        );
-
-        return { content: [{ type: "text", text: output.join("\n") }] };
-      } catch (err) {
-        return respondToolError("taproot_status_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   // ── taproot_water ───────────────────────────────────────────────────
@@ -463,93 +528,109 @@ export function registerKnowledgeTools(
         openWorldHint: false,
       },
     },
-    async ({ sourcePath }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_water",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config = await loadConfig(backend);
-        const notesFolder = config?.wikiFolder || "notes";
-        const schemaPath = config?.schemaPath || "CLAUDE.md";
+    withTelemetry(
+      {
+        tool: "taproot_water",
+        kind: "write",
+        effect: "instruction-only",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ sourcePath }) => ({
+          path_depth: sourcePath.split("/").filter(Boolean).length,
+        }),
+      },
+      async ({ sourcePath }, ctx) => {
+        try {
+          const config = await loadConfig(backend);
+          const notesFolder = config?.wikiFolder || "notes";
+          const schemaPath = config?.schemaPath || "CLAUDE.md";
 
-        const content = await readVaultFile(backend, sourcePath);
-        const fm = parseFrontmatter(content);
+          const sourceExists = await backend
+            .exists(sourcePath)
+            .catch(() => false);
+          ctx.flags.source_exists = sourceExists;
 
-        const existingNotes = (await backend.exists(notesFolder))
-          ? await listVaultFiles(backend, notesFolder)
-          : [];
-        const sourceBasename = path.basename(sourcePath, ".md");
+          const content = await readVaultFile(backend, sourcePath);
+          const fm = parseFrontmatter(content);
 
-        const alreadyProcessed = existingNotes.some((f) =>
-          f.includes(sourceBasename),
-        );
+          const existingNotes = (await backend.exists(notesFolder))
+            ? await listVaultFiles(backend, notesFolder)
+            : [];
+          const sourceBasename = path.basename(sourcePath, ".md");
 
-        let existingIndex = "";
-        if (await backend.exists("index.md")) {
-          existingIndex = await readVaultFile(backend, "index.md");
+          const alreadyProcessed = existingNotes.some((f) =>
+            f.includes(sourceBasename),
+          );
+          ctx.flags.already_processed = alreadyProcessed;
+
+          let existingIndex = "";
+          const indexPresent = await backend.exists("index.md");
+          ctx.flags.index_present = indexPresent;
+          if (indexPresent) {
+            existingIndex = await readVaultFile(backend, "index.md");
+          }
+
+          let schema = "";
+          const schemaPresent = await backend.exists(schemaPath);
+          ctx.flags.schema_present = schemaPresent;
+          if (schemaPresent) {
+            schema = await readVaultFile(backend, schemaPath);
+          }
+
+          const waterNonce = newFenceNonce();
+          const sourceBody =
+            content.length > 15000
+              ? `${content.slice(0, 15000)}\n... (truncated)`
+              : content.slice(0, 15000);
+          const output = [
+            "## Ingest Task Ready",
+            "",
+            `**Source:** ${sourcePath}`,
+            `**Already processed:** ${alreadyProcessed ? "YES — update existing pages" : "NO — create new pages"}`,
+            "",
+            "### Source Content",
+            safeFenceFile(sourcePath, sourceBody, waterNonce),
+            "",
+            "### Source Frontmatter",
+            JSON.stringify(fm, null, 2),
+            "",
+            "### Current Index",
+            existingIndex
+              ? safeFenceFile(
+                  "index.md",
+                  existingIndex.slice(0, 5000),
+                  waterNonce,
+                )
+              : "(No index yet — this is the first ingest)",
+            "",
+            schema
+              ? `### Schema (CLAUDE.md)\n${safeFenceFile(schemaPath, schema.slice(0, 3000), waterNonce)}`
+              : "",
+            "",
+            "### Instructions",
+            "",
+            "Read the CLAUDE.md schema above for folder paths and conventions. Use `garden_plant` to create/update:",
+            `1. A summary page in \`${notesFolder}/\` — 200-500 word summary with frontmatter`,
+            `2. Concept pages in \`${notesFolder}/\` — for each key concept (create if 2+ mentions, stub if 1). Create sub-folders if needed.`,
+            `3. Entity pages in \`${notesFolder}/\` — for people, orgs, tools mentioned`,
+            `4. \`index.md\` — updated master index with new entries`,
+            "",
+            "Use [[wikilinks]] for all cross-references.",
+            "Follow the file naming and frontmatter conventions from CLAUDE.md.",
+          ];
+
+          if (!config) {
+            output.push("", SETUP_TIP);
+          }
+
+          return {
+            content: [{ type: "text", text: output.join("\n") }],
+          };
+        } catch (err) {
+          ctx.errorCode = "taproot_water_failed";
+          return respondToolError("taproot_water_failed", err);
         }
-
-        let schema = "";
-        if (await backend.exists(schemaPath)) {
-          schema = await readVaultFile(backend, schemaPath);
-        }
-
-        const waterNonce = newFenceNonce();
-        const sourceBody =
-          content.length > 15000
-            ? `${content.slice(0, 15000)}\n... (truncated)`
-            : content.slice(0, 15000);
-        const output = [
-          "## Ingest Task Ready",
-          "",
-          `**Source:** ${sourcePath}`,
-          `**Already processed:** ${alreadyProcessed ? "YES — update existing pages" : "NO — create new pages"}`,
-          "",
-          "### Source Content",
-          safeFenceFile(sourcePath, sourceBody, waterNonce),
-          "",
-          "### Source Frontmatter",
-          JSON.stringify(fm, null, 2),
-          "",
-          "### Current Index",
-          existingIndex
-            ? safeFenceFile(
-                "index.md",
-                existingIndex.slice(0, 5000),
-                waterNonce,
-              )
-            : "(No index yet — this is the first ingest)",
-          "",
-          schema
-            ? `### Schema (CLAUDE.md)\n${safeFenceFile(schemaPath, schema.slice(0, 3000), waterNonce)}`
-            : "",
-          "",
-          "### Instructions",
-          "",
-          "Read the CLAUDE.md schema above for folder paths and conventions. Use `garden_plant` to create/update:",
-          `1. A summary page in \`${notesFolder}/\` — 200-500 word summary with frontmatter`,
-          `2. Concept pages in \`${notesFolder}/\` — for each key concept (create if 2+ mentions, stub if 1). Create sub-folders if needed.`,
-          `3. Entity pages in \`${notesFolder}/\` — for people, orgs, tools mentioned`,
-          `4. \`index.md\` — updated master index with new entries`,
-          "",
-          "Use [[wikilinks]] for all cross-references.",
-          "Follow the file naming and frontmatter conventions from CLAUDE.md.",
-        ];
-
-        if (!config) {
-          output.push("", SETUP_TIP);
-        }
-
-        return {
-          content: [{ type: "text", text: output.join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("taproot_water_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   server.registerTool(
@@ -565,84 +646,99 @@ export function registerKnowledgeTools(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_cultivate",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config = await loadConfig(backend);
-        const sourcesFolder = config?.sourcesFolder || "sources";
-        const notesFolder = config?.wikiFolder || "notes";
+    withTelemetry(
+      {
+        tool: "taproot_cultivate",
+        kind: "write",
+        effect: "instruction-only",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          const config = await loadConfig(backend);
+          const sourcesFolder = config?.sourcesFolder || "sources";
+          const notesFolder = config?.wikiFolder || "notes";
 
-        const rawFiles = await listVaultFiles(backend, sourcesFolder);
-        const notesFiles = (await backend.exists(notesFolder))
-          ? await listVaultFiles(backend, notesFolder)
-          : [];
+          const rawFiles = await listVaultFiles(backend, sourcesFolder);
+          const notesFiles = (await backend.exists(notesFolder))
+            ? await listVaultFiles(backend, notesFolder)
+            : [];
 
-        if (rawFiles.length === 0) {
-          const tipSuffix = config ? "" : SETUP_TIP;
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No files found in ${sourcesFolder}/. Add source articles to \`${sourcesFolder}\` first.${tipSuffix}`,
-              },
-            ],
-          };
-        }
+          if (rawFiles.length === 0) {
+            // SPEC §5 row 19: empty sources folder = no_results=true
+            // (semantically "missing", not "done").
+            ctx.noResults = true;
+            ctx.resultCount = 0;
+            ctx.flags.unprocessed_count_bucket = "0";
+            ctx.flags.all_processed = false;
+            const tipSuffix = config ? "" : SETUP_TIP;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No files found in ${sourcesFolder}/. Add source articles to \`${sourcesFolder}\` first.${tipSuffix}`,
+                },
+              ],
+            };
+          }
 
-        const notesBasenames = new Set(
-          notesFiles.map((f) => path.basename(f, ".md").toLowerCase()),
-        );
-
-        const unprocessed: string[] = [];
-        const processed: string[] = [];
-
-        for (const rawFile of rawFiles) {
-          const basename = path.basename(rawFile, ".md").toLowerCase();
-          const isProcessed = [...notesBasenames].some(
-            (s) => s.includes(basename) || basename.includes(s),
+          const notesBasenames = new Set(
+            notesFiles.map((f) => path.basename(f, ".md").toLowerCase()),
           );
-          if (isProcessed) {
-            processed.push(rawFile);
+
+          const unprocessed: string[] = [];
+          const processed: string[] = [];
+
+          for (const rawFile of rawFiles) {
+            const basename = path.basename(rawFile, ".md").toLowerCase();
+            const isProcessed = [...notesBasenames].some(
+              (s) => s.includes(basename) || basename.includes(s),
+            );
+            if (isProcessed) {
+              processed.push(rawFile);
+            } else {
+              unprocessed.push(rawFile);
+            }
+          }
+
+          const output = [
+            `## Compilation Status`,
+            "",
+            `**Raw sources:** ${rawFiles.length}`,
+            `**Already processed:** ${processed.length}`,
+            `**Needs processing:** ${unprocessed.length}`,
+            "",
+          ];
+
+          if (unprocessed.length > 0) {
+            output.push("### Unprocessed Sources");
+            output.push("Call `taproot_water` for each of these:\n");
+            for (const f of unprocessed) {
+              output.push(`- ${f}`);
+            }
+            output.push("");
+            output.push(
+              `Start with: taproot_water({ sourcePath: "${unprocessed[0]}" })`,
+            );
           } else {
-            unprocessed.push(rawFile);
+            output.push("All sources have been processed. Wiki is up to date.");
           }
+
+          ctx.flags.unprocessed_count_bucket = countBucket(unprocessed.length);
+          ctx.flags.all_processed = unprocessed.length === 0;
+          ctx.resultCount = unprocessed.length;
+          ctx.noResults = false;
+
+          return {
+            content: [{ type: "text", text: output.join("\n") }],
+          };
+        } catch (err) {
+          ctx.errorCode = "taproot_cultivate_failed";
+          return respondToolError("taproot_cultivate_failed", err);
         }
-
-        const output = [
-          `## Compilation Status`,
-          "",
-          `**Raw sources:** ${rawFiles.length}`,
-          `**Already processed:** ${processed.length}`,
-          `**Needs processing:** ${unprocessed.length}`,
-          "",
-        ];
-
-        if (unprocessed.length > 0) {
-          output.push("### Unprocessed Sources");
-          output.push("Call `taproot_water` for each of these:\n");
-          for (const f of unprocessed) {
-            output.push(`- ${f}`);
-          }
-          output.push("");
-          output.push(
-            `Start with: taproot_water({ sourcePath: "${unprocessed[0]}" })`,
-          );
-        } else {
-          output.push("All sources have been processed. Wiki is up to date.");
-        }
-
-        return {
-          content: [{ type: "text", text: output.join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("taproot_cultivate_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   server.registerTool(
@@ -666,211 +762,244 @@ export function registerKnowledgeTools(
         openWorldHint: false,
       },
     },
-    async ({ question, save }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_harvest",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config = await loadConfig(backend);
-        const notesFolder = config?.wikiFolder || "notes";
-        const outputsFolder = config?.outputsFolder || "outputs";
+    withTelemetry(
+      {
+        tool: "taproot_harvest",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ question, save }) => {
+          const tokens = question.split(/\s+/).filter(Boolean);
+          return {
+            query_len: question.length,
+            query_word_count: tokens.length,
+            query_has_hyphen: question.includes("-"),
+            query_has_digit: /\d/.test(question),
+            query_all_short_tokens:
+              tokens.length > 0 && tokens.every((w) => w.length <= 3),
+            save_flag: save !== false,
+          };
+        },
+      },
+      async ({ question, save }, ctx) => {
+        try {
+          const config = await loadConfig(backend);
+          const notesFolder = config?.wikiFolder || "notes";
+          const outputsFolder = config?.outputsFolder || "outputs";
 
-        const shouldSave = save !== false;
-        const outputSlug = slugify(question);
-        const outputPath = `${outputsFolder}/${outputSlug}.md`;
+          const shouldSave = save !== false;
+          const outputSlug = slugify(question);
+          const outputPath = `${outputsFolder}/${outputSlug}.md`;
 
-        let index = "";
-        if (await backend.exists("index.md")) {
-          index = await readVaultFile(backend, "index.md");
-        }
+          let index = "";
+          const indexPresent = await backend.exists("index.md");
+          ctx.flags.index_present = indexPresent;
+          if (indexPresent) {
+            index = await readVaultFile(backend, "index.md");
+          }
 
-        const keywords = extractKeywords(question);
-        const allResults: Map<string, string> = new Map();
-        let partialResults = false;
+          const keywords = extractKeywords(question);
+          ctx.flags.keywords_extracted_count = keywords.length;
+          ctx.flags.temporal_branch_fired = isTemporalQuestion(question);
 
-        const concurrency = Math.max(
-          1,
-          parseInt(process.env.HARVEST_PARALLELISM ?? "10", 10),
-        );
+          const allResults: Map<string, string> = new Map();
+          let partialResults = false;
+          // A2: scoring_path is null until the hotPath sets it. The 15s
+          // budget can cancel before either branch fires (e.g. listFiles
+          // hangs), in which case null is the truthful value for telemetry.
+          let scoringPath: "index" | "body" | null = null;
+          let candidatesPreLimit = 0;
 
-        const hotPath = async () => {
-          const indexCandidates = index
-            ? parseIndexCandidates(index, keywords)
-            : [];
-          const scoredCandidates = indexCandidates.filter((c) => c.score > 0);
+          const concurrency = Math.max(
+            1,
+            parseInt(process.env.HARVEST_PARALLELISM ?? "10", 10),
+          );
 
-          if (scoredCandidates.length > 0) {
-            // Index-first path: read top 15 candidates in parallel chunks
-            const topCandidates = scoredCandidates.slice(0, 15);
-            for (let i = 0; i < topCandidates.length; i += concurrency) {
-              const chunk = topCandidates.slice(i, i + concurrency);
-              await Promise.all(
-                chunk.map(async (c) => {
-                  if (!allResults.has(c.path)) {
-                    allResults.set(c.path, c.title);
-                  }
-                }),
+          const hotPath = async () => {
+            const indexCandidates = index
+              ? parseIndexCandidates(index, keywords)
+              : [];
+            const scoredCandidates = indexCandidates.filter((c) => c.score > 0);
+            candidatesPreLimit = scoredCandidates.length;
+
+            if (scoredCandidates.length > 0) {
+              scoringPath = "index";
+              // Index-first path: read top 15 candidates in parallel chunks
+              const topCandidates = scoredCandidates.slice(0, 15);
+              for (let i = 0; i < topCandidates.length; i += concurrency) {
+                const chunk = topCandidates.slice(i, i + concurrency);
+                await Promise.all(
+                  chunk.map(async (c) => {
+                    if (!allResults.has(c.path)) {
+                      allResults.set(c.path, c.title);
+                    }
+                  }),
+                );
+              }
+            } else {
+              scoringPath = "body";
+              // Body-search fallback: parallel across keywords, capped per-keyword
+              const searchPath = (await backend.exists(notesFolder))
+                ? notesFolder
+                : undefined;
+              const resultSets = await Promise.all(
+                keywords.slice(0, 5).map((k) =>
+                  searchVault(backend, k, {
+                    subPath: searchPath,
+                    maxResults: 5,
+                  }),
+                ),
               );
-            }
-          } else {
-            // Body-search fallback: parallel across keywords, capped per-keyword
-            const searchPath = (await backend.exists(notesFolder))
-              ? notesFolder
-              : undefined;
-            const resultSets = await Promise.all(
-              keywords.slice(0, 5).map((k) =>
-                searchVault(backend, k, {
-                  subPath: searchPath,
-                  maxResults: 5,
-                }),
-              ),
-            );
-            for (const results of resultSets) {
-              for (const r of results) {
-                if (!allResults.has(r.file)) {
-                  allResults.set(r.file, r.title);
+              for (const results of resultSets) {
+                for (const r of results) {
+                  if (!allResults.has(r.file)) {
+                    allResults.set(r.file, r.title);
+                  }
                 }
               }
             }
-          }
 
-          if (isTemporalQuestion(question)) {
-            const recentPaths = await backend.recentFiles(20);
-            for (const rp of recentPaths) {
-              if (!allResults.has(rp)) {
-                allResults.set(rp, rp.split("/").pop() ?? rp);
+            if (isTemporalQuestion(question)) {
+              const recentPaths = await backend.recentFiles(20);
+              for (const rp of recentPaths) {
+                if (!allResults.has(rp)) {
+                  allResults.set(rp, rp.split("/").pop() ?? rp);
+                }
               }
             }
-          }
-        };
+          };
 
-        const harvestBudgetMs = parseInt(
-          process.env.HARVEST_TIMEOUT_MS ?? "15000",
-          10,
-        );
-        await withTimeout(hotPath(), harvestBudgetMs, () => {
-          partialResults = true;
-        });
+          const harvestBudgetMs = parseInt(
+            process.env.HARVEST_TIMEOUT_MS ?? "15000",
+            10,
+          );
+          await withTimeout(hotPath(), harvestBudgetMs, () => {
+            partialResults = true;
+          });
+          ctx.flags.scoring_path = scoringPath;
+          ctx.flags.partial_results = partialResults;
+          ctx.flags.candidates_pre_limit = candidatesPreLimit;
+          ctx.resultCount = allResults.size;
+          ctx.noResults = allResults.size === 0;
 
-        // Read file contents in parallel chunks
-        // Lazy file list — loaded at most once, only when a direct read fails.
-        // Shared across chunks so concurrent misses don't each fire a listFiles call.
-        let allFilesPromise: Promise<string[]> | null = null;
-        const getAllFiles = () => {
-          if (!allFilesPromise) allFilesPromise = listVaultFiles(backend);
-          return allFilesPromise;
-        };
+          // Read file contents in parallel chunks
+          // Lazy file list — loaded at most once, only when a direct read fails.
+          // Shared across chunks so concurrent misses don't each fire a listFiles call.
+          let allFilesPromise: Promise<string[]> | null = null;
+          const getAllFiles = () => {
+            if (!allFilesPromise) allFilesPromise = listVaultFiles(backend);
+            return allFilesPromise;
+          };
 
-        // Try direct path; on miss, find first file whose basename matches.
-        const readWithFallback = async (
-          candidate: string,
-        ): Promise<{ path: string; content: string } | null> => {
-          try {
-            return {
-              path: candidate,
-              content: await readVaultFile(backend, candidate),
-            };
-          } catch {
-            const files = await getAllFiles();
-            const basename = candidate.split("/").pop()!;
-            const match = files.find(
-              (f) => f === basename || f.endsWith(`/${basename}`),
-            );
-            if (!match) return null;
+          // Try direct path; on miss, find first file whose basename matches.
+          const readWithFallback = async (
+            candidate: string,
+          ): Promise<{ path: string; content: string } | null> => {
             try {
               return {
-                path: match,
-                content: await readVaultFile(backend, match),
+                path: candidate,
+                content: await readVaultFile(backend, candidate),
               };
             } catch {
-              return null;
+              const files = await getAllFiles();
+              const basename = candidate.split("/").pop()!;
+              const match = files.find(
+                (f) => f === basename || f.endsWith(`/${basename}`),
+              );
+              if (!match) return null;
+              try {
+                return {
+                  path: match,
+                  content: await readVaultFile(backend, match),
+                };
+              } catch {
+                return null;
+              }
+            }
+          };
+
+          const harvestNonce = newFenceNonce();
+          const relevantFiles = [...allResults.entries()].slice(0, 10);
+          const pageContents: string[] = [];
+          for (let i = 0; i < relevantFiles.length; i += concurrency) {
+            const chunk = relevantFiles.slice(i, i + concurrency);
+            const chunkContents = await Promise.all(
+              chunk.map(async ([file]) => {
+                const resolved = await readWithFallback(file);
+                if (!resolved) return null;
+                return `### ${resolved.path}\n${safeFenceFile(resolved.path, resolved.content.slice(0, 3000), harvestNonce)}`;
+              }),
+            );
+            for (const c of chunkContents) {
+              if (c !== null) pageContents.push(c);
             }
           }
-        };
 
-        const harvestNonce = newFenceNonce();
-        const relevantFiles = [...allResults.entries()].slice(0, 10);
-        const pageContents: string[] = [];
-        for (let i = 0; i < relevantFiles.length; i += concurrency) {
-          const chunk = relevantFiles.slice(i, i + concurrency);
-          const chunkContents = await Promise.all(
-            chunk.map(async ([file]) => {
-              const resolved = await readWithFallback(file);
-              if (!resolved) return null;
-              return `### ${resolved.path}\n${safeFenceFile(resolved.path, resolved.content.slice(0, 3000), harvestNonce)}`;
-            }),
-          );
-          for (const c of chunkContents) {
-            if (c !== null) pageContents.push(c);
+          const output = [
+            `## Query: ${question}`,
+            "",
+            "### Index",
+            index
+              ? safeFenceFile("index.md", index.slice(0, 5000), harvestNonce)
+              : "(No index found — run taproot_cultivate first)",
+            "",
+            ...(partialResults
+              ? [
+                  `> Note: research budget exhausted at 15s — returning partial results from ${relevantFiles.length} candidates.`,
+                  "",
+                ]
+              : []),
+            `### Relevant Pages (${relevantFiles.length} found)`,
+            "",
+            ...pageContents,
+            "",
+            "### Instructions",
+            "",
+            "Synthesize an answer to the question using the content above.",
+            "- Cite sources using [[wikilinks]]",
+            "- If information is insufficient, say what's missing",
+          ];
+
+          if (shouldSave) {
+            output.push(
+              "",
+              "### REQUIRED: Save Your Answer",
+              "",
+              `After synthesizing your answer, you MUST call garden_plant with exactly these parameters:`,
+              "",
+              "```json",
+              JSON.stringify(
+                {
+                  path: outputPath,
+                  content: `${buildFrontmatter({
+                    title: question,
+                    date_created: TODAY(),
+                    summary: `Answer to: ${question}`,
+                    tags: ["query", "output"],
+                    type: "output",
+                    status: "final",
+                  })}\n\n# ${stripControls(question)}\n\n[YOUR SYNTHESIZED ANSWER HERE — use [[wikilinks]] for citations]`,
+                },
+                null,
+                2,
+              ),
+              "```",
+              "",
+              `Then update index.md (add entry under Outputs).`,
+            );
           }
+
+          if (!config) {
+            output.push("", SETUP_TIP);
+          }
+
+          return { content: [{ type: "text", text: output.join("\n") }] };
+        } catch (err) {
+          ctx.errorCode = "taproot_harvest_failed";
+          return respondToolError("taproot_harvest_failed", err);
         }
-
-        const output = [
-          `## Query: ${question}`,
-          "",
-          "### Index",
-          index
-            ? safeFenceFile("index.md", index.slice(0, 5000), harvestNonce)
-            : "(No index found — run taproot_cultivate first)",
-          "",
-          ...(partialResults
-            ? [
-                `> Note: research budget exhausted at 15s — returning partial results from ${relevantFiles.length} candidates.`,
-                "",
-              ]
-            : []),
-          `### Relevant Pages (${relevantFiles.length} found)`,
-          "",
-          ...pageContents,
-          "",
-          "### Instructions",
-          "",
-          "Synthesize an answer to the question using the content above.",
-          "- Cite sources using [[wikilinks]]",
-          "- If information is insufficient, say what's missing",
-        ];
-
-        if (shouldSave) {
-          output.push(
-            "",
-            "### REQUIRED: Save Your Answer",
-            "",
-            `After synthesizing your answer, you MUST call garden_plant with exactly these parameters:`,
-            "",
-            "```json",
-            JSON.stringify(
-              {
-                path: outputPath,
-                content: `${buildFrontmatter({
-                  title: question,
-                  date_created: TODAY(),
-                  summary: `Answer to: ${question}`,
-                  tags: ["query", "output"],
-                  type: "output",
-                  status: "final",
-                })}\n\n# ${stripControls(question)}\n\n[YOUR SYNTHESIZED ANSWER HERE — use [[wikilinks]] for citations]`,
-              },
-              null,
-              2,
-            ),
-            "```",
-            "",
-            `Then update index.md (add entry under Outputs).`,
-          );
-        }
-
-        if (!config) {
-          output.push("", SETUP_TIP);
-        }
-
-        return { content: [{ type: "text", text: output.join("\n") }] };
-      } catch (err) {
-        return respondToolError("taproot_harvest_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   server.registerTool(
@@ -886,189 +1015,206 @@ export function registerKnowledgeTools(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_prune",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config = await loadConfig(backend);
-        const notesFolder = config?.wikiFolder || "notes";
-        const outputsFolder = config?.outputsFolder || "outputs";
+    withTelemetry(
+      {
+        tool: "taproot_prune",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          const config = await loadConfig(backend);
+          const notesFolder = config?.wikiFolder || "notes";
+          const outputsFolder = config?.outputsFolder || "outputs";
 
-        // If notes folder exists scan it, otherwise scan the whole vault
-        const scanPath = (await backend.exists(notesFolder))
-          ? notesFolder
-          : undefined;
-        const scannedFiles = scanPath
-          ? await listVaultFiles(backend, scanPath)
-          : await listVaultFiles(backend);
+          // If notes folder exists scan it, otherwise scan the whole vault
+          const notesFolderExists = await backend.exists(notesFolder);
+          ctx.flags.notes_folder_exists = notesFolderExists;
+          const scanPath = notesFolderExists ? notesFolder : undefined;
+          const scannedFiles = scanPath
+            ? await listVaultFiles(backend, scanPath)
+            : await listVaultFiles(backend);
 
-        if (scannedFiles.length === 0) {
-          const tipSuffix = config ? "" : SETUP_TIP;
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No files found to check. Run taproot_setup_scan to configure Taproot first.${tipSuffix}`,
-              },
-            ],
-          };
-        }
-
-        const allLinks = new Set<string>();
-        const allPages = new Set<string>();
-        const orphans: string[] = [];
-        const missingFm: string[] = [];
-        const stalePages: string[] = [];
-        const brokenLinks: string[] = [];
-
-        const inboundLinks = new Map<string, number>();
-
-        for (const file of scannedFiles) {
-          const basename = path.basename(file, ".md");
-          allPages.add(basename);
-          inboundLinks.set(basename, 0);
-        }
-
-        for (const file of scannedFiles) {
-          const content = await readVaultFile(backend, file);
-          const fm = parseFrontmatter(content);
-
-          if (!fm.title || !fm.type || !fm.date_created) {
-            missingFm.push(file);
+          if (scannedFiles.length === 0) {
+            ctx.resultCount = 0;
+            ctx.noResults = true;
+            ctx.flags.broken_count_bucket = "0";
+            ctx.flags.orphan_count_bucket = "0";
+            ctx.flags.stale_count_bucket = "0";
+            const tipSuffix = config ? "" : SETUP_TIP;
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No files found to check. Run taproot_setup_scan to configure Taproot first.${tipSuffix}`,
+                },
+              ],
+            };
           }
 
-          if (fm.date_modified || fm.date_created) {
-            const date = new Date(fm.date_modified || fm.date_created);
-            const sixMonthsAgo = new Date();
-            sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-            if (date < sixMonthsAgo) {
-              stalePages.push(file);
+          const allLinks = new Set<string>();
+          const allPages = new Set<string>();
+          const orphans: string[] = [];
+          const missingFm: string[] = [];
+          const stalePages: string[] = [];
+          const brokenLinks: string[] = [];
+
+          const inboundLinks = new Map<string, number>();
+
+          for (const file of scannedFiles) {
+            const basename = path.basename(file, ".md");
+            allPages.add(basename);
+            inboundLinks.set(basename, 0);
+          }
+
+          for (const file of scannedFiles) {
+            const content = await readVaultFile(backend, file);
+            const fm = parseFrontmatter(content);
+
+            if (!fm.title || !fm.type || !fm.date_created) {
+              missingFm.push(file);
+            }
+
+            if (fm.date_modified || fm.date_created) {
+              const date = new Date(fm.date_modified || fm.date_created);
+              const sixMonthsAgo = new Date();
+              sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+              if (date < sixMonthsAgo) {
+                stalePages.push(file);
+              }
+            }
+
+            const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+            let match;
+            while ((match = linkRegex.exec(content)) !== null) {
+              const linkTarget = match[1].toLowerCase().replace(/\s+/g, "-");
+              allLinks.add(linkTarget);
+
+              const current = inboundLinks.get(linkTarget) || 0;
+              inboundLinks.set(linkTarget, current + 1);
+
+              if (!allPages.has(linkTarget)) {
+                brokenLinks.push(`${file} -> [[${match[1]}]]`);
+              }
             }
           }
 
-          const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-          let match;
-          while ((match = linkRegex.exec(content)) !== null) {
-            const linkTarget = match[1].toLowerCase().replace(/\s+/g, "-");
-            allLinks.add(linkTarget);
-
-            const current = inboundLinks.get(linkTarget) || 0;
-            inboundLinks.set(linkTarget, current + 1);
-
-            if (!allPages.has(linkTarget)) {
-              brokenLinks.push(`${file} -> [[${match[1]}]]`);
+          for (const file of scannedFiles) {
+            const basename = path.basename(file, ".md");
+            if (
+              basename === "index" ||
+              basename === "log" ||
+              basename === "_index"
+            )
+              continue;
+            if ((inboundLinks.get(basename) || 0) === 0) {
+              orphans.push(file);
             }
           }
-        }
 
-        for (const file of scannedFiles) {
-          const basename = path.basename(file, ".md");
-          if (
-            basename === "index" ||
-            basename === "log" ||
-            basename === "_index"
-          )
-            continue;
-          if ((inboundLinks.get(basename) || 0) === 0) {
-            orphans.push(file);
-          }
-        }
+          const report = [
+            "## Health Check Report",
+            `**Date:** ${TODAY()}`,
+            `**Total pages:** ${scannedFiles.length}`,
+            `**Total wikilinks:** ${allLinks.size}`,
+            "",
+          ];
 
-        const report = [
-          "## Health Check Report",
-          `**Date:** ${TODAY()}`,
-          `**Total pages:** ${scannedFiles.length}`,
-          `**Total wikilinks:** ${allLinks.size}`,
-          "",
-        ];
-
-        if (brokenLinks.length > 0) {
-          report.push(`### Broken Links (${brokenLinks.length})`);
-          for (const bl of brokenLinks.slice(0, 20)) {
-            report.push(`- ${bl}`);
-          }
-          report.push("");
-        }
-
-        if (orphans.length > 0) {
-          report.push(
-            `### Orphan Pages — no inbound links (${orphans.length})`,
-          );
-          for (const o of orphans.slice(0, 20)) {
-            report.push(`- ${o}`);
-          }
-          report.push("");
-        }
-
-        if (missingFm.length > 0) {
-          report.push(
-            `### Missing/Incomplete Frontmatter (${missingFm.length})`,
-          );
-          for (const m of missingFm.slice(0, 20)) {
-            report.push(`- ${m}`);
-          }
-          report.push("");
-        }
-
-        if (stalePages.length > 0) {
-          report.push(
-            `### Stale Content — >6 months old (${stalePages.length})`,
-          );
-          for (const s of stalePages.slice(0, 20)) {
-            report.push(`- ${s}`);
-          }
-          report.push("");
-        }
-
-        const allClean =
-          brokenLinks.length === 0 &&
-          orphans.length === 0 &&
-          missingFm.length === 0 &&
-          stalePages.length === 0;
-
-        if (allClean) {
-          report.push("All checks passed. Wiki is healthy.");
-        } else {
-          report.push("### Suggested Actions");
           if (brokenLinks.length > 0) {
-            report.push(
-              "- Create stub pages for broken link targets using garden_plant",
-            );
+            report.push(`### Broken Links (${brokenLinks.length})`);
+            for (const bl of brokenLinks.slice(0, 20)) {
+              report.push(`- ${bl}`);
+            }
+            report.push("");
           }
+
           if (orphans.length > 0) {
             report.push(
-              "- Add [[wikilinks]] to orphan pages from related content",
+              `### Orphan Pages — no inbound links (${orphans.length})`,
             );
+            for (const o of orphans.slice(0, 20)) {
+              report.push(`- ${o}`);
+            }
+            report.push("");
           }
+
           if (missingFm.length > 0) {
             report.push(
-              "- Add frontmatter (title, type, date_created, summary) to pages missing it",
+              `### Missing/Incomplete Frontmatter (${missingFm.length})`,
+            );
+            for (const m of missingFm.slice(0, 20)) {
+              report.push(`- ${m}`);
+            }
+            report.push("");
+          }
+
+          if (stalePages.length > 0) {
+            report.push(
+              `### Stale Content — >6 months old (${stalePages.length})`,
+            );
+            for (const s of stalePages.slice(0, 20)) {
+              report.push(`- ${s}`);
+            }
+            report.push("");
+          }
+
+          const allClean =
+            brokenLinks.length === 0 &&
+            orphans.length === 0 &&
+            missingFm.length === 0 &&
+            stalePages.length === 0;
+
+          if (allClean) {
+            report.push("All checks passed. Wiki is healthy.");
+          } else {
+            report.push("### Suggested Actions");
+            if (brokenLinks.length > 0) {
+              report.push(
+                "- Create stub pages for broken link targets using garden_plant",
+              );
+            }
+            if (orphans.length > 0) {
+              report.push(
+                "- Add [[wikilinks]] to orphan pages from related content",
+              );
+            }
+            if (missingFm.length > 0) {
+              report.push(
+                "- Add frontmatter (title, type, date_created, summary) to pages missing it",
+              );
+            }
+            if (stalePages.length > 0) {
+              report.push(
+                "- Review stale pages and update or mark as archived",
+              );
+            }
+            report.push("");
+            report.push(
+              `Save this report using garden_plant to: ${outputsFolder}/lint-report-${TODAY()}.md`,
             );
           }
-          if (stalePages.length > 0) {
-            report.push("- Review stale pages and update or mark as archived");
+
+          if (!config) {
+            report.push("", SETUP_TIP);
           }
-          report.push("");
-          report.push(
-            `Save this report using garden_plant to: ${outputsFolder}/lint-report-${TODAY()}.md`,
-          );
-        }
 
-        if (!config) {
-          report.push("", SETUP_TIP);
-        }
+          ctx.flags.broken_count_bucket = countBucket(brokenLinks.length);
+          ctx.flags.orphan_count_bucket = countBucket(orphans.length);
+          ctx.flags.stale_count_bucket = countBucket(stalePages.length);
+          ctx.resultCount = scannedFiles.length;
+          ctx.noResults = false;
 
-        return {
-          content: [{ type: "text", text: report.join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("taproot_prune_failed", err);
-      }
-    },
+          return {
+            content: [{ type: "text", text: report.join("\n") }],
+          };
+        } catch (err) {
+          ctx.errorCode = "taproot_prune_failed";
+          return respondToolError("taproot_prune_failed", err);
+        }
+      },
+    ),
   );
 
   // ── taproot_save_url ────────────────────────────────────────────────
@@ -1126,114 +1272,141 @@ export function registerKnowledgeTools(
         openWorldHint: true,
       },
     },
-    async ({
-      url,
-      title,
-      suggestedFolder,
-      suggestedTags,
-      userIntent,
-      previewOnly,
-    }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_save_url",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        let fetched;
+    withTelemetry(
+      {
+        tool: "taproot_save_url",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({
+          url,
+          title,
+          suggestedFolder,
+          suggestedTags,
+          previewOnly,
+        }) => ({
+          url_host_only: urlHostOnly(url),
+          has_title_override: typeof title === "string" && title.length > 0,
+          has_folder_override:
+            typeof suggestedFolder === "string" && suggestedFolder.length > 0,
+          has_tags: Array.isArray(suggestedTags) && suggestedTags.length > 0,
+          preview_only: previewOnly === true,
+        }),
+      },
+      async (
+        { url, title, suggestedFolder, suggestedTags, userIntent, previewOnly },
+        ctx,
+      ) => {
+        ctx.flags.error_stage = null;
+        ctx.flags.fetch_failed = false;
+        ctx.flags.protected_blocked = false;
+        ctx.flags.preview_mode = previewOnly === true;
         try {
-          fetched = await fetchUrlAsText(url);
-        } catch (fetchErr) {
-          return respondToolError("taproot_save_url_fetch_failed", fetchErr);
-        }
+          let fetched;
+          try {
+            fetched = await fetchUrlAsText(url);
+          } catch (fetchErr) {
+            // A3: distinct fetch_failed step (network/retry) vs write step.
+            ctx.flags.error_stage = "fetch";
+            ctx.flags.fetch_failed = true;
+            ctx.errorCode = "taproot_save_url_fetch_failed";
+            return respondToolError("taproot_save_url_fetch_failed", fetchErr);
+          }
 
-        const config = await loadConfig(backend);
-        const defaults = getDefaultConfig();
-        const targetFolder =
-          suggestedFolder || config?.sourcesFolder || defaults.sourcesFolder;
+          const config = await loadConfig(backend);
+          const defaults = getDefaultConfig();
+          const targetFolder =
+            suggestedFolder || config?.sourcesFolder || defaults.sourcesFolder;
 
-        const resolvedTitle =
-          title || fetched.title || urlToSlugTitle(url) || "Saved page";
-        const filename = slugify(resolvedTitle) + ".md";
-        const filePath = `${targetFolder}/${filename}`;
+          const resolvedTitle =
+            title || fetched.title || urlToSlugTitle(url) || "Saved page";
+          const filename = slugify(resolvedTitle) + ".md";
+          const filePath = `${targetFolder}/${filename}`;
 
-        const wordCount = fetched.body.split(/\s+/).filter(Boolean).length;
-        const excerpt = fetched.body.slice(0, 400);
+          const wordCount = fetched.body.split(/\s+/).filter(Boolean).length;
+          const excerpt = fetched.body.slice(0, 400);
 
-        if (previewOnly) {
+          if (previewOnly) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "## Preview (not saved)",
+                    "",
+                    `**Would save to:** ${filePath}`,
+                    `**Title:** ${resolvedTitle}`,
+                    `**Source:** ${url}`,
+                    `**Word count:** ~${wordCount}`,
+                    suggestedTags && suggestedTags.length > 0
+                      ? `**Tags:** ${["raw", ...suggestedTags].join(", ")}`
+                      : "**Tags:** raw",
+                    userIntent ? `**Intent:** ${userIntent}` : "",
+                    "",
+                    "### Excerpt",
+                    "```",
+                    excerpt,
+                    fetched.body.length > 400 ? "..." : "",
+                    "```",
+                    "",
+                    "Re-call without `previewOnly` to commit, or pass `title`/`suggestedFolder`/`suggestedTags` to override.",
+                  ]
+                    .filter(Boolean)
+                    .join("\n"),
+                },
+              ],
+            };
+          }
+
+          const allTags = ["raw", ...(suggestedTags || [])];
+          const frontmatter = buildFrontmatter({
+            title: resolvedTitle,
+            source: url,
+            date_created: TODAY(),
+            type: "article",
+            status: "raw",
+            tags: allTags,
+            note: userIntent,
+          });
+
+          const fullContent = `${frontmatter}\n\n# ${stripControls(resolvedTitle)}\n\n${fetched.body}`;
+
+          const blockedSave = rejectProtectedWrite(filePath);
+          if (blockedSave) {
+            ctx.flags.protected_blocked = true;
+            ctx.errorCode = "taproot_save_url_protected";
+            return blockedSave;
+          }
+          await writeVaultFile(backend, filePath, fullContent);
+
+          const filingHint = await getFilingHintCached(
+            backend,
+            LOCAL_TENANT_KEY,
+            filePath,
+          );
+
+          const responseText = [
+            `Saved: ${filePath}`,
+            `Title: ${resolvedTitle}`,
+            `Source: ${url}`,
+            `Words: ~${wordCount}`,
+            filingHint ? `\n${filingHint}` : "",
+            config ? "" : SETUP_TIP,
+          ]
+            .filter(Boolean)
+            .join("\n");
+
           return {
-            content: [
-              {
-                type: "text",
-                text: [
-                  "## Preview (not saved)",
-                  "",
-                  `**Would save to:** ${filePath}`,
-                  `**Title:** ${resolvedTitle}`,
-                  `**Source:** ${url}`,
-                  `**Word count:** ~${wordCount}`,
-                  suggestedTags && suggestedTags.length > 0
-                    ? `**Tags:** ${["raw", ...suggestedTags].join(", ")}`
-                    : "**Tags:** raw",
-                  userIntent ? `**Intent:** ${userIntent}` : "",
-                  "",
-                  "### Excerpt",
-                  "```",
-                  excerpt,
-                  fetched.body.length > 400 ? "..." : "",
-                  "```",
-                  "",
-                  "Re-call without `previewOnly` to commit, or pass `title`/`suggestedFolder`/`suggestedTags` to override.",
-                ]
-                  .filter(Boolean)
-                  .join("\n"),
-              },
-            ],
+            content: [{ type: "text", text: responseText }],
           };
+        } catch (err) {
+          // A3: post-fetch path. error_stage="write" disambiguates.
+          ctx.flags.error_stage = "write";
+          ctx.errorCode = "taproot_save_url_failed";
+          return respondToolError("taproot_save_url_failed", err);
         }
-
-        const allTags = ["raw", ...(suggestedTags || [])];
-        const frontmatter = buildFrontmatter({
-          title: resolvedTitle,
-          source: url,
-          date_created: TODAY(),
-          type: "article",
-          status: "raw",
-          tags: allTags,
-          note: userIntent,
-        });
-
-        const fullContent = `${frontmatter}\n\n# ${stripControls(resolvedTitle)}\n\n${fetched.body}`;
-
-        const blockedSave = rejectProtectedWrite(filePath);
-        if (blockedSave) return blockedSave;
-        await writeVaultFile(backend, filePath, fullContent);
-
-        const filingHint = await getFilingHintCached(
-          backend,
-          LOCAL_TENANT_KEY,
-          filePath,
-        );
-
-        const responseText = [
-          `Saved: ${filePath}`,
-          `Title: ${resolvedTitle}`,
-          `Source: ${url}`,
-          `Words: ~${wordCount}`,
-          filingHint ? `\n${filingHint}` : "",
-          config ? "" : SETUP_TIP,
-        ]
-          .filter(Boolean)
-          .join("\n");
-
-        return {
-          content: [{ type: "text", text: responseText }],
-        };
-      } catch (err) {
-        return respondToolError("taproot_save_url_failed", err);
-      }
-    },
+      },
+    ),
   );
 }
 
