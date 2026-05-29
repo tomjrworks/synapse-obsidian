@@ -2,11 +2,8 @@ import { z } from "zod";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import {
-  checkToolRateLimit,
-  rateLimitToolError,
-  respondToolError,
-} from "./_rate-limit.js";
+import { respondToolError } from "./_rate-limit.js";
+import { withTelemetry } from "../observability/tool-telemetry.js";
 import {
   readVaultFile,
   writeVaultFile,
@@ -47,11 +44,16 @@ export function parseForageHints(
   return hints;
 }
 
+function pathDepth(p: string): number {
+  return p.split("/").filter(Boolean).length;
+}
+
 export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
   opts: { workspaceId?: string } = {},
 ): void {
+  // ── garden_read ──────────────────────────────────────────────────────
   server.registerTool(
     "garden_read",
     {
@@ -70,29 +72,38 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ path: filePath }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_read",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const content = await readVaultFile(backend, filePath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: safeFenceFile(filePath, content, newFenceNonce()),
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("garden_read_failed", err);
-      }
-    },
+    withTelemetry(
+      {
+        tool: "garden_read",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ path: filePath }) => ({
+          path_depth: pathDepth(filePath),
+        }),
+      },
+      async ({ path: filePath }, ctx) => {
+        try {
+          const content = await readVaultFile(backend, filePath);
+          ctx.resultCount = 1;
+          ctx.noResults = false;
+          return {
+            content: [
+              {
+                type: "text",
+                text: safeFenceFile(filePath, content, newFenceNonce()),
+              },
+            ],
+          };
+        } catch (err) {
+          ctx.errorCode = "garden_read_failed";
+          return respondToolError("garden_read_failed", err);
+        }
+      },
+    ),
   );
 
+  // ── garden_plant ─────────────────────────────────────────────────────
   server.registerTool(
     "garden_plant",
     {
@@ -123,97 +134,117 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ path: filePath, content, acknowledgeRoot }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_plant",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      // H1 (05-05): guard persistent-instruction files against unacknowledged
-      // overwrites via canonical-form Set check. Closes raw-string-match bypasses
-      // (`./CLAUDE.md`, case folding on APFS, trailing-slash, traversal,
-      // backslash, basename-anywhere for nested CLAUDE.md). See
-      // `src/utils/path-guard.ts` and `scripts/test-protected-paths.ts`.
-      const guard = checkProtected(filePath);
+    withTelemetry(
+      {
+        tool: "garden_plant",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ path: filePath, content, acknowledgeRoot }) => ({
+          path_depth: pathDepth(filePath),
+          content_len: content.length,
+          has_acknowledge_root: acknowledgeRoot === true,
+          is_protected_path: checkProtected(filePath).kind === "protected",
+        }),
+      },
+      async ({ path: filePath, content, acknowledgeRoot }, ctx) => {
+        // H1 (05-05): guard persistent-instruction files against unacknowledged
+        // overwrites via canonical-form Set check. Closes raw-string-match bypasses
+        // (`./CLAUDE.md`, case folding on APFS, trailing-slash, traversal,
+        // backslash, basename-anywhere for nested CLAUDE.md). See
+        // `src/utils/path-guard.ts` and `scripts/test-protected-paths.ts`.
+        const guard = checkProtected(filePath);
 
-      if (guard.kind === "invalid") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Invalid path '${filePath}': ${guard.reason}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      if (guard.kind === "protected") {
-        if (acknowledgeRoot !== true) {
+        if (guard.kind === "invalid") {
+          ctx.errorCode = "garden_plant_invalid_path";
           return {
             content: [
               {
                 type: "text",
-                text: `Writing to '${filePath}' is protected (resolves to '${guard.canonical}'). This file contains persistent AI instructions or vault configuration. To proceed, re-call garden_plant with acknowledgeRoot: true and explicit user consent.`,
+                text: `Invalid path '${filePath}': ${guard.reason}`,
               },
             ],
             isError: true,
           };
         }
-        // Reject acknowledged non-canonical writes: on case-sensitive filesystems
-        // (Linux/Railway) `claude.md` + ack=true would otherwise pass the gate
-        // and silently create a sibling lowercase file rather than touching the
-        // real CLAUDE.md the caller intends.
-        const isCanonical =
-          filePath === guard.canonical || filePath === "CLAUDE.md";
-        if (!isCanonical) {
+
+        if (guard.kind === "protected") {
+          if (acknowledgeRoot !== true) {
+            ctx.flags.protected_blocked = true;
+            ctx.errorCode = "garden_plant_protected_unacknowledged";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Writing to '${filePath}' is protected (resolves to '${guard.canonical}'). This file contains persistent AI instructions or vault configuration. To proceed, re-call garden_plant with acknowledgeRoot: true and explicit user consent.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          // Reject acknowledged non-canonical writes: on case-sensitive filesystems
+          // (Linux/Railway) `claude.md` + ack=true would otherwise pass the gate
+          // and silently create a sibling lowercase file rather than touching the
+          // real CLAUDE.md the caller intends.
+          const isCanonical =
+            filePath === guard.canonical || filePath === "CLAUDE.md";
+          if (!isCanonical) {
+            ctx.flags.protected_blocked = true;
+            ctx.errorCode = "garden_plant_protected_noncanonical";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Path '${filePath}' is non-canonical for protected file '${guard.canonical}'. Re-call with the canonical path (e.g. 'CLAUDE.md', 'index.md', '.taproot/config.json' — or for nested CLAUDE.md, the exact intended path).`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        ctx.flags.protected_blocked = false;
+
+        // Tier 2: gated `date_modified` frontmatter injection. Off by
+        // default; flip `GARDEN_PLANT_DATE_INJECT=1` on Railway after
+        // smoke. Skipped unconditionally for protected paths — those have
+        // marker-merge contracts we don't want to perturb. Skipped for
+        // files without an existing frontmatter block (we never prepend
+        // YAML to a plain markdown file). Skipped on YAML parse error.
+        const shouldInjectDate =
+          process.env.GARDEN_PLANT_DATE_INJECT === "1" && guard.kind === "ok";
+        ctx.flags.date_inject_gated = shouldInjectDate;
+        const finalContent = shouldInjectDate
+          ? maybeInjectDateModified(content)
+          : content;
+        ctx.flags.date_inject_mutated =
+          shouldInjectDate && finalContent !== content;
+
+        try {
+          await writeVaultFile(backend, filePath, finalContent);
+          if (filePath === "CLAUDE.md") {
+            invalidateClaudeMdCache(LOCAL_TENANT_KEY);
+          }
+          const hint = await getFilingHintCached(
+            backend,
+            LOCAL_TENANT_KEY,
+            filePath,
+          );
+          const message = hint
+            ? `Written: ${filePath}\n\n${hint}`
+            : `Written: ${filePath}`;
           return {
-            content: [
-              {
-                type: "text",
-                text: `Path '${filePath}' is non-canonical for protected file '${guard.canonical}'. Re-call with the canonical path (e.g. 'CLAUDE.md', 'index.md', '.taproot/config.json' — or for nested CLAUDE.md, the exact intended path).`,
-              },
-            ],
-            isError: true,
+            content: [{ type: "text", text: message }],
           };
+        } catch (err) {
+          ctx.errorCode = "garden_plant_failed";
+          return respondToolError("garden_plant_failed", err);
         }
-      }
-
-      // Tier 2: gated `date_modified` frontmatter injection. Off by
-      // default; flip `GARDEN_PLANT_DATE_INJECT=1` on Railway after
-      // smoke. Skipped unconditionally for protected paths — those have
-      // marker-merge contracts we don't want to perturb. Skipped for
-      // files without an existing frontmatter block (we never prepend
-      // YAML to a plain markdown file). Skipped on YAML parse error.
-      const shouldInjectDate =
-        process.env.GARDEN_PLANT_DATE_INJECT === "1" && guard.kind === "ok";
-      const finalContent = shouldInjectDate
-        ? maybeInjectDateModified(content)
-        : content;
-
-      try {
-        await writeVaultFile(backend, filePath, finalContent);
-        if (filePath === "CLAUDE.md") {
-          invalidateClaudeMdCache(LOCAL_TENANT_KEY);
-        }
-        const hint = await getFilingHintCached(
-          backend,
-          LOCAL_TENANT_KEY,
-          filePath,
-        );
-        const message = hint
-          ? `Written: ${filePath}\n\n${hint}`
-          : `Written: ${filePath}`;
-        return {
-          content: [{ type: "text", text: message }],
-        };
-      } catch (err) {
-        return respondToolError("garden_plant_failed", err);
-      }
-    },
+      },
+    ),
   );
 
+  // ── garden_survey ────────────────────────────────────────────────────
   server.registerTool(
     "garden_survey",
     {
@@ -240,41 +271,51 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ path: subPath, recursive }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_survey",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const files = await listVaultFiles(backend, subPath, recursive);
-        if (files.length === 0) {
+    withTelemetry(
+      {
+        tool: "garden_survey",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ path: subPath, recursive }) => ({
+          sub_path_present: subPath !== undefined && subPath !== "",
+          recursive: recursive ?? true,
+        }),
+      },
+      async ({ path: subPath, recursive }, ctx) => {
+        try {
+          const files = await listVaultFiles(backend, subPath, recursive);
+          ctx.resultCount = files.length;
+          ctx.noResults = files.length === 0;
+          if (files.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: subPath
+                    ? `No markdown files found in ${subPath}/`
+                    : "No markdown files found in vault.",
+                },
+              ],
+            };
+          }
           return {
             content: [
               {
                 type: "text",
-                text: subPath
-                  ? `No markdown files found in ${subPath}/`
-                  : "No markdown files found in vault.",
+                text: `${files.length} files:\n${files.join("\n")}`,
               },
             ],
           };
+        } catch (err) {
+          ctx.errorCode = "garden_survey_failed";
+          return respondToolError("garden_survey_failed", err);
         }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `${files.length} files:\n${files.join("\n")}`,
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("garden_survey_failed", err);
-      }
-    },
+      },
+    ),
   );
 
+  // ── garden_forage ────────────────────────────────────────────────────
   server.registerTool(
     "garden_forage",
     {
@@ -300,151 +341,176 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ query, path: subPath, maxResults }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_forage",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        interface ForageHit {
-          file: string;
-          title: string;
-          dateModified?: string;
-          matches: SearchMatch[];
-        }
+    withTelemetry(
+      {
+        tool: "garden_forage",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ query, path: subPath, maxResults }) => ({
+          query_len: query.length,
+          query_word_count: query.split(/\s+/).filter(Boolean).length,
+          sub_path_present: subPath !== undefined && subPath !== "",
+          max_results: maxResults ?? 20,
+        }),
+      },
+      async ({ query, path: subPath, maxResults }, ctx) => {
+        try {
+          interface ForageHit {
+            file: string;
+            title: string;
+            dateModified?: string;
+            matches: SearchMatch[];
+          }
 
-        const collectedResults: ForageHit[] = [];
-        let partialResults = false;
-        const cap = maxResults ?? 20;
-        const lowerQuery = query.toLowerCase();
-        const concurrency = Math.max(
-          1,
-          parseInt(process.env.FORAGE_PARALLELISM ?? "10", 10),
-        );
-        const budgetMs = parseInt(process.env.FORAGE_TIMEOUT_MS ?? "15000", 10);
+          const collectedResults: ForageHit[] = [];
+          let partialResults = false;
+          const cap = maxResults ?? 20;
+          const lowerQuery = query.toLowerCase();
+          const concurrency = Math.max(
+            1,
+            parseInt(process.env.FORAGE_PARALLELISM ?? "10", 10),
+          );
+          const budgetMs = parseInt(
+            process.env.FORAGE_TIMEOUT_MS ?? "15000",
+            10,
+          );
 
-        const scanPath = async () => {
-          let priorityHints: string[] = [];
-          try {
-            if (await backend.exists("index.md").catch(() => false)) {
-              const indexContent = await readVaultFile(backend, "index.md");
-              priorityHints = parseForageHints(indexContent, query);
+          let priorityHintsCount = 0;
+
+          const scanPath = async () => {
+            let priorityHints: string[] = [];
+            try {
+              if (await backend.exists("index.md").catch(() => false)) {
+                const indexContent = await readVaultFile(backend, "index.md");
+                priorityHints = parseForageHints(indexContent, query);
+              }
+            } catch {
+              /* non-fatal */
             }
-          } catch {
-            /* non-fatal */
-          }
+            priorityHintsCount = priorityHints.length;
 
-          let files = await listVaultFiles(backend, subPath);
+            let files = await listVaultFiles(backend, subPath);
 
-          if (priorityHints.length > 0) {
-            const hintBasenames = new Set(
-              priorityHints.map((h) => path.basename(h)),
-            );
-            const isPriority = (f: string) =>
-              priorityHints.includes(f) || hintBasenames.has(path.basename(f));
-            files = [
-              ...files.filter(isPriority),
-              ...files.filter((f) => !isPriority(f)),
-            ];
-          }
+            if (priorityHints.length > 0) {
+              const hintBasenames = new Set(
+                priorityHints.map((h) => path.basename(h)),
+              );
+              const isPriority = (f: string) =>
+                priorityHints.includes(f) ||
+                hintBasenames.has(path.basename(f));
+              files = [
+                ...files.filter(isPriority),
+                ...files.filter((f) => !isPriority(f)),
+              ];
+            }
 
-          for (let i = 0; i < files.length; i += concurrency) {
-            if (collectedResults.length >= cap) break;
-            const chunk = files.slice(i, i + concurrency);
-            const chunkHits = await Promise.all(
-              chunk.map(async (file): Promise<ForageHit | null> => {
-                try {
-                  const content = await readVaultFile(backend, file);
-                  const lines = content.split("\n");
-                  const matches: SearchMatch[] = [];
-                  for (let j = 0; j < lines.length; j++) {
-                    if (lines[j].toLowerCase().includes(lowerQuery)) {
-                      matches.push({ line: j + 1, text: lines[j].trim() });
+            for (let i = 0; i < files.length; i += concurrency) {
+              if (collectedResults.length >= cap) break;
+              const chunk = files.slice(i, i + concurrency);
+              const chunkHits = await Promise.all(
+                chunk.map(async (file): Promise<ForageHit | null> => {
+                  try {
+                    const content = await readVaultFile(backend, file);
+                    const lines = content.split("\n");
+                    const matches: SearchMatch[] = [];
+                    for (let j = 0; j < lines.length; j++) {
+                      if (lines[j].toLowerCase().includes(lowerQuery)) {
+                        matches.push({ line: j + 1, text: lines[j].trim() });
+                      }
                     }
+                    if (matches.length === 0) return null;
+                    const fm = parseFrontmatter(content);
+                    const dateModified =
+                      normalizeFrontmatterDate(fm.date_modified) ?? undefined;
+                    return {
+                      file,
+                      title:
+                        (fm.title as string | undefined) ??
+                        path.basename(file, ".md"),
+                      dateModified,
+                      matches,
+                    };
+                  } catch {
+                    return null;
                   }
-                  if (matches.length === 0) return null;
-                  const fm = parseFrontmatter(content);
-                  const dateModified =
-                    normalizeFrontmatterDate(fm.date_modified) ?? undefined;
-                  return {
-                    file,
-                    title:
-                      (fm.title as string | undefined) ??
-                      path.basename(file, ".md"),
-                    dateModified,
-                    matches,
-                  };
-                } catch {
-                  return null;
+                }),
+              );
+              for (const hit of chunkHits) {
+                if (hit !== null && collectedResults.length < cap) {
+                  collectedResults.push(hit);
                 }
-              }),
-            );
-            for (const hit of chunkHits) {
-              if (hit !== null && collectedResults.length < cap) {
-                collectedResults.push(hit);
               }
             }
-          }
-        };
+          };
 
-        await withTimeout(scanPath(), budgetMs, () => {
-          partialResults = true;
-        });
+          await withTimeout(scanPath(), budgetMs, () => {
+            partialResults = true;
+          });
 
-        if (collectedResults.length === 0) {
-          if (partialResults) {
+          ctx.flags.partial_results = partialResults;
+          ctx.flags.priority_hints_count = priorityHintsCount;
+          ctx.resultCount = collectedResults.length;
+          ctx.noResults = collectedResults.length === 0;
+
+          if (collectedResults.length === 0) {
+            if (partialResults) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `> Note: search budget exhausted — no results collected before timeout.`,
+                  },
+                ],
+              };
+            }
             return {
-              content: [
-                {
-                  type: "text",
-                  text: `> Note: search budget exhausted — no results collected before timeout.`,
-                },
-              ],
+              content: [{ type: "text", text: `No results for "${query}"` }],
             };
           }
-          return {
-            content: [{ type: "text", text: `No results for "${query}"` }],
-          };
-        }
 
-        const forageNonce = newFenceNonce();
-        const fileBlocks = collectedResults.map((r) => {
-          const matchLines = r.matches
-            .slice(0, 3)
-            .map((m) => `  L${m.line}: ${m.text}`)
-            .join("\n");
-          const modifiedSuffix = r.dateModified
-            ? ` (modified ${r.dateModified})`
-            : "";
-          const body = `${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}`;
-          return safeFenceFile(r.file, body, forageNonce);
-        });
+          const forageNonce = newFenceNonce();
+          const fileBlocks = collectedResults.map((r) => {
+            const matchLines = r.matches
+              .slice(0, 3)
+              .map((m) => `  L${m.line}: ${m.text}`)
+              .join("\n");
+            const modifiedSuffix = r.dateModified
+              ? ` (modified ${r.dateModified})`
+              : "";
+            const body = `${r.file} (${r.matches.length} matches)${modifiedSuffix}\n${matchLines}`;
+            return safeFenceFile(r.file, body, forageNonce);
+          });
 
-        const headerLines: string[] = [];
-        if (partialResults) {
+          const headerLines: string[] = [];
+          if (partialResults) {
+            headerLines.push(
+              `> Note: search budget exhausted — partial results from ${collectedResults.length} matches found so far.`,
+              "",
+            );
+          }
           headerLines.push(
-            `> Note: search budget exhausted — partial results from ${collectedResults.length} matches found so far.`,
-            "",
+            `${collectedResults.length} files match "${query}":`,
           );
-        }
-        headerLines.push(`${collectedResults.length} files match "${query}":`);
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: [...headerLines, "", fileBlocks.join("\n\n")].join("\n"),
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("garden_find_failed", err);
-      }
-    },
+          return {
+            content: [
+              {
+                type: "text",
+                text: [...headerLines, "", fileBlocks.join("\n\n")].join("\n"),
+              },
+            ],
+          };
+        } catch (err) {
+          // Drift fix: was throwing `garden_find_failed`; canonical is `garden_forage_failed`.
+          ctx.errorCode = "garden_forage_failed";
+          return respondToolError("garden_forage_failed", err);
+        }
+      },
+    ),
   );
 
+  // ── garden_measure ───────────────────────────────────────────────────
   server.registerTool(
     "garden_measure",
     {
@@ -459,24 +525,32 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_measure",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const stats = await getVaultStats(backend);
-        return {
-          content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
-        };
-      } catch (err) {
-        return respondToolError("garden_stats_failed", err);
-      }
-    },
+    withTelemetry(
+      {
+        tool: "garden_measure",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          const stats = await getVaultStats(backend);
+          ctx.resultCount = stats.totalFiles;
+          ctx.noResults = false;
+          return {
+            content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
+          };
+        } catch (err) {
+          // Drift fix: was throwing `garden_stats_failed`; canonical is `garden_measure_failed`.
+          ctx.errorCode = "garden_measure_failed";
+          return respondToolError("garden_measure_failed", err);
+        }
+      },
+    ),
   );
 
+  // ── garden_tag ───────────────────────────────────────────────────────
   server.registerTool(
     "garden_tag",
     {
@@ -493,33 +567,43 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ path: filePath }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_tag",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const content = await readVaultFile(backend, filePath);
-        const fm = parseFrontmatter(content);
-        if (Object.keys(fm).length === 0) {
+    withTelemetry(
+      {
+        tool: "garden_tag",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ path: filePath }) => ({
+          path_depth: pathDepth(filePath),
+        }),
+      },
+      async ({ path: filePath }, ctx) => {
+        try {
+          const content = await readVaultFile(backend, filePath);
+          const fm = parseFrontmatter(content);
+          const keyCount = Object.keys(fm).length;
+          ctx.resultCount = keyCount;
+          ctx.noResults = keyCount === 0;
+          if (keyCount === 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "No frontmatter found in this file.",
+                },
+              ],
+            };
+          }
           return {
-            content: [
-              {
-                type: "text",
-                text: "No frontmatter found in this file.",
-              },
-            ],
+            content: [{ type: "text", text: JSON.stringify(fm, null, 2) }],
           };
+        } catch (err) {
+          // Drift fix: was throwing `garden_frontmatter_failed`; canonical is `garden_tag_failed`.
+          ctx.errorCode = "garden_tag_failed";
+          return respondToolError("garden_tag_failed", err);
         }
-        return {
-          content: [{ type: "text", text: JSON.stringify(fm, null, 2) }],
-        };
-      } catch (err) {
-        return respondToolError("garden_frontmatter_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   // ── garden_find ──────────────────────────────────────────────────────
@@ -546,129 +630,160 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ query, limit }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_find",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const max = limit ?? 10;
-        const allFiles = await listVaultFiles(backend);
-        const lowerQuery = query.toLowerCase();
-        const queryWords = lowerQuery.split(/\s+/).filter((w) => w.length >= 2);
-
-        type Match = {
-          file: string;
-          title: string;
-          score: number;
-          preview: string;
-          modified?: string;
-        };
-        const filenameMatches: Match[] = [];
-
-        for (const file of allFiles) {
-          const basename = path.basename(file, ".md").toLowerCase();
-          const folder = path.dirname(file).toLowerCase();
-          let score = 0;
-
-          if (basename === lowerQuery) score += 100;
-          if (basename.includes(lowerQuery)) score += 50;
-          for (const w of queryWords) {
-            if (basename.includes(w)) score += 10;
-            if (folder.includes(w)) score += 3;
-          }
-
-          if (score > 0) {
-            filenameMatches.push({
-              file,
-              title: path.basename(file, ".md"),
-              score,
-              preview: "",
-            });
-          }
-        }
-
-        filenameMatches.sort((a, b) => b.score - a.score);
-
-        const candidates = filenameMatches.slice(0, max * 2);
-        const results: Match[] = [];
-
-        for (const m of candidates) {
-          if (results.length >= max) break;
-          try {
-            const content = await readVaultFile(backend, m.file);
-            const fm = parseFrontmatter(content);
-            const fmTitle = typeof fm.title === "string" ? fm.title : null;
-            const modified =
-              normalizeFrontmatterDate(fm.date_modified) ?? undefined;
-            const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
-            const previewLine =
-              body
-                .split("\n")
-                .find((l) => l.trim() && !l.startsWith("#"))
-                ?.slice(0, 160) || body.slice(0, 160);
-            results.push({
-              file: m.file,
-              title: fmTitle || m.title,
-              score: m.score,
-              preview: previewLine,
-              modified,
-            });
-          } catch {
-            results.push(m);
-          }
-        }
-
-        // If no filename hits, fall back to body search via existing search infra
-        if (results.length === 0) {
-          const searchHits = await searchVault(backend, query, {
-            maxResults: max,
-          });
-          for (const r of searchHits) {
-            const firstMatch = r.matches[0]?.text || "";
-            results.push({
-              file: r.file,
-              title: r.title,
-              score: 1,
-              preview: firstMatch.slice(0, 160),
-            });
-          }
-        }
-
-        if (results.length === 0) {
+    withTelemetry(
+      {
+        tool: "garden_find",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ query, limit }) => {
+          const tokens = query.split(/\s+/).filter(Boolean);
           return {
-            content: [
-              {
-                type: "text",
-                text: `No notes found matching "${query}". Try \`garden_forage\` for a full-text search inside note bodies.`,
-              },
-            ],
+            query_len: query.length,
+            query_word_count: tokens.length,
+            query_has_hyphen: query.includes("-"),
+            query_has_digit: /\d/.test(query),
+            query_all_short_tokens:
+              tokens.length > 0 && tokens.every((w) => w.length <= 3),
+            limit: limit ?? 10,
           };
+        },
+      },
+      async ({ query, limit }, ctx) => {
+        try {
+          const max = limit ?? 10;
+          const allFiles = await listVaultFiles(backend);
+          const lowerQuery = query.toLowerCase();
+          const queryWords = lowerQuery
+            .split(/\s+/)
+            .filter((w) => w.length >= 2);
+
+          type Match = {
+            file: string;
+            title: string;
+            score: number;
+            preview: string;
+            modified?: string;
+          };
+          const filenameMatches: Match[] = [];
+
+          for (const file of allFiles) {
+            const basename = path.basename(file, ".md").toLowerCase();
+            const folder = path.dirname(file).toLowerCase();
+            let score = 0;
+
+            if (basename === lowerQuery) score += 100;
+            if (basename.includes(lowerQuery)) score += 50;
+            for (const w of queryWords) {
+              if (basename.includes(w)) score += 10;
+              if (folder.includes(w)) score += 3;
+            }
+
+            if (score > 0) {
+              filenameMatches.push({
+                file,
+                title: path.basename(file, ".md"),
+                score,
+                preview: "",
+              });
+            }
+          }
+
+          filenameMatches.sort((a, b) => b.score - a.score);
+
+          const candidates = filenameMatches.slice(0, max * 2);
+          const results: Match[] = [];
+
+          for (const m of candidates) {
+            if (results.length >= max) break;
+            try {
+              const content = await readVaultFile(backend, m.file);
+              const fm = parseFrontmatter(content);
+              const fmTitle = typeof fm.title === "string" ? fm.title : null;
+              const modified =
+                normalizeFrontmatterDate(fm.date_modified) ?? undefined;
+              const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+              const previewLine =
+                body
+                  .split("\n")
+                  .find((l) => l.trim() && !l.startsWith("#"))
+                  ?.slice(0, 160) || body.slice(0, 160);
+              results.push({
+                file: m.file,
+                title: fmTitle || m.title,
+                score: m.score,
+                preview: previewLine,
+                modified,
+              });
+            } catch {
+              results.push(m);
+            }
+          }
+
+          // Filename-hit count captured BEFORE fallback. This is the
+          // load-bearing branch flag for Pass 3's IS-7011 anchor.
+          ctx.flags.filename_hits = results.length;
+
+          // If no filename hits, fall back to body search via existing search infra
+          let bodyFallbackFired = false;
+          let bodyHits = 0;
+          if (results.length === 0) {
+            bodyFallbackFired = true;
+            const searchHits = await searchVault(backend, query, {
+              maxResults: max,
+            });
+            bodyHits = searchHits.length;
+            for (const r of searchHits) {
+              const firstMatch = r.matches[0]?.text || "";
+              results.push({
+                file: r.file,
+                title: r.title,
+                score: 1,
+                preview: firstMatch.slice(0, 160),
+              });
+            }
+          }
+          ctx.flags.body_fallback_fired = bodyFallbackFired;
+          ctx.flags.body_hits = bodyHits;
+
+          ctx.resultCount = results.length;
+          ctx.noResults = results.length === 0;
+
+          if (results.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No notes found matching "${query}". Try \`garden_forage\` for a full-text search inside note bodies.`,
+                },
+              ],
+            };
+          }
+
+          const findNonce = newFenceNonce();
+          const output = [
+            `${results.length} match${results.length === 1 ? "" : "es"} for "${query}":`,
+            "",
+            ...results.map(
+              (r) =>
+                `- **${r.title}** — ${r.file}${r.modified ? ` (modified ${r.modified})` : ""}${r.preview ? `\n${safeFenceFile(r.file, r.preview, findNonce)}` : ""}`,
+            ),
+            "",
+            results.length === 1
+              ? `Call \`garden_read({ path: "${results[0].file}" })\` to fetch the full note.`
+              : "Show the user this list and ask which one to open, or call `garden_read` directly if context makes the choice obvious.",
+          ];
+
+          return {
+            content: [{ type: "text", text: output.join("\n") }],
+          };
+        } catch (err) {
+          // Drift fix: was throwing `garden_search_failed`; canonical is `garden_find_failed`.
+          ctx.errorCode = "garden_find_failed";
+          return respondToolError("garden_find_failed", err);
         }
-
-        const findNonce = newFenceNonce();
-        const output = [
-          `${results.length} match${results.length === 1 ? "" : "es"} for "${query}":`,
-          "",
-          ...results.map(
-            (r) =>
-              `- **${r.title}** — ${r.file}${r.modified ? ` (modified ${r.modified})` : ""}${r.preview ? `\n${safeFenceFile(r.file, r.preview, findNonce)}` : ""}`,
-          ),
-          "",
-          results.length === 1
-            ? `Call \`garden_read({ path: "${results[0].file}" })\` to fetch the full note.`
-            : "Show the user this list and ask which one to open, or call `garden_read` directly if context makes the choice obvious.",
-        ];
-
-        return {
-          content: [{ type: "text", text: output.join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("garden_search_failed", err);
-      }
-    },
+      },
+    ),
   );
 
   // ── garden_recent ────────────────────────────────────────────────────
@@ -692,45 +807,53 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ n }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_recent",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const limit = Math.min(n ?? 10, 50);
-        const recent = await backend.recentFiles(limit);
-        if (recent.length === 0) {
-          return {
-            content: [{ type: "text", text: "No notes in the vault yet." }],
-          };
-        }
-
-        const lines: string[] = [];
-        for (const file of recent) {
-          let title = path.basename(file, ".md");
-          try {
-            const content = await readVaultFile(backend, file);
-            const fm = parseFrontmatter(content);
-            if (typeof fm.title === "string" && fm.title.length > 0) {
-              title = fm.title;
-            }
-          } catch {
-            // title falls back to basename
+    withTelemetry(
+      {
+        tool: "garden_recent",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ n }) => ({ n: n ?? 10 }),
+      },
+      async ({ n }, ctx) => {
+        try {
+          const limit = Math.min(n ?? 10, 50);
+          const recent = await backend.recentFiles(limit);
+          ctx.resultCount = recent.length;
+          ctx.noResults = recent.length === 0;
+          if (recent.length === 0) {
+            return {
+              content: [{ type: "text", text: "No notes in the vault yet." }],
+            };
           }
-          lines.push(`- **${title}** — ${file}`);
-        }
 
-        const header = `${recent.length} most recent note${recent.length === 1 ? "" : "s"} (by mtime):`;
-        return {
-          content: [{ type: "text", text: [header, "", ...lines].join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("garden_recent_failed", err);
-      }
-    },
+          const lines: string[] = [];
+          for (const file of recent) {
+            let title = path.basename(file, ".md");
+            try {
+              const content = await readVaultFile(backend, file);
+              const fm = parseFrontmatter(content);
+              if (typeof fm.title === "string" && fm.title.length > 0) {
+                title = fm.title;
+              }
+            } catch {
+              // title falls back to basename
+            }
+            lines.push(`- **${title}** — ${file}`);
+          }
+
+          const header = `${recent.length} most recent note${recent.length === 1 ? "" : "s"} (by mtime):`;
+          return {
+            content: [
+              { type: "text", text: [header, "", ...lines].join("\n") },
+            ],
+          };
+        } catch (err) {
+          ctx.errorCode = "garden_recent_failed";
+          return respondToolError("garden_recent_failed", err);
+        }
+      },
+    ),
   );
 
   // ── garden_delete ────────────────────────────────────────────────────
@@ -754,106 +877,124 @@ export function registerVaultTools(
         openWorldHint: false,
       },
     },
-    async ({ path: filePath }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_delete",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
+    withTelemetry(
+      {
+        tool: "garden_delete",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ path: filePath }) => ({
+          path_depth: pathDepth(filePath),
+          is_protected_path: checkProtected(filePath).kind === "protected",
+        }),
+      },
+      async ({ path: filePath }, ctx) => {
+        // 1. Protected-path guard (CLAUDE.md / index.md / .taproot/config.json)
+        const guard = checkProtected(filePath);
+        if (guard.kind === "invalid") {
+          ctx.errorCode = "garden_delete_invalid_path";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Invalid path '${filePath}': ${guard.reason}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (guard.kind === "protected") {
+          ctx.flags.protected_blocked = true;
+          ctx.errorCode = "garden_delete_protected";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Refusing to delete '${filePath}' — protected vault config (resolves to '${guard.canonical}'). These files hold persistent AI instructions or workspace state and must not be deleted via tool calls.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        ctx.flags.protected_blocked = false;
 
-      // 1. Protected-path guard (CLAUDE.md / index.md / .taproot/config.json)
-      const guard = checkProtected(filePath);
-      if (guard.kind === "invalid") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Invalid path '${filePath}': ${guard.reason}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (guard.kind === "protected") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Refusing to delete '${filePath}' — protected vault config (resolves to '${guard.canonical}'). These files hold persistent AI instructions or workspace state and must not be deleted via tool calls.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+        // 2. Refuse anything inside .taproot/ (workspace state)
+        if (filePath.startsWith(".taproot/") || filePath === ".taproot") {
+          ctx.flags.protected_blocked = true;
+          ctx.errorCode = "garden_delete_taproot_state";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Refusing to delete '${filePath}' — '.taproot/' holds workspace state managed by the helper. Deleting it would unpair the vault.`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-      // 2. Refuse anything inside .taproot/ (workspace state)
-      if (filePath.startsWith(".taproot/") || filePath === ".taproot") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Refusing to delete '${filePath}' — '.taproot/' holds workspace state managed by the helper. Deleting it would unpair the vault.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+        // 3. Refuse to act on TAPROOT-IGNORE'd paths (CRM-row dumps, etc.)
+        const ignorePatterns = await loadIgnorePatterns(backend);
+        const matchesIgnore = pathMatchesIgnore(filePath, ignorePatterns);
+        ctx.flags.ignore_blocked = matchesIgnore;
+        if (matchesIgnore) {
+          ctx.errorCode = "garden_delete_ignored";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Refusing to delete '${filePath}' — matches a TAPROOT-IGNORE pattern in CLAUDE.md. These paths are excluded from AI management by the user's explicit configuration.`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-      // 3. Refuse to act on TAPROOT-IGNORE'd paths (CRM-row dumps, etc.)
-      const ignorePatterns = await loadIgnorePatterns(backend);
-      if (pathMatchesIgnore(filePath, ignorePatterns)) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Refusing to delete '${filePath}' — matches a TAPROOT-IGNORE pattern in CLAUDE.md. These paths are excluded from AI management by the user's explicit configuration.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+        // 4. Only delete .md files (refuses folders, non-markdown blobs)
+        if (!filePath.toLowerCase().endsWith(".md")) {
+          ctx.errorCode = "garden_delete_non_markdown";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Refusing to delete '${filePath}' — only .md notes can be deleted via this tool. For folders or other file types, the user should delete in Finder / Obsidian directly.`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-      // 4. Only delete .md files (refuses folders, non-markdown blobs)
-      if (!filePath.toLowerCase().endsWith(".md")) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Refusing to delete '${filePath}' — only .md notes can be deleted via this tool. For folders or other file types, the user should delete in Finder / Obsidian directly.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+        // 5. Verify the file exists before deleting (clearer error than backend's)
+        const exists = await backend.exists(filePath).catch(() => false);
+        ctx.flags.not_found = !exists;
+        if (!exists) {
+          ctx.errorCode = "garden_delete_not_found";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No file at '${filePath}'. Nothing to delete. Use \`garden_find\` to locate the note's actual path.`,
+              },
+            ],
+            isError: true,
+          };
+        }
 
-      // 5. Verify the file exists before deleting (clearer error than backend's)
-      const exists = await backend.exists(filePath).catch(() => false);
-      if (!exists) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No file at '${filePath}'. Nothing to delete. Use \`garden_find\` to locate the note's actual path.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      try {
-        await backend.delete(filePath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Deleted: ${filePath}\n\nThe helper will sync this deletion to your local Obsidian vault within ~30s. To restore, the file is in your OS trash (Mac: Cmd+Z in Finder while the trash is open, or check Time Machine).`,
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("garden_delete_failed", err);
-      }
-    },
+        try {
+          await backend.delete(filePath);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Deleted: ${filePath}\n\nThe helper will sync this deletion to your local Obsidian vault within ~30s. To restore, the file is in your OS trash (Mac: Cmd+Z in Finder while the trash is open, or check Time Machine).`,
+              },
+            ],
+          };
+        } catch (err) {
+          ctx.errorCode = "garden_delete_failed";
+          return respondToolError("garden_delete_failed", err);
+        }
+      },
+    ),
   );
 }

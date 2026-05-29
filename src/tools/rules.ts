@@ -1,10 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
-import {
-  checkToolRateLimit,
-  rateLimitToolError,
-  respondToolError,
-} from "./_rate-limit.js";
+import { respondToolError } from "./_rate-limit.js";
+import { withTelemetry } from "../observability/tool-telemetry.js";
 
 const STARTER_RULES = `# Filing Rules (starter — no CLAUDE.md yet)
 
@@ -54,36 +51,42 @@ export function registerRulesTool(
         openWorldHint: false,
       },
     },
-    async () => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "garden_rules",
-        "read",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        if (await backend.exists("CLAUDE.md")) {
-          const content = await backend.readFile("CLAUDE.md");
+    withTelemetry(
+      {
+        tool: "garden_rules",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => {
+        try {
+          if (await backend.exists("CLAUDE.md")) {
+            ctx.flags.claude_md_exists = true;
+            const content = await backend.readFile("CLAUDE.md");
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `<vault-rules source="CLAUDE.md">\n${content}\n</vault-rules>`,
+                },
+              ],
+            };
+          }
+          ctx.flags.claude_md_exists = false;
           return {
             content: [
               {
                 type: "text",
-                text: `<vault-rules source="CLAUDE.md">\n${content}\n</vault-rules>`,
+                text: `<vault-rules source="starter" note="No CLAUDE.md yet — these are starter defaults, not the user's chosen conventions. The user can personalize via taproot_setup_scan + taproot_till or by hand-editing CLAUDE.md.">\n${STARTER_RULES}\n</vault-rules>`,
               },
             ],
           };
+        } catch (err) {
+          ctx.errorCode = "garden_rules_failed";
+          return respondToolError("garden_rules_failed", err);
         }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `<vault-rules source="starter" note="No CLAUDE.md yet — these are starter defaults, not the user's chosen conventions. The user can personalize via taproot_setup_scan + taproot_till or by hand-editing CLAUDE.md.">\n${STARTER_RULES}\n</vault-rules>`,
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("garden_rules_failed", err);
-      }
-    },
+      },
+    ),
   );
 }

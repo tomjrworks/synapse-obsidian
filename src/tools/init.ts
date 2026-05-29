@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
+import { respondToolError } from "./_rate-limit.js";
 import {
-  checkToolRateLimit,
-  rateLimitToolError,
-  respondToolError,
-} from "./_rate-limit.js";
+  withTelemetry,
+  type TelemetryContext,
+} from "../observability/tool-telemetry.js";
 import {
   loadConfig,
   saveConfig,
@@ -473,6 +473,136 @@ async function scaffoldStructuredVault(
   return { created, skipped };
 }
 
+// Shared scan + render body for both `taproot_setup_scan` and its
+// deprecated alias `taproot_plant`. Per amendment A1 (PLAN supplement §8),
+// the two registrations now go through two thin `withTelemetry` wrappers
+// each declaring its own canonical tool name — so telemetry can finally
+// distinguish alias-invocations from canonical-invocations, which is the
+// gating condition for removing the alias per `init.ts` line ~625.
+//
+// `canonicalTool` is passed in so the catch path can synthesize the
+// matching error code (`taproot_plant_failed` vs `taproot_setup_scan_failed`)
+// without the shared logic having to know which entry-point invoked it.
+async function setupScanLogic(
+  backend: StorageBackend,
+  canonicalTool: "taproot_setup_scan" | "taproot_plant",
+  ctx: TelemetryContext,
+): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
+  try {
+    // Check if already configured
+    const existingConfig = await loadConfig(backend);
+    ctx.flags.config_exists = existingConfig != null;
+
+    const detection = await detectConventions(backend);
+    ctx.flags.claude_md_exists = detection.hasClaudeMd;
+
+    const output: string[] = ["## Taproot Vault Setup", ""];
+
+    if (existingConfig) {
+      output.push(
+        `> **Note:** Taproot is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
+        "",
+      );
+    }
+
+    output.push(
+      "### Vault Scan Results",
+      "",
+      `- **Total files:** ${detection.totalFiles}`,
+      `- **Top folders:** ${detection.topFolders.length > 0 ? detection.topFolders.join(", ") : "(empty vault)"}`,
+      `- **CLAUDE.md:** ${detection.hasClaudeMd ? "Yes" : "No"}`,
+      `- **Uses [[wikilinks]]:** ${detection.usesWikilinks ? "Yes" : "No"}`,
+      `- **Uses frontmatter:** ${detection.usesFrontmatter ? "Yes" : "No"}`,
+      `- **File naming:** ${detection.fileNaming}`,
+      "",
+    );
+
+    if (detection.hasClaudeMd && detection.claudeMdSummary) {
+      output.push(
+        "### Detected CLAUDE.md",
+        "```",
+        detection.claudeMdSummary,
+        "```",
+        "",
+      );
+    }
+
+    // Option A
+    output.push(
+      "---",
+      "",
+      "### Option A: Use My Existing Vault",
+      "",
+      "Taproot adapts to your current structure. No folders created, no files moved.",
+      "",
+      `- Sources saved to: \`${detection.suggestedSourcesFolder}\``,
+      `- Outputs saved to: \`${detection.suggestedOutputsFolder}\``,
+      `- Wikilinks: ${detection.usesWikilinks ? "enabled (detected)" : "disabled (not detected)"}`,
+      `- Frontmatter: ${detection.usesFrontmatter ? "enabled (detected)" : "disabled (not detected)"}`,
+      `- File naming: ${detection.fileNaming}`,
+      "",
+      "To choose this, call:",
+      "```",
+      `taproot_till({ mode: "existing" })`,
+      "```",
+      "",
+    );
+
+    // Option B
+    output.push(
+      "### Option B: Set Up Structured Knowledge Base",
+      "",
+      "Creates an organized vault: `sources/` for raw material, organized folders for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
+      "",
+      "To choose this, call:",
+      "```",
+      `taproot_till({ mode: "structured", topic: "your topic here" })`,
+      "```",
+      "",
+    );
+
+    // Option C
+    output.push(
+      "### Option C: Start Fresh (Custom)",
+      "",
+      "Tell Taproot exactly how you want your vault organized. Specify your own folder names and conventions.",
+      "",
+      "To choose this, call:",
+      "```",
+      `taproot_till({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
+      "```",
+      "",
+    );
+
+    output.push(
+      "---",
+      "",
+      "### Also ask: What will you use this vault for?",
+      "",
+      "This helps Taproot tailor how it saves and organizes content:",
+      "",
+      '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
+      '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
+      '- **"academic"** — Papers, literature review, citations, coursework',
+      '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
+      '- **"custom"** — Something else (ask them to describe it)',
+      "",
+      "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `taproot_till`.",
+      "",
+      "---",
+      "",
+      "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `taproot_till` with both.",
+    );
+
+    return {
+      content: [{ type: "text" as const, text: output.join("\n") }],
+    };
+  } catch (err) {
+    ctx.errorCode = `${canonicalTool}_failed`;
+    return respondToolError(`${canonicalTool}_failed`, err);
+  }
+}
+
 export function registerInitTools(
   server: McpServer,
   backend: StorageBackend,
@@ -483,126 +613,10 @@ export function registerInitTools(
   // collision with `garden_plant` (save a note). Both ended in `_plant`
   // and confused AI clients. The legacy `taproot_plant` is registered
   // below as a shim with a [deprecated] prefix so already-paired clients
-  // don't break.
-  const setupScanHandler = async () => {
-    const limited = checkToolRateLimit(
-      opts.workspaceId ?? "unknown",
-      "taproot_setup_scan",
-      "write",
-    );
-    if (limited) return rateLimitToolError(limited);
-    try {
-      // Check if already configured
-      const existingConfig = await loadConfig(backend);
-
-      const detection = await detectConventions(backend);
-
-      const output: string[] = ["## Taproot Vault Setup", ""];
-
-      if (existingConfig) {
-        output.push(
-          `> **Note:** Taproot is already configured (mode: ${existingConfig.mode}, configured ${existingConfig.configuredAt || "unknown"}). Running setup again will overwrite the existing config.`,
-          "",
-        );
-      }
-
-      output.push(
-        "### Vault Scan Results",
-        "",
-        `- **Total files:** ${detection.totalFiles}`,
-        `- **Top folders:** ${detection.topFolders.length > 0 ? detection.topFolders.join(", ") : "(empty vault)"}`,
-        `- **CLAUDE.md:** ${detection.hasClaudeMd ? "Yes" : "No"}`,
-        `- **Uses [[wikilinks]]:** ${detection.usesWikilinks ? "Yes" : "No"}`,
-        `- **Uses frontmatter:** ${detection.usesFrontmatter ? "Yes" : "No"}`,
-        `- **File naming:** ${detection.fileNaming}`,
-        "",
-      );
-
-      if (detection.hasClaudeMd && detection.claudeMdSummary) {
-        output.push(
-          "### Detected CLAUDE.md",
-          "```",
-          detection.claudeMdSummary,
-          "```",
-          "",
-        );
-      }
-
-      // Option A
-      output.push(
-        "---",
-        "",
-        "### Option A: Use My Existing Vault",
-        "",
-        "Taproot adapts to your current structure. No folders created, no files moved.",
-        "",
-        `- Sources saved to: \`${detection.suggestedSourcesFolder}\``,
-        `- Outputs saved to: \`${detection.suggestedOutputsFolder}\``,
-        `- Wikilinks: ${detection.usesWikilinks ? "enabled (detected)" : "disabled (not detected)"}`,
-        `- Frontmatter: ${detection.usesFrontmatter ? "enabled (detected)" : "disabled (not detected)"}`,
-        `- File naming: ${detection.fileNaming}`,
-        "",
-        "To choose this, call:",
-        "```",
-        `taproot_till({ mode: "existing" })`,
-        "```",
-        "",
-      );
-
-      // Option B
-      output.push(
-        "### Option B: Set Up Structured Knowledge Base",
-        "",
-        "Creates an organized vault: `sources/` for raw material, organized folders for compiled knowledge, `CLAUDE.md` schema. Best for building a focused knowledge base on a specific topic.",
-        "",
-        "To choose this, call:",
-        "```",
-        `taproot_till({ mode: "structured", topic: "your topic here" })`,
-        "```",
-        "",
-      );
-
-      // Option C
-      output.push(
-        "### Option C: Start Fresh (Custom)",
-        "",
-        "Tell Taproot exactly how you want your vault organized. Specify your own folder names and conventions.",
-        "",
-        "To choose this, call:",
-        "```",
-        `taproot_till({ mode: "custom", sourcesFolder: "...", outputsFolder: "...", fileNaming: "kebab-case" })`,
-        "```",
-        "",
-      );
-
-      output.push(
-        "---",
-        "",
-        "### Also ask: What will you use this vault for?",
-        "",
-        "This helps Taproot tailor how it saves and organizes content:",
-        "",
-        '- **"knowledge-base"** — Research, learning, building a personal wiki on a topic',
-        '- **"business"** — Clients, projects, strategy, meetings, CRM-like notes',
-        '- **"academic"** — Papers, literature review, citations, coursework',
-        '- **"life-os"** — Everything: projects, ideas, research, daily notes, personal + work',
-        '- **"custom"** — Something else (ask them to describe it)',
-        "",
-        "Pass their answer as `purpose` (and `purposeDescription` if custom) when calling `taproot_till`.",
-        "",
-        "---",
-        "",
-        "**Ask the user which option (A/B/C) they prefer and what they'll use the vault for**, then call `taproot_till` with both.",
-      );
-
-      return {
-        content: [{ type: "text" as const, text: output.join("\n") }],
-      };
-    } catch (err) {
-      return respondToolError("taproot_setup_scan_failed", err);
-    }
-  };
-
+  // don't break. Pass 1 A1 amendment: shared `setupScanLogic` body,
+  // independent withTelemetry wrappers so telemetry can distinguish
+  // alias-invocations from canonical-invocations (the gating condition
+  // for removing the alias).
   server.registerTool(
     "taproot_setup_scan",
     {
@@ -616,13 +630,22 @@ export function registerInitTools(
         openWorldHint: false,
       },
     },
-    setupScanHandler,
+    withTelemetry(
+      {
+        tool: "taproot_setup_scan",
+        kind: "write",
+        effect: "instruction-only",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => setupScanLogic(backend, "taproot_setup_scan", ctx),
+    ),
   );
 
   // F8 deprecation shim. Resolves taproot_plant ↔ garden_plant collision.
-  // Same handler, [deprecated] prefix on description so the AI prefers
-  // the new name when both are visible. Remove after telemetry confirms
-  // no client invokes the old name (TBD V1.5+).
+  // Same logic body via shared setupScanLogic, independent telemetry so
+  // alias-invocation counts surface separately and the deprecation gate
+  // (init.ts comment above + telemetry on tool="taproot_plant") is checkable.
   server.registerTool(
     "taproot_plant",
     {
@@ -636,7 +659,16 @@ export function registerInitTools(
         openWorldHint: false,
       },
     },
-    setupScanHandler,
+    withTelemetry(
+      {
+        tool: "taproot_plant",
+        kind: "write",
+        effect: "instruction-only",
+        workspaceId: opts.workspaceId,
+        argsShape: () => ({}),
+      },
+      async (_args, ctx) => setupScanLogic(backend, "taproot_plant", ctx),
+    ),
   );
 
   // ── taproot_till ─────────────────────────────────────────────────────
@@ -695,44 +727,199 @@ export function registerInitTools(
         openWorldHint: false,
       },
     },
-    async ({
-      mode,
-      sourcesFolder,
-      wikiFolder,
-      outputsFolder,
-      topic,
-      fileNaming,
-      purpose,
-      purposeDescription,
-    }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_till",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const config: SynapseConfig = getDefaultConfig();
-        config.mode = mode;
-        config.purpose = purpose || null;
-        config.purposeDescription = purposeDescription || null;
-        config.configuredAt = new Date().toISOString();
+    withTelemetry(
+      {
+        tool: "taproot_till",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({
+          mode,
+          topic,
+          purpose,
+          sourcesFolder,
+          wikiFolder,
+          outputsFolder,
+        }) => ({
+          mode,
+          has_topic: typeof topic === "string" && topic.length > 0,
+          has_purpose: typeof purpose === "string" && purpose.length > 0,
+          has_custom_folders:
+            (typeof sourcesFolder === "string" && sourcesFolder.length > 0) ||
+            (typeof wikiFolder === "string" && wikiFolder.length > 0) ||
+            (typeof outputsFolder === "string" && outputsFolder.length > 0),
+        }),
+      },
+      async (
+        {
+          mode,
+          sourcesFolder,
+          wikiFolder,
+          outputsFolder,
+          topic,
+          fileNaming,
+          purpose,
+          purposeDescription,
+        },
+        ctx,
+      ) => {
+        ctx.flags.mode_existing = mode === "existing";
+        ctx.flags.mode_structured = mode === "structured" || mode === "kb";
+        ctx.flags.mode_custom = mode === "custom";
+        try {
+          const config: SynapseConfig = getDefaultConfig();
+          config.mode = mode;
+          config.purpose = purpose || null;
+          config.purposeDescription = purposeDescription || null;
+          config.configuredAt = new Date().toISOString();
 
-        if (mode === "existing") {
-          // Auto-detect conventions
-          const detection = await detectConventions(backend);
-          config.sourcesFolder =
-            sourcesFolder || detection.suggestedSourcesFolder;
+          if (mode === "existing") {
+            // Auto-detect conventions
+            const detection = await detectConventions(backend);
+            config.sourcesFolder =
+              sourcesFolder || detection.suggestedSourcesFolder;
+            config.wikiFolder = wikiFolder || null;
+            config.outputsFolder =
+              outputsFolder || detection.suggestedOutputsFolder;
+            config.fileNaming =
+              fileNaming ||
+              (detection.fileNaming === "mixed"
+                ? "as-is"
+                : detection.fileNaming);
+            config.useFrontmatter = detection.usesFrontmatter;
+            config.useWikilinks = detection.usesWikilinks;
+            config.schemaPath = detection.hasClaudeMd ? "CLAUDE.md" : null;
+            config.topic = topic || null;
+
+            await saveConfig(backend, config);
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "## Taproot Configured (Existing Vault Mode)",
+                    "",
+                    `- **Sources folder:** ${config.sourcesFolder}`,
+                    `- **Outputs folder:** ${config.outputsFolder}`,
+                    `- **Wiki folder:** ${config.wikiFolder || "(none — using vault root)"}`,
+                    `- **File naming:** ${config.fileNaming}`,
+                    `- **Frontmatter:** ${config.useFrontmatter ? "enabled" : "disabled"}`,
+                    `- **Wikilinks:** ${config.useWikilinks ? "enabled" : "disabled"}`,
+                    `- **CLAUDE.md:** ${config.schemaPath || "none"}`,
+                    `- **Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
+                    "",
+                    "Config saved to `.taproot/config.json`. All tools will now use these settings.",
+                    "",
+                    "### Next Steps",
+                    `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
+                    "2. Use `taproot_status` to see your vault overview",
+                    "3. Use `taproot_harvest` to research your existing notes",
+                  ].join("\n"),
+                },
+              ],
+            };
+          }
+
+          if (mode === "structured" || mode === "kb") {
+            if (!topic) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: 'Error: Structured mode requires a `topic` parameter (e.g. "machine learning", "DeFi protocols").',
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            const resolvedSources = sourcesFolder || "sources";
+            const resolvedNotes = wikiFolder || "notes";
+            const resolvedOutputs = outputsFolder || "outputs";
+            const resolvedNaming = fileNaming || "kebab-case";
+
+            // Run the scaffold with personalized CLAUDE.md
+            const { created, skipped } = await scaffoldStructuredVault(
+              backend,
+              {
+                topic,
+                purpose: purpose || "knowledge-base",
+                sourcesFolder: resolvedSources,
+                notesFolder: resolvedNotes,
+                outputsFolder: resolvedOutputs,
+                fileNaming: resolvedNaming,
+                useWikilinks: true,
+                useFrontmatter: true,
+              },
+            );
+
+            config.sourcesFolder = resolvedSources;
+            config.wikiFolder = resolvedNotes;
+            config.outputsFolder = resolvedOutputs;
+            config.fileNaming = resolvedNaming;
+            config.useFrontmatter = true;
+            config.useWikilinks = true;
+            config.schemaPath = "CLAUDE.md";
+            config.topic = topic;
+
+            await saveConfig(backend, config);
+
+            const output = [
+              "## Knowledge Base Initialized & Configured",
+              "",
+              `**Topic:** ${topic}`,
+              `**Mode:** Structured Knowledge Base`,
+              "",
+              `### Created (${created.length})`,
+              ...created.map((f) => `- ${f}`),
+              "",
+            ];
+
+            if (skipped.length > 0) {
+              output.push(`### Skipped (${skipped.length})`);
+              output.push(...skipped.map((f) => `- ${f}`));
+              output.push("");
+            }
+
+            output.push(
+              "Config saved to `.taproot/config.json`.",
+              "",
+              "### Next Steps",
+              "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",
+              "2. Run `taproot_cultivate` to see what needs processing",
+              "3. Run `taproot_water` for each source to build organized pages",
+              "4. Ask questions with `taproot_harvest`",
+              "5. Run `taproot_prune` periodically to maintain quality",
+            );
+
+            return {
+              content: [{ type: "text", text: output.join("\n") }],
+            };
+          }
+
+          // Custom mode
+          config.sourcesFolder = sourcesFolder || "sources";
           config.wikiFolder = wikiFolder || null;
-          config.outputsFolder =
-            outputsFolder || detection.suggestedOutputsFolder;
-          config.fileNaming =
-            fileNaming ||
-            (detection.fileNaming === "mixed" ? "as-is" : detection.fileNaming);
-          config.useFrontmatter = detection.usesFrontmatter;
-          config.useWikilinks = detection.usesWikilinks;
-          config.schemaPath = detection.hasClaudeMd ? "CLAUDE.md" : null;
+          config.outputsFolder = outputsFolder || "outputs";
+          config.fileNaming = fileNaming || "kebab-case";
+          config.useFrontmatter = true;
+          config.useWikilinks = true;
+          config.schemaPath = (await backend.exists("CLAUDE.md"))
+            ? "CLAUDE.md"
+            : null;
           config.topic = topic || null;
+
+          // Create the source and output directories if they don't exist
+          if (!(await backend.exists(config.sourcesFolder))) {
+            await backend.mkdir(config.sourcesFolder);
+          }
+          if (!(await backend.exists(config.outputsFolder))) {
+            await backend.mkdir(config.outputsFolder);
+          }
+          if (config.wikiFolder && !(await backend.exists(config.wikiFolder))) {
+            await backend.mkdir(config.wikiFolder);
+          }
 
           await saveConfig(backend, config);
 
@@ -741,75 +928,94 @@ export function registerInitTools(
               {
                 type: "text",
                 text: [
-                  "## Taproot Configured (Existing Vault Mode)",
+                  "## Taproot Configured (Custom Mode)",
                   "",
                   `- **Sources folder:** ${config.sourcesFolder}`,
                   `- **Outputs folder:** ${config.outputsFolder}`,
-                  `- **Wiki folder:** ${config.wikiFolder || "(none — using vault root)"}`,
+                  `- **Wiki folder:** ${config.wikiFolder || "(none)"}`,
                   `- **File naming:** ${config.fileNaming}`,
                   `- **Frontmatter:** ${config.useFrontmatter ? "enabled" : "disabled"}`,
                   `- **Wikilinks:** ${config.useWikilinks ? "enabled" : "disabled"}`,
-                  `- **CLAUDE.md:** ${config.schemaPath || "none"}`,
-                  `- **Purpose:** ${config.purpose || "not set"}${config.purposeDescription ? ` — ${config.purposeDescription}` : ""}`,
                   "",
                   "Config saved to `.taproot/config.json`. All tools will now use these settings.",
                   "",
                   "### Next Steps",
                   `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
                   "2. Use `taproot_status` to see your vault overview",
-                  "3. Use `taproot_harvest` to research your existing notes",
+                  "3. Use `taproot_harvest` to research your notes",
                 ].join("\n"),
               },
             ],
           };
+        } catch (err) {
+          ctx.errorCode = "taproot_till_failed";
+          return respondToolError("taproot_till_failed", err);
         }
+      },
+    ),
+  );
 
-        if (mode === "structured" || mode === "kb") {
-          if (!topic) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: 'Error: Structured mode requires a `topic` parameter (e.g. "machine learning", "DeFi protocols").',
-                },
-              ],
-              isError: true,
-            };
-          }
-
-          const resolvedSources = sourcesFolder || "sources";
-          const resolvedNotes = wikiFolder || "notes";
-          const resolvedOutputs = outputsFolder || "outputs";
-          const resolvedNaming = fileNaming || "kebab-case";
-
-          // Run the scaffold with personalized CLAUDE.md
+  // ── taproot_sow (kept as alias, points users to taproot_plant) ──────
+  server.registerTool(
+    "taproot_sow",
+    {
+      title: "Scaffold a knowledge base",
+      description: `LEGACY shortcut. Use only when the user wants a one-call scaffold of a structured knowledge base on a specific topic (sources/, notes/, outputs/, CLAUDE.md, index.md, config) and is willing to skip the option-A/B/C choice. For most users, prefer \`taproot_plant\` — it scans first and adapts to existing conventions. Safe on existing vaults — won't overwrite existing files.`,
+      inputSchema: {
+        topic: z
+          .string()
+          .describe(
+            "The topic or domain for this knowledge base (e.g. 'DeFi protocols', 'machine learning', 'competitive intelligence')",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withTelemetry(
+      {
+        tool: "taproot_sow",
+        kind: "write",
+        effect: "write",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ topic }) => ({
+          has_topic: typeof topic === "string" && topic.length > 0,
+        }),
+      },
+      async ({ topic }, ctx) => {
+        try {
           const { created, skipped } = await scaffoldStructuredVault(backend, {
             topic,
-            purpose: purpose || "knowledge-base",
-            sourcesFolder: resolvedSources,
-            notesFolder: resolvedNotes,
-            outputsFolder: resolvedOutputs,
-            fileNaming: resolvedNaming,
+            purpose: "knowledge-base",
+            sourcesFolder: "sources",
+            notesFolder: "notes",
+            outputsFolder: "outputs",
+            fileNaming: "kebab-case",
             useWikilinks: true,
             useFrontmatter: true,
           });
 
-          config.sourcesFolder = resolvedSources;
-          config.wikiFolder = resolvedNotes;
-          config.outputsFolder = resolvedOutputs;
-          config.fileNaming = resolvedNaming;
+          // Also save config automatically
+          const config: SynapseConfig = getDefaultConfig();
+          config.mode = "structured";
+          config.sourcesFolder = "sources";
+          config.wikiFolder = "notes";
+          config.outputsFolder = "outputs";
+          config.fileNaming = "kebab-case";
           config.useFrontmatter = true;
           config.useWikilinks = true;
           config.schemaPath = "CLAUDE.md";
           config.topic = topic;
-
+          config.configuredAt = new Date().toISOString();
           await saveConfig(backend, config);
 
           const output = [
-            "## Knowledge Base Initialized & Configured",
+            `## Knowledge Base Initialized`,
             "",
             `**Topic:** ${topic}`,
-            `**Mode:** Structured Knowledge Base`,
             "",
             `### Created (${created.length})`,
             ...created.map((f) => `- ${f}`),
@@ -836,149 +1042,12 @@ export function registerInitTools(
           return {
             content: [{ type: "text", text: output.join("\n") }],
           };
+        } catch (err) {
+          // Drift fix: was throwing `taproot_init_failed`; canonical is `taproot_sow_failed`.
+          ctx.errorCode = "taproot_sow_failed";
+          return respondToolError("taproot_sow_failed", err);
         }
-
-        // Custom mode
-        config.sourcesFolder = sourcesFolder || "sources";
-        config.wikiFolder = wikiFolder || null;
-        config.outputsFolder = outputsFolder || "outputs";
-        config.fileNaming = fileNaming || "kebab-case";
-        config.useFrontmatter = true;
-        config.useWikilinks = true;
-        config.schemaPath = (await backend.exists("CLAUDE.md"))
-          ? "CLAUDE.md"
-          : null;
-        config.topic = topic || null;
-
-        // Create the source and output directories if they don't exist
-        if (!(await backend.exists(config.sourcesFolder))) {
-          await backend.mkdir(config.sourcesFolder);
-        }
-        if (!(await backend.exists(config.outputsFolder))) {
-          await backend.mkdir(config.outputsFolder);
-        }
-        if (config.wikiFolder && !(await backend.exists(config.wikiFolder))) {
-          await backend.mkdir(config.wikiFolder);
-        }
-
-        await saveConfig(backend, config);
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: [
-                "## Taproot Configured (Custom Mode)",
-                "",
-                `- **Sources folder:** ${config.sourcesFolder}`,
-                `- **Outputs folder:** ${config.outputsFolder}`,
-                `- **Wiki folder:** ${config.wikiFolder || "(none)"}`,
-                `- **File naming:** ${config.fileNaming}`,
-                `- **Frontmatter:** ${config.useFrontmatter ? "enabled" : "disabled"}`,
-                `- **Wikilinks:** ${config.useWikilinks ? "enabled" : "disabled"}`,
-                "",
-                "Config saved to `.taproot/config.json`. All tools will now use these settings.",
-                "",
-                "### Next Steps",
-                `1. Save articles with \`taproot_seed\` — they'll go to \`${config.sourcesFolder}\``,
-                "2. Use `taproot_status` to see your vault overview",
-                "3. Use `taproot_harvest` to research your notes",
-              ].join("\n"),
-            },
-          ],
-        };
-      } catch (err) {
-        return respondToolError("taproot_till_failed", err);
-      }
-    },
-  );
-
-  // ── taproot_sow (kept as alias, points users to taproot_plant) ──────
-  server.registerTool(
-    "taproot_sow",
-    {
-      title: "Scaffold a knowledge base",
-      description: `LEGACY shortcut. Use only when the user wants a one-call scaffold of a structured knowledge base on a specific topic (sources/, notes/, outputs/, CLAUDE.md, index.md, config) and is willing to skip the option-A/B/C choice. For most users, prefer \`taproot_plant\` — it scans first and adapts to existing conventions. Safe on existing vaults — won't overwrite existing files.`,
-      inputSchema: {
-        topic: z
-          .string()
-          .describe(
-            "The topic or domain for this knowledge base (e.g. 'DeFi protocols', 'machine learning', 'competitive intelligence')",
-          ),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async ({ topic }) => {
-      const limited = checkToolRateLimit(
-        opts.workspaceId ?? "unknown",
-        "taproot_sow",
-        "write",
-      );
-      if (limited) return rateLimitToolError(limited);
-      try {
-        const { created, skipped } = await scaffoldStructuredVault(backend, {
-          topic,
-          purpose: "knowledge-base",
-          sourcesFolder: "sources",
-          notesFolder: "notes",
-          outputsFolder: "outputs",
-          fileNaming: "kebab-case",
-          useWikilinks: true,
-          useFrontmatter: true,
-        });
-
-        // Also save config automatically
-        const config: SynapseConfig = getDefaultConfig();
-        config.mode = "structured";
-        config.sourcesFolder = "sources";
-        config.wikiFolder = "notes";
-        config.outputsFolder = "outputs";
-        config.fileNaming = "kebab-case";
-        config.useFrontmatter = true;
-        config.useWikilinks = true;
-        config.schemaPath = "CLAUDE.md";
-        config.topic = topic;
-        config.configuredAt = new Date().toISOString();
-        await saveConfig(backend, config);
-
-        const output = [
-          `## Knowledge Base Initialized`,
-          "",
-          `**Topic:** ${topic}`,
-          "",
-          `### Created (${created.length})`,
-          ...created.map((f) => `- ${f}`),
-          "",
-        ];
-
-        if (skipped.length > 0) {
-          output.push(`### Skipped (${skipped.length})`);
-          output.push(...skipped.map((f) => `- ${f}`));
-          output.push("");
-        }
-
-        output.push(
-          "Config saved to `.taproot/config.json`.",
-          "",
-          "### Next Steps",
-          "1. Add source articles to `sources/` (copy-paste or use `taproot_seed` with a URL)",
-          "2. Run `taproot_cultivate` to see what needs processing",
-          "3. Run `taproot_water` for each source to build organized pages",
-          "4. Ask questions with `taproot_harvest`",
-          "5. Run `taproot_prune` periodically to maintain quality",
-        );
-
-        return {
-          content: [{ type: "text", text: output.join("\n") }],
-        };
-      } catch (err) {
-        return respondToolError("taproot_init_failed", err);
-      }
-    },
+    ),
   );
 }
