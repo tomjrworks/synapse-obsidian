@@ -26,10 +26,12 @@ import type { StorageBackend } from "../../src/utils/storage.js";
 // Hoisted capture harness — referenced by the vi.mock factory below.
 const h = vi.hoisted(() => {
   const inserted: any[] = [];
-  const state = { throwOnInsert: false };
+  const state = { throwOnInsert: false, rejectOnInsert: false };
   const fromMock = vi.fn((_table: string) => ({
     insert: (row: unknown) => {
       if (state.throwOnInsert) throw new Error("supabase insert boom");
+      if (state.rejectOnInsert)
+        return Promise.reject(new Error("supabase network down"));
       inserted.push(row);
       return Promise.resolve({ error: null });
     },
@@ -277,6 +279,7 @@ beforeEach(() => {
   // Telemetry ON (default). The kill-switch test (7) flips it to "0".
   h.inserted.length = 0;
   h.state.throwOnInsert = false;
+  h.state.rejectOnInsert = false;
 });
 
 afterEach(() => {
@@ -643,5 +646,41 @@ describe("SPEC §6.8 — a throwing insert never reaches the caller", () => {
     expect(okRes.isError).toBeFalsy();
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("Apple body text about apple fruit.");
+  });
+
+  // Pre-deploy review finding (2026-05-31): the fire-and-forget insert had a
+  // .then() but no .catch(). supabase-js folds query errors into `error`, but
+  // a network-layer failure rejects the promise — which, with no .catch() and
+  // no global handler, is an unhandled rejection that terminates the process
+  // on Node >=18. Test 8 above only covers a SYNCHRONOUS throw (caught by
+  // emit()'s try/catch); this covers the ASYNC rejection path the fix added a
+  // .catch() for. Telemetry must never take down the product.
+  it("a rejected insert promise does not surface or raise an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      h.state.rejectOnInsert = true;
+      const registered = registerAll(makeBackend(HAPPY_FILES), {
+        workspaceId: "ws-iso-reject",
+      });
+
+      const res = await registered.get("garden_read")!({
+        path: "notes/apple.md",
+      });
+
+      // Let the rejected fire-and-forget promise settle before we assert.
+      await new Promise((r) => setTimeout(r, 20));
+
+      // The .catch() swallowed the rejection — none escaped to the process.
+      expect(h.supabaseService).toHaveBeenCalled();
+      expect(unhandled).toHaveLength(0);
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain(
+        "Apple body text about apple fruit.",
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
