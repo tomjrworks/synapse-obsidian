@@ -54,12 +54,24 @@ export function emitTelemetryEvent(event: TelemetryEventRow): void {
     return;
   }
 
+  // Two-arg .then(onFulfilled, onRejected): supabase-js folds query errors
+  // into `error`, but a network-layer failure can still REJECT the promise.
+  // With no rejection handler that becomes an unhandled rejection — and on
+  // Node >=18 the default is to terminate the process. Telemetry must NEVER
+  // take down the product. The builder returns a PromiseLike<void> (no
+  // .catch), so the onRejected arg is the type-safe equivalent of the
+  // fire-and-forget .catch() convention in index-tool.ts + fetch.ts (SPEC §4).
   void client
     .from("tool_call_events")
     .insert(scrubbed)
-    .then(({ error }) => {
-      if (error) {
-        console.error(`[telemetry] insert failed: ${error.message}`);
-      }
-    });
+    .then(
+      ({ error }) => {
+        if (error) {
+          console.error(`[telemetry] insert failed: ${error.message}`);
+        }
+      },
+      (err) => {
+        console.error(`[telemetry] insert rejected: ${err}`);
+      },
+    );
 }
