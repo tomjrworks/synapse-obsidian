@@ -8,7 +8,8 @@ import {
   readVaultFile,
   writeVaultFile,
   listVaultFiles,
-  searchVault,
+  scanVaultBodies,
+  resolveScanCap,
   getVaultStats,
   parseFrontmatter,
   normalizeFrontmatterDate,
@@ -724,16 +725,34 @@ export function registerVaultTools(
           // load-bearing branch flag for Pass 3's IS-7011 anchor.
           ctx.flags.filename_hits = results.length;
 
-          // If no filename hits, fall back to body search via existing search infra
+          // If no filename hits, fall back to a BOUNDED body search. Pre-fix
+          // this used the naive serial searchVault, which read + decrypted the
+          // entire vault on a no-match query (the confirmed hang). scanVaultBodies
+          // caps the scan and covers index.md-relevant notes first.
           let bodyFallbackFired = false;
           let bodyHits = 0;
+          let filesScanned = 0;
+          let scanCapped = false;
           if (results.length === 0) {
             bodyFallbackFired = true;
-            const searchHits = await searchVault(backend, query, {
+            let priorityHints: string[] = [];
+            try {
+              if (await backend.exists("index.md").catch(() => false)) {
+                const indexContent = await readVaultFile(backend, "index.md");
+                priorityHints = parseForageHints(indexContent, query);
+              }
+            } catch {
+              /* non-fatal — priority ordering is best-effort */
+            }
+            const scan = await scanVaultBodies(backend, query, {
               maxResults: max,
+              maxFilesScanned: resolveScanCap(),
+              priorityHints,
             });
-            bodyHits = searchHits.length;
-            for (const r of searchHits) {
+            filesScanned = scan.scannedCount;
+            scanCapped = scan.capped || scan.timedOut;
+            bodyHits = scan.results.length;
+            for (const r of scan.results) {
               const firstMatch = r.matches[0]?.text || "";
               results.push({
                 file: r.file,
@@ -745,6 +764,8 @@ export function registerVaultTools(
           }
           ctx.flags.body_fallback_fired = bodyFallbackFired;
           ctx.flags.body_hits = bodyHits;
+          ctx.flags.files_scanned = filesScanned;
+          ctx.flags.scan_capped = scanCapped;
 
           ctx.resultCount = results.length;
           ctx.noResults = results.length === 0;
