@@ -34,49 +34,6 @@ export async function listVaultFiles(
   return backend.listFiles(subPath, recursive);
 }
 
-/**
- * Search vault files for a text pattern (case-insensitive).
- * Returns matching files with line numbers and context.
- */
-export async function searchVault(
-  backend: StorageBackend,
-  query: string,
-  options: { subPath?: string; maxResults?: number } = {},
-): Promise<SearchResult[]> {
-  const { subPath, maxResults = 20 } = options;
-  const files = await listVaultFiles(backend, subPath);
-  const results: SearchResult[] = [];
-  const lowerQuery = query.toLowerCase();
-
-  for (const file of files) {
-    if (results.length >= maxResults) break;
-
-    const content = await readVaultFile(backend, file);
-    const lines = content.split("\n");
-    const matches: SearchMatch[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].toLowerCase().includes(lowerQuery)) {
-        matches.push({
-          line: i + 1,
-          text: lines[i].trim(),
-        });
-      }
-    }
-
-    if (matches.length > 0) {
-      const fm = parseFrontmatter(content);
-      results.push({
-        file,
-        title: fm.title || path.basename(file, ".md"),
-        matches,
-      });
-    }
-  }
-
-  return results;
-}
-
 export interface ScanVaultBodiesOptions {
   /** Restrict the scan to a subfolder (passed through to listFiles). */
   subPath?: string;
