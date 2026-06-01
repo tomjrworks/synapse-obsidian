@@ -148,7 +148,21 @@ export async function scanVaultBodies(
   let capped = false;
   let timedOut = false;
 
-  let files = await listVaultFiles(backend, subPath);
+  // Race the listing against the budget too: a hung vault_files SELECT must not
+  // wedge the whole tool. This races ONE call (not the 1411-file read loop), so
+  // it does not reintroduce the per-file background churn the in-loop cap fixes.
+  const listPromise = listVaultFiles(backend, subPath);
+  listPromise.catch(() => {}); // no unhandled rejection if it settles post-budget
+  const listed = await Promise.race([
+    listPromise.then((f) => ({ files: f as string[] | undefined })),
+    new Promise<{ files: string[] | undefined }>((res) =>
+      setTimeout(() => res({ files: undefined }), budgetMs),
+    ),
+  ]);
+  if (!listed.files) {
+    return { results, scannedCount, capped, timedOut: true };
+  }
+  let files = listed.files;
 
   if (priorityHints && priorityHints.length > 0) {
     const hintBasenames = new Set(priorityHints.map((h) => path.basename(h)));
@@ -197,6 +211,8 @@ export async function scanVaultBodies(
             file,
             title:
               (fm.title as string | undefined) || path.basename(file, ".md"),
+            dateModified:
+              normalizeFrontmatterDate(fm.date_modified) ?? undefined,
             matches,
           };
         } catch {
@@ -313,6 +329,8 @@ export interface SearchMatch {
 export interface SearchResult {
   file: string;
   title: string;
+  /** Normalized `date_modified` from frontmatter, when present. */
+  dateModified?: string;
   matches: SearchMatch[];
 }
 

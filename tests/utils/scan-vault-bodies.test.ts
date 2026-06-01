@@ -130,6 +130,20 @@ describe("scanVaultBodies — bounded primitive", () => {
     expect(readCount(backend)).toBe(atResolve);
   }, 5000);
 
+  it("a hung listFiles is bounded by budgetMs (timedOut, never wedges)", async () => {
+    const backend = {
+      readFile: vi.fn(async () => "x"),
+      listFiles: vi.fn(() => new Promise<string[]>(() => {})), // never resolves
+    } as unknown as StorageBackend;
+    const out = await scanVaultBodies(backend, "anything", {
+      budgetMs: 50,
+      maxFilesScanned: 300,
+    });
+    expect(out.timedOut).toBe(true);
+    expect(out.scannedCount).toBe(0);
+    expect(out.results).toHaveLength(0);
+  }, 5000);
+
   it("returns matches with title from frontmatter (searchVault parity)", async () => {
     const backend = mkBackend({
       "notes/a.md": "---\ntitle: Alpha Note\n---\n\nhas the keyword apple",

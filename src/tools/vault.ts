@@ -13,9 +13,7 @@ import {
   getVaultStats,
   parseFrontmatter,
   normalizeFrontmatterDate,
-  type SearchMatch,
 } from "../utils/vault.js";
-import { withTimeout } from "../utils/with-timeout.js";
 import {
   getFilingHintCached,
   invalidateClaudeMdCache,
@@ -357,17 +355,7 @@ export function registerVaultTools(
       },
       async ({ query, path: subPath, maxResults }, ctx) => {
         try {
-          interface ForageHit {
-            file: string;
-            title: string;
-            dateModified?: string;
-            matches: SearchMatch[];
-          }
-
-          const collectedResults: ForageHit[] = [];
-          let partialResults = false;
           const cap = maxResults ?? 20;
-          const lowerQuery = query.toLowerCase();
           const concurrency = Math.max(
             1,
             parseInt(process.env.FORAGE_PARALLELISM ?? "10", 10),
@@ -377,80 +365,36 @@ export function registerVaultTools(
             10,
           );
 
-          let priorityHintsCount = 0;
-
-          const scanPath = async () => {
-            let priorityHints: string[] = [];
-            try {
-              if (await backend.exists("index.md").catch(() => false)) {
-                const indexContent = await readVaultFile(backend, "index.md");
-                priorityHints = parseForageHints(indexContent, query);
-              }
-            } catch {
-              /* non-fatal */
+          // Priority hints from index.md so the most-relevant notes are
+          // covered before the cap bites.
+          let priorityHints: string[] = [];
+          try {
+            if (await backend.exists("index.md").catch(() => false)) {
+              const indexContent = await readVaultFile(backend, "index.md");
+              priorityHints = parseForageHints(indexContent, query);
             }
-            priorityHintsCount = priorityHints.length;
+          } catch {
+            /* non-fatal — priority ordering is best-effort */
+          }
 
-            let files = await listVaultFiles(backend, subPath);
-
-            if (priorityHints.length > 0) {
-              const hintBasenames = new Set(
-                priorityHints.map((h) => path.basename(h)),
-              );
-              const isPriority = (f: string) =>
-                priorityHints.includes(f) ||
-                hintBasenames.has(path.basename(f));
-              files = [
-                ...files.filter(isPriority),
-                ...files.filter((f) => !isPriority(f)),
-              ];
-            }
-
-            for (let i = 0; i < files.length; i += concurrency) {
-              if (collectedResults.length >= cap) break;
-              const chunk = files.slice(i, i + concurrency);
-              const chunkHits = await Promise.all(
-                chunk.map(async (file): Promise<ForageHit | null> => {
-                  try {
-                    const content = await readVaultFile(backend, file);
-                    const lines = content.split("\n");
-                    const matches: SearchMatch[] = [];
-                    for (let j = 0; j < lines.length; j++) {
-                      if (lines[j].toLowerCase().includes(lowerQuery)) {
-                        matches.push({ line: j + 1, text: lines[j].trim() });
-                      }
-                    }
-                    if (matches.length === 0) return null;
-                    const fm = parseFrontmatter(content);
-                    const dateModified =
-                      normalizeFrontmatterDate(fm.date_modified) ?? undefined;
-                    return {
-                      file,
-                      title:
-                        (fm.title as string | undefined) ??
-                        path.basename(file, ".md"),
-                      dateModified,
-                      matches,
-                    };
-                  } catch {
-                    return null;
-                  }
-                }),
-              );
-              for (const hit of chunkHits) {
-                if (hit !== null && collectedResults.length < cap) {
-                  collectedResults.push(hit);
-                }
-              }
-            }
-          };
-
-          await withTimeout(scanPath(), budgetMs, () => {
-            partialResults = true;
+          // Bounded scan: replaces the old inline scanPath + withTimeout race.
+          // The in-loop cap/budget STOP the scan instead of leaving a losing
+          // Promise.race scan churning all 1411 files in the background.
+          const scan = await scanVaultBodies(backend, query, {
+            subPath,
+            maxResults: cap,
+            maxFilesScanned: resolveScanCap(),
+            budgetMs,
+            concurrency,
+            priorityHints,
           });
+          const collectedResults = scan.results;
+          const partialResults = scan.capped || scan.timedOut;
 
           ctx.flags.partial_results = partialResults;
-          ctx.flags.priority_hints_count = priorityHintsCount;
+          ctx.flags.priority_hints_count = priorityHints.length;
+          ctx.flags.files_scanned = scan.scannedCount;
+          ctx.flags.scan_capped = scan.capped || scan.timedOut;
           ctx.resultCount = collectedResults.length;
           ctx.noResults = collectedResults.length === 0;
 
