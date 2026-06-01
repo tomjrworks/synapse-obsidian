@@ -27,7 +27,8 @@ import {
   readVaultFile,
   writeVaultFile,
   listVaultFiles,
-  searchVault,
+  scanVaultBodies,
+  resolveScanCap,
   parseFrontmatter,
 } from "../utils/vault.js";
 import { loadConfig, getDefaultConfig } from "../utils/config.js";
@@ -838,16 +839,26 @@ export function registerKnowledgeTools(
               }
             } else {
               scoringPath = "body";
-              // Body-search fallback: parallel across keywords, capped per-keyword
+              // Body-search fallback: parallel across keywords, BOUNDED. Pre-fix
+              // each keyword's searchVault scanned the whole vault serially on a
+              // sparse keyword; now the file cap is divided across keywords so
+              // the total stays within SCAN_FILE_CAP.
               const searchPath = (await backend.exists(notesFolder))
                 ? notesFolder
                 : undefined;
+              const kw = keywords.slice(0, 5);
+              const totalCap = resolveScanCap();
+              const perKw =
+                totalCap === undefined
+                  ? undefined
+                  : Math.max(1, Math.floor(totalCap / Math.max(1, kw.length)));
               const resultSets = await Promise.all(
-                keywords.slice(0, 5).map((k) =>
-                  searchVault(backend, k, {
+                kw.map((k) =>
+                  scanVaultBodies(backend, k, {
                     subPath: searchPath,
                     maxResults: 5,
-                  }),
+                    maxFilesScanned: perKw,
+                  }).then((s) => s.results),
                 ),
               );
               for (const results of resultSets) {

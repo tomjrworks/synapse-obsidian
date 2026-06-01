@@ -684,3 +684,49 @@ describe("SPEC §6.8 — a throwing insert never reaches the caller", () => {
     }
   });
 });
+
+// ── Test 9: bounded-scan flags (files_scanned + scan_capped) ───────────────
+describe("SPEC §6.9 — garden_find + garden_forage emit bounded-scan flags", () => {
+  const manyNoMatch = (): Record<string, string> => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 30; i++) {
+      files[`notes/x${i}.md`] = "no relevant body content in this note";
+    }
+    return files;
+  };
+
+  it("garden_find capped no-match fallback emits files_scanned + scan_capped (additive)", async () => {
+    vi.stubEnv("SCAN_FILE_CAP", "10");
+    const registered = registerAll(makeBackend(manyNoMatch()), {
+      workspaceId: "ws-scan-find",
+    });
+    const res = await registered.get("garden_find")!({
+      query: "zzznomatchqqq",
+    });
+    expect(res.isError).toBeFalsy();
+    const flags = lastEvent().branch_flags!;
+    expect(typeof flags.files_scanned).toBe("number");
+    expect(flags.files_scanned as number).toBeLessThanOrEqual(10);
+    expect(typeof flags.scan_capped).toBe("boolean");
+    expect(flags.scan_capped).toBe(true);
+    // Existing flags preserved (additive, not replaced).
+    expect(flags.body_fallback_fired).toBe(true);
+    expect(flags.filename_hits).toBe(0);
+  });
+
+  it("garden_forage emits files_scanned + scan_capped alongside its existing flags", async () => {
+    vi.stubEnv("SCAN_FILE_CAP", "10");
+    const registered = registerAll(makeBackend(manyNoMatch()), {
+      workspaceId: "ws-scan-forage",
+    });
+    const res = await registered.get("garden_forage")!({
+      query: "zzznomatchqqq",
+    });
+    expect(res.isError).toBeFalsy();
+    const flags = lastEvent().branch_flags!;
+    expect(typeof flags.files_scanned).toBe("number");
+    expect(typeof flags.scan_capped).toBe("boolean");
+    expect(flags).toHaveProperty("partial_results");
+    expect(flags).toHaveProperty("priority_hints_count");
+  });
+});

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerVaultTools, parseForageHints } from "../../src/tools/vault.js";
 import type { StorageBackend } from "../../src/utils/storage.js";
@@ -172,5 +172,43 @@ describe("garden_forage handler", () => {
     expect(result.content[0].text).toContain("budget exhausted");
 
     delete process.env.FORAGE_TIMEOUT_MS;
+  }, 5000);
+});
+
+// ─── No background churn: the in-loop budget STOPS the scan ───────────────────
+describe("garden_forage — bounded scan leaves no orphaned background work", () => {
+  afterEach(() => {
+    delete process.env.FORAGE_TIMEOUT_MS;
+  });
+
+  it("EVAL#2: after the budget fires, readFile count is frozen (no churn)", async () => {
+    process.env.FORAGE_TIMEOUT_MS = "60";
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) {
+      files[`notes/n${i}.md`] = "no relevant content in this note";
+    }
+    const backend = makeBackend(files, {
+      readFile: vi.fn(async (p: string) => {
+        await new Promise((r) => setTimeout(r, 20)); // slow reads
+        if (p in files) return files[p];
+        throw new Error(`not found: ${p}`);
+      }),
+    });
+    const { server, registered } = makeServerCapture();
+    registerVaultTools(server, backend);
+    const handler = registered.get("garden_forage")!;
+
+    const res = await handler({ query: "zzznomatchqqq" });
+    expect(res.content[0].text).toContain("budget exhausted");
+
+    const readFile = backend.readFile as ReturnType<typeof vi.fn>;
+    const atResolve = readFile.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 300));
+    const later = readFile.mock.calls.length;
+
+    // Pre-fix: withTimeout (Promise.race) returns but scanPath keeps reading all
+    // 200 files in the background → later > atResolve. Post-fix: the in-loop
+    // budget breaks the loop, so the work actually stops.
+    expect(later).toBe(atResolve);
   }, 5000);
 });
