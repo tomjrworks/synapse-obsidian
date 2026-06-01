@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerKnowledgeTools } from "../../src/tools/knowledge.js";
 import {
@@ -56,6 +56,10 @@ describe("taproot_harvest", () => {
 
   beforeEach(() => {
     serverCapture = makeServerCapture();
+  });
+
+  afterEach(() => {
+    delete process.env.SCAN_FILE_CAP;
   });
 
   // Test 1: Empty vault — no crash, setup tip in output
@@ -169,6 +173,31 @@ describe("taproot_harvest", () => {
 
     delete process.env.HARVEST_TIMEOUT_MS;
   }, 5000);
+
+  // Test 7: Body fallback is BOUNDED by SCAN_FILE_CAP across keywords (hang fix)
+  it("EVAL#6: bounds the body-fallback scan to SCAN_FILE_CAP across keywords", async () => {
+    process.env.SCAN_FILE_CAP = "20";
+    // No index.md → body fallback. 200 files, none matching the keywords, so
+    // the per-keyword maxResults:5 early-break never fires.
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) {
+      files[`notes/extra-${i}.md`] = `alpha beta gamma content number ${i}`;
+    }
+    const backend = makeBackend(files);
+    registerKnowledgeTools(serverCapture.server, backend);
+    const handler = serverCapture.registered.get("taproot_harvest")!;
+
+    await handler({ question: "glug status design", save: false });
+
+    const readFile = backend.readFile as ReturnType<typeof vi.fn>;
+    const noteReads = readFile.mock.calls
+      .map((c: any[]) => c[0] as string)
+      .filter((p) => p.startsWith("notes/"));
+    // Pre-fix: each keyword's searchVault scans all 200 non-matching files
+    // serially (no early break) → ~600 reads. Post-fix: the cap is divided
+    // across keywords so the total stays within SCAN_FILE_CAP.
+    expect(noteReads.length).toBeLessThanOrEqual(20);
+  });
 });
 
 // Pure unit tests for helper functions
