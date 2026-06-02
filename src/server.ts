@@ -25,6 +25,7 @@ import { mountApiRoutes } from "./api/routes.js";
 import { initSentry, Sentry } from "./observability/sentry.js";
 import { stripeWebhookHandler } from "./api/stripe-webhook.js";
 import { getBackend } from "./utils/backend-cache.js";
+import { buildHealthPayload } from "./utils/health.js";
 import { formatRequestBody } from "./utils/body-log.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -285,11 +286,7 @@ export async function startServer(port: number): Promise<void> {
   });
 
   app.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
-      server: "taproot",
-      version: pkg.version,
-    });
+    res.json(buildHealthPayload(pkg.version));
   });
 
   // Sentry error middleware — must be after all routes, before app.listen
