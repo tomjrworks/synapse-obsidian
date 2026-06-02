@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
     "start": "node dist/server.js",
+    "deploy": "bash scripts/deploy.sh",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "prepare": "npm run build && husky",
