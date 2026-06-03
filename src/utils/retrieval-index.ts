@@ -15,10 +15,37 @@ import type { StorageBackend } from "./storage.js";
  * from the stored content tokens (extractTokens → extracted_tokens column).
  */
 
+// Cohort allowlist (decision 2026-06-03-pass-3-cohort-flag-rollout, Option A).
+// Parsed live from TAPROOT_RETRIEVAL_V2_WORKSPACES on every call (so a redeploy
+// with a changed list takes effect immediately) but the split is memoized on the
+// raw string — re-parse only when the env value actually changes.
+let cohortRaw: string | undefined;
+let cohortSet = new Set<string>();
+function retrievalV2Cohort(): Set<string> {
+  const raw = process.env.TAPROOT_RETRIEVAL_V2_WORKSPACES ?? "";
+  if (raw !== cohortRaw) {
+    cohortRaw = raw;
+    cohortSet = new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+  }
+  return cohortSet;
+}
+
 /** The Pass 3 kill switch. Resolved once at handler entry (like resolveScanCap).
- * Off = V1 behavior byte-for-byte; on = the V2 blended ranked pass. */
-export function retrievalV2Enabled(): boolean {
-  return process.env.TAPROOT_RETRIEVAL_V2 === "1";
+ * Off = V1 behavior byte-for-byte; on = the V2 blended ranked pass.
+ *
+ * Resolution order (Option A — per-workspace cohort, CONCERN #2 fix):
+ *   1. global TAPROOT_RETRIEVAL_V2=1 → ON for everyone (override + stdio default).
+ *   2. else workspaceId ∈ TAPROOT_RETRIEVAL_V2_WORKSPACES → ON for that cohort.
+ *   3. else OFF.
+ * Passing no workspaceId (local/stdio path) collapses to the global flag only. */
+export function retrievalV2Enabled(workspaceId?: string): boolean {
+  if (process.env.TAPROOT_RETRIEVAL_V2 === "1") return true;
+  return workspaceId != null && retrievalV2Cohort().has(workspaceId);
 }
 
 export interface IndexedFile {

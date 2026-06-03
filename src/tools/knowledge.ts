@@ -805,7 +805,7 @@ export function registerKnowledgeTools(
             index = await readVaultFile(backend, "index.md");
           }
 
-          const useV2 = retrievalV2Enabled();
+          const useV2 = retrievalV2Enabled(opts.workspaceId);
           ctx.flags.retrieval_v2 = useV2;
           // RC #3: tokenizeQuery keeps identifiers (is/7011/v2) that the V1
           // extractKeywords length>3 + slice(0,5) filter dropped.
