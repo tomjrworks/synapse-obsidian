@@ -94,6 +94,14 @@ export interface StorageBackend {
   getCursorHead(): Promise<{ modifiedAt: string; id: string } | null>;
   getPendingCount(cursor: PullCursor | null): Promise<number>;
   listFilesMeta(subPath?: string): Promise<FileMeta[]>;
+  // Pass 3: per-file tokens for the V2 retrieval index, UNCAPPED. listFilesMeta
+  // caps at 1000 rows because it feeds index.md's map (which WANTS the cap +
+  // "Showing first 1000" notice). Retrieval must not inherit that cap — on a
+  // vault >1000 files a ranked search has to see every file, or notes past the
+  // 1000th become silently unreachable. This reads the same column, paginated,
+  // with no cap. Optional: callers fall back to listFilesMeta when a backend (or
+  // a test mock) doesn't implement it.
+  listFileTokensMeta?(subPath?: string): Promise<FileMeta[]>;
   batchUpdateCardinalities(updates: Map<string, Cardinality>): Promise<void>;
   // Pass 3: persist backfilled per-file tokens. Strict null-fill on the
   // Supabase backend (never clobbers a fresh writeFile value); no-op on Local.
@@ -270,6 +278,13 @@ export class LocalBackend implements StorageBackend {
   async batchUpdateTokens(_updates: Map<string, FileTokens>): Promise<void> {
     // No-op: same reason as batchUpdateCardinalities — Local rebuilds tokens
     // from disk every listFilesMeta call. Only Supabase persists the column.
+  }
+
+  async listFileTokensMeta(subPath?: string): Promise<FileMeta[]> {
+    // LocalBackend has no 1000-row cap (listFilesMeta walks the whole disk
+    // tree), so the uncapped reader is just the same call. Tokens are built
+    // inline from fast unencrypted disk reads.
+    return this.listFilesMeta(subPath);
   }
 
   private async listRecursive(

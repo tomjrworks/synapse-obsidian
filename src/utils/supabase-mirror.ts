@@ -579,6 +579,52 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     }));
   }
 
+  // Pass 3 (Path B): UNCAPPED per-file token reader for the V2 retrieval index.
+  // listFilesMeta caps at 1000 (index.md's map wants that); retrieval cannot, or
+  // notes past the 1000th go dark on big vaults. Paginated with .range() over a
+  // stable .order("path") so every row is returned exactly once. Selects only
+  // path + extracted_tokens (no cardinality) — the smallest payload that still
+  // covers the whole vault in a handful of round trips (tokens are bounded by
+  // BODY_TOKEN_CAP). No blob downloads — this is a plaintext column read, NOT
+  // the encrypted-body scan that caused the original hang.
+  async listFileTokensMeta(subPath?: string): Promise<FileMeta[]> {
+    const PAGE = 1000;
+    const trimmedSub = subPath?.trim();
+    const prefix = trimmedSub
+      ? trimmedSub.endsWith("/")
+        ? trimmedSub
+        : `${trimmedSub}/`
+      : null;
+    const escapedPrefix = prefix
+      ? prefix.replace(/[\\%_]/g, (c) => `\\${c}`)
+      : null;
+
+    const out: FileMeta[] = [];
+    for (let from = 0; ; from += PAGE) {
+      let query = this.supabase
+        .from("vault_files")
+        .select("path, extracted_tokens")
+        .eq("workspace_id", this.workspaceId)
+        .is("deleted_at", null)
+        .order("path", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (escapedPrefix) query = query.like("path", `${escapedPrefix}%`);
+
+      const { data, error } = await query;
+      if (error) throw new Error(`listFileTokensMeta failed: ${error.message}`);
+      const rows = data ?? [];
+      for (const r of rows) {
+        out.push({
+          path: r.path as string,
+          cardinality: null,
+          tokens: (r.extracted_tokens as FileTokens | null) ?? null,
+        });
+      }
+      if (rows.length < PAGE) break;
+    }
+    return out;
+  }
+
   // Fire-and-forget backfill writes from loadIndexData when it encounters
   // files with null extracted_cardinality. Chunked Promise.all with
   // concurrency=10 (same pattern as 0.1.7 sync push parallelism).

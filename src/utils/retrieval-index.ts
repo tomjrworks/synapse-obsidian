@@ -1,6 +1,6 @@
 import path from "node:path";
 import { tokenize, tokenizeQuery, isIdentifierToken } from "./tokenize.js";
-import type { FileTokens } from "./frontmatter.js";
+import { extractTokens, type FileTokens } from "./frontmatter.js";
 import type { StorageBackend } from "./storage.js";
 
 /**
@@ -204,10 +204,17 @@ export function invalidateRetrievalIndex(backend: StorageBackend): void {
 
 /**
  * Get (or build + cache) the retrieval index for a backend. Reads all file
- * tokens in one listFilesMeta round trip. Files whose tokens haven't been
- * backfilled yet (null) are skipped — a partially-backfilled column yields
- * fewer hits, never WRONG rankings (the deploy-time backfill warm closes the
- * gap before the read flag flips; SPEC §2.2 / Part 0).
+ * tokens via the UNCAPPED listFileTokensMeta (Path B) — so a vault >1000 files
+ * is fully reachable, not silently truncated to the first 1000 like the index.md
+ * map. Falls back to listFilesMeta on backends/mocks that don't implement the
+ * uncapped reader.
+ *
+ * Files whose tokens haven't been backfilled yet (null) are skipped from the
+ * index AND collected for a fire-and-forget full-vault backfill: a partially
+ * populated column yields fewer hits (never WRONG rankings), and the backfill
+ * drains the gap in the background so subsequent reads are complete. This is the
+ * self-healing path; the deploy-time warm (a no-op write → flush →
+ * getRetrievalIndex) populates the whole column before the read flag flips.
  */
 export async function getRetrievalIndex(
   backend: StorageBackend,
@@ -216,14 +223,73 @@ export async function getRetrievalIndex(
   if (cached && Date.now() - cached.cachedAt < RETRIEVAL_INDEX_TTL_MS) {
     return cached.index;
   }
-  const meta = await backend.listFilesMeta();
+  const meta = backend.listFileTokensMeta
+    ? await backend.listFileTokensMeta()
+    : await backend.listFilesMeta();
   const files: IndexedFile[] = [];
+  const nullTokenPaths: string[] = [];
   for (const m of meta) {
     if (m.tokens) files.push({ path: m.path, tokens: m.tokens });
+    else nullTokenPaths.push(m.path);
   }
   const index = buildIndex(files);
   retrievalIndexCache.set(backend, { index, cachedAt: Date.now() });
+  if (nullTokenPaths.length > 0) {
+    void backfillNullTokens(backend, nullTokenPaths).catch((err) =>
+      console.error(`[retrieval] token backfill failed: ${err}`),
+    );
+  }
   return index;
+}
+
+// Guards against a flush-triggered warm and a concurrent read both backfilling
+// the same backend at once (duplicate blob reads). The .is(null) write-side
+// race-guard already makes the WRITES idempotent; this avoids the wasted reads.
+const tokenBackfillInFlight = new WeakSet<StorageBackend>();
+
+/**
+ * Read + extract + persist tokens for files whose extracted_tokens column is
+ * null (the migration-day cold tail, and anything past the old 1000 cap). This
+ * is the ONE expensive path — it reads file content (encrypted blobs on
+ * Supabase) — so it is:
+ *   - one-time per file (the column is null exactly once, ever),
+ *   - fire-and-forget (never blocks a user query),
+ *   - chunked (concurrency 10), and
+ *   - in-flight-guarded (no concurrent duplicate runs per backend).
+ * Identical cost shape to the extracted_cardinality backfill that already
+ * shipped. On success it drops the cached (partial) index so the next read
+ * rebuilds with the freshly-populated tokens.
+ */
+export async function backfillNullTokens(
+  backend: StorageBackend,
+  paths: string[],
+): Promise<void> {
+  if (paths.length === 0) return;
+  if (!backend.batchUpdateTokens) return;
+  if (tokenBackfillInFlight.has(backend)) return;
+  tokenBackfillInFlight.add(backend);
+  try {
+    const concurrency = 10;
+    const updates = new Map<string, FileTokens>();
+    for (let i = 0; i < paths.length; i += concurrency) {
+      const chunk = paths.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(async (p) => {
+          try {
+            updates.set(p, extractTokens(await backend.readFile(p)));
+          } catch {
+            // Unreadable (e.g. deleted mid-flight) — skip; never abort the run.
+          }
+        }),
+      );
+    }
+    if (updates.size > 0) {
+      await backend.batchUpdateTokens(updates);
+      invalidateRetrievalIndex(backend);
+    }
+  } finally {
+    tokenBackfillInFlight.delete(backend);
+  }
 }
 
 /** Test seam — reset the WeakMap entry between cases that reuse a backend ref. */

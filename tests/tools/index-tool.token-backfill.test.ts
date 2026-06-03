@@ -7,17 +7,21 @@ import type { FileMeta, StorageBackend } from "../../src/utils/storage.js";
 import type { FileTokens } from "../../src/utils/frontmatter.js";
 
 // ─────────────────────────────────────────────────────────────────────────
-// AUDIT B1 regression. The Pass 3 eval harness drives the tools through an
-// in-memory mock backend that bypasses loadIndexData's production backfill
-// predicate entirely — so it CANNOT catch B1. This test exercises that exact
-// predicate.
+// Token backfill on flush (the AUDIT B1 case, now owned by the retrieval warm).
 //
-// B1: loadIndexData's backfill loop originally gated file reads on
-// `cardinality === null`. On Tom's vault cardinality is already fully
-// backfilled, so the loop read nothing → the new extracted_tokens column would
-// NEVER populate for untouched notes → flipping TAPROOT_RETRIEVAL_V2 would serve
-// degraded recall. The fix widens the predicate to
-// `cardinality === null || tokens === null` and persists tokens in the loop.
+// B1 was: tokens never populate for a cardinality-PRESENT / tokens-NULL row
+// (Tom's whole vault) because the only token backfill was bolted onto
+// loadIndexData's `cardinality === null` predicate. Path B moved token backfill
+// OUT of loadIndexData (now cardinality-only) and into the UNCAPPED retrieval
+// warm (getRetrievalIndex → backfillNullTokens), fired off the SAME debounced
+// flush. The warm doesn't gate on cardinality at all, so the B1 case is covered
+// — and uncapped, so it also covers files past loadIndexData's 1000-row list.
+//
+// This test asserts the end-to-end behavior through invalidateIndexForWorkspace:
+// a flush backfills tokens for the null-token row, leaves the populated row and
+// cardinality untouched. (The mock omits listFileTokensMeta, so the warm here
+// exercises the listFilesMeta fallback — backends without the uncapped reader
+// still backfill correctly.)
 // ─────────────────────────────────────────────────────────────────────────
 
 function makeBackend(

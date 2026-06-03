@@ -7,17 +7,18 @@ import { parseFrontmatter } from "../utils/vault.js";
 import {
   enrichCardinalitySummary,
   extractCardinality,
-  extractTokens,
   renderCardinalityLine,
   MANAGED_INDEX_MARKER,
   type Cardinality,
-  type FileTokens,
 } from "../utils/frontmatter.js";
 import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
-import { invalidateRetrievalIndex } from "../utils/retrieval-index.js";
+import {
+  invalidateRetrievalIndex,
+  getRetrievalIndex,
+} from "../utils/retrieval-index.js";
 
 const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
@@ -124,6 +125,16 @@ async function flushIndexForWorkspace(
   // 5. Populate cache with the MCP-format result
   const wrapped = wrap(mcpRendered, "synthesized");
   indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
+
+  // 6. Warm the V2 retrieval index off the SAME debounced flush (flag-
+  // independent, fire-and-forget). On a vault write this rebuilds the dropped
+  // cache; on the deploy-day "no-op write" warm it reads the uncapped token
+  // column and kicks off the full-vault token backfill BEFORE the read flag
+  // flips — the populate-before-flip step. Steady state: one cheap column read,
+  // zero blob reads (no null tokens left to backfill).
+  void getRetrievalIndex(backend).catch((err) =>
+    console.error(`[index-tool] retrieval index warm failed: ${err}`),
+  );
 }
 
 /**
@@ -348,20 +359,9 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
   const groups = new Map<string, string[]>();
   const root: string[] = [];
   const cardinalities = new Map<string, Cardinality | null>();
-  // AUDIT B1 fix: the backfill read-decision is widened from "cardinality is
-  // null" to "cardinality OR tokens is null". On Tom's vault cardinality is
-  // already fully backfilled, so the old predicate read NOTHING — tokens would
-  // never populate for untouched notes and the V2 flag would serve degraded
-  // recall. Now any token-null row is read here too. (Strict === null: a mock
-  // FileMeta that omits `tokens` is `undefined`, not null, and must not trip
-  // the token path.)
-  const needsBackfill: {
-    path: string;
-    needCard: boolean;
-    needTokens: boolean;
-  }[] = [];
+  const needsBackfill: string[] = [];
 
-  for (const { path: filePath, cardinality, tokens } of allMeta) {
+  for (const { path: filePath, cardinality } of allMeta) {
     const slash = filePath.indexOf("/");
     if (slash === -1) {
       root.push(filePath);
@@ -372,20 +372,26 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
       groups.set(folder, arr);
     }
 
-    const needCard = cardinality === null;
-    const needTokens = tokens === null;
-    if (!needCard) cardinalities.set(filePath, cardinality);
-    if (needCard || needTokens) {
-      needsBackfill.push({ path: filePath, needCard, needTokens });
+    if (cardinality !== null) {
+      cardinalities.set(filePath, cardinality);
+    } else {
+      needsBackfill.push(filePath);
     }
   }
 
-  // Backfill: read files whose cardinality OR tokens wasn't stored yet, extract
-  // + enrich, hand back to the backend to persist async. On migration day this
-  // covers every existing file (one-time cost equal to the old hot path). After
-  // that, this list is normally empty. Cardinality is recomputed ONLY when it
-  // was null (idempotent — never clobbers a populated value); tokens are written
-  // whenever they were null.
+  // Backfill: read files whose cardinality wasn't stored yet, extract + enrich,
+  // hand back to the backend to persist async. On migration day this covers
+  // every existing file (one-time cost equal to the old hot path). After that,
+  // this list is normally empty.
+  //
+  // NOTE: token (extracted_tokens) backfill is intentionally NOT here. It lives
+  // in the V2 retrieval warm (getRetrievalIndex → backfillNullTokens, fired off
+  // this same flush at step 6) — UNCAPPED, so it covers the whole vault, not
+  // just loadIndexData's first 1000. Keeping the two backfills separate avoids
+  // double-reading the same files and keeps this index.md loader cardinality-
+  // only. (This supersedes the earlier "AUDIT B1" widening: the B1 case —
+  // cardinality present, tokens null — is now handled by the uncapped warm,
+  // which doesn't gate on cardinality at all.)
   if (needsBackfill.length > 0) {
     const parallelismRaw = parseInt(
       process.env.INDEX_BACKFILL_PARALLELISM ?? "10",
@@ -395,48 +401,32 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
       1,
       Number.isNaN(parallelismRaw) ? 10 : parallelismRaw,
     );
-    const cardUpdates = new Map<string, Cardinality>();
-    const tokenUpdates = new Map<string, FileTokens>();
+    const backfillUpdates = new Map<string, Cardinality>();
 
     for (let i = 0; i < needsBackfill.length; i += concurrency) {
       const chunk = needsBackfill.slice(i, i + concurrency);
       await Promise.all(
-        chunk.map(async ({ path: filePath, needCard, needTokens }) => {
+        chunk.map(async (filePath) => {
           try {
             const content = await backend.readFile(filePath);
-            if (needCard) {
-              const card = enrichCardinalitySummary(
-                extractCardinality(content),
-                content,
-              );
-              cardinalities.set(filePath, card);
-              cardUpdates.set(filePath, card);
-            }
-            if (needTokens) {
-              tokenUpdates.set(filePath, extractTokens(content));
-            }
+            const card = enrichCardinalitySummary(
+              extractCardinality(content),
+              content,
+            );
+            cardinalities.set(filePath, card);
+            backfillUpdates.set(filePath, card);
           } catch {
-            if (needCard) cardinalities.set(filePath, null);
+            cardinalities.set(filePath, null);
           }
         }),
       );
     }
 
     void backend
-      .batchUpdateCardinalities(cardUpdates)
+      .batchUpdateCardinalities(backfillUpdates)
       .catch((err) =>
         console.error(`[index-tool] cardinality backfill failed: ${err}`),
       );
-    // Guarded: skip the call entirely when nothing to write — avoids a pointless
-    // empty round trip and keeps backends that don't persist tokens (LocalBackend
-    // no-ops; older test mocks omit the method) off the hot path.
-    if (tokenUpdates.size > 0) {
-      void backend
-        .batchUpdateTokens(tokenUpdates)
-        .catch((err) =>
-          console.error(`[index-tool] token backfill failed: ${err}`),
-        );
-    }
   }
 
   root.sort();
