@@ -15,6 +15,12 @@ import type { StorageBackend } from "./storage.js";
  * from the stored content tokens (extractTokens → extracted_tokens column).
  */
 
+/** The Pass 3 kill switch. Resolved once at handler entry (like resolveScanCap).
+ * Off = V1 behavior byte-for-byte; on = the V2 blended ranked pass. */
+export function retrievalV2Enabled(): boolean {
+  return process.env.TAPROOT_RETRIEVAL_V2 === "1";
+}
+
 export interface IndexedFile {
   path: string;
   tokens: FileTokens; // content tokens (frontmatter / body / identifiers)

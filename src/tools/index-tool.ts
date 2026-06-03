@@ -17,6 +17,7 @@ import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
+import { invalidateRetrievalIndex } from "../utils/retrieval-index.js";
 
 const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
@@ -88,8 +89,10 @@ async function flushIndexForWorkspace(
   workspaceId: string,
   backend: StorageBackend,
 ): Promise<void> {
-  // 1. Evict in-memory cache
+  // 1. Evict in-memory cache (index.md render + the Pass 3 retrieval index,
+  // which rides the same debounced flush on any vault write).
   indexCache.delete(backend);
+  invalidateRetrievalIndex(backend);
 
   // 2. Single pass through the vault — listFiles + per-file readFile happen
   // ONCE. Both renderers (MCP cache + disk write-back) operate off this data.

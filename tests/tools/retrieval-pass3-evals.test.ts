@@ -435,8 +435,77 @@ describe("Pass 3 retrieval — Control non-regression under V1 (hard gate)", () 
   });
 });
 
-describe("Pass 3 retrieval — A2 hard gate + V2 ship-bar", () => {
-  // Un-skipped in C5 (A2) and C8 (full ship-bar) once V2 ranking is wired.
-  it.skip("A2 — `IS 7011` returns a course note top-3 with zero anti-gold (V2)", () => {});
-  it.skip("V2 ship-bar — Gold@3(A+B+C) >= 0.75 AND >= +0.30 over V1 floor (C8)", () => {});
+const A2_ANTI_GOLD = [
+  "daily/2026-05/2026-05-10-pricing-decisions.md",
+  "daily/2026-05/2026-05-11-competitor-analysis.md",
+  "daily/2026-05/2026-05-12-revised-roadmap.md",
+  "daily/2026-05/2026-05-14-advisory-notes.md",
+];
+
+describe("Pass 3 retrieval — Control non-regression under V2 (hard gate)", () => {
+  let handlers: Map<string, ToolHandler>;
+  beforeEach(() => {
+    process.env.TAPROOT_RETRIEVAL_V2 = "1";
+    delete process.env.SCAN_FILE_CAP;
+    const { server, registered } = makeServerCapture();
+    registerVaultTools(server, corpusBackend());
+    registerKnowledgeTools(server, corpusBackend());
+    handlers = registered;
+  });
+  afterEach(() => {
+    delete process.env.TAPROOT_RETRIEVAL_V2;
+  });
+
+  it("G1 — `garden find hang fix` is top-1 under V2", async () => {
+    const { paths } = await runQuery(handlers, "find", "garden find hang fix");
+    expect(paths[0]).toBe(
+      "daily/2026-06/2026-06-01-garden-find-hang-fix-session-a.md",
+    );
+  });
+
+  it("G2 — `mcp 7-pass roadmap` is top-1 under V2", async () => {
+    const { paths } = await runQuery(handlers, "find", "mcp 7-pass roadmap");
+    expect(paths[0]).toBe("decisions/taproot/2026-05-28-mcp-7-pass-roadmap.md");
+  });
+
+  it("G3 — `taproot pricing model` is top-3 under V2", async () => {
+    const { paths } = await runQuery(handlers, "find", "taproot pricing model");
+    expect(paths.slice(0, 3)).toContain(
+      "decisions/2026-05-12-taproot-pricing-model.md",
+    );
+  });
+});
+
+describe("Pass 3 retrieval — A2 hard gate (V2)", () => {
+  let handlers: Map<string, ToolHandler>;
+  beforeEach(() => {
+    process.env.TAPROOT_RETRIEVAL_V2 = "1";
+    delete process.env.SCAN_FILE_CAP;
+    const { server, registered } = makeServerCapture();
+    registerVaultTools(server, corpusBackend());
+    registerKnowledgeTools(server, corpusBackend());
+    handlers = registered;
+  });
+  afterEach(() => {
+    delete process.env.TAPROOT_RETRIEVAL_V2;
+  });
+
+  it("A2 — `IS 7011` returns a school/is-7011-it-management/** course note in top-3", async () => {
+    const { paths } = await runQuery(handlers, "find", "IS 7011");
+    const top3 = paths.slice(0, 3);
+    expect(
+      top3.some((p) => p.startsWith("school/is-7011-it-management/")),
+    ).toBe(true);
+  });
+
+  it("A2 — zero short-substring-only anti-gold in top-3", async () => {
+    const { paths } = await runQuery(handlers, "find", "IS 7011");
+    const top3 = paths.slice(0, 3);
+    expect(A2_ANTI_GOLD.some((a) => top3.includes(a))).toBe(false);
+  });
+});
+
+describe("Pass 3 retrieval — V2 ship-bar", () => {
+  // Un-skipped in C8 once all three tools are on V2.
+  it.skip("V2 ship-bar — A2 gate + anti-gold=0 + A4/C2 recovered + F1 clean + Gold@3(A+B+C)>=0.90 (C8)", () => {});
 });
