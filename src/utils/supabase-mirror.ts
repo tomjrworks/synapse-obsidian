@@ -723,6 +723,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     if (error) throw new Error(`delete failed: ${error.message}`);
     if ((count ?? 0) === 0) throw new NotFoundError(normalized);
 
+    // Drop the index.md + V2 retrieval caches (debounced flush). Without this,
+    // the cached retrieval index keeps serving this deleted note as a ghost hit
+    // for up to the backend TTL — V1 read listFiles live and never did.
+    invalidateIndexForWorkspace(this.workspaceId, this);
+
     // Storage blob is intentionally NOT removed on soft delete. T4.6's
     // nuke flow is what reclaims storage; this leaves a paper trail and
     // makes "restore from trash" straightforward in a future Stage 2 UX.
@@ -755,6 +760,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       throw new Error(`move failed: ${error.message}`);
     }
     if ((count ?? 0) === 0) throw new NotFoundError(oldNorm);
+
+    // Same as delete(): the cached retrieval index would otherwise surface the
+    // OLD path as a ghost hit until the TTL. (Content tokens are unchanged by a
+    // move — filename/folder tokens re-derive from the live path at build time.)
+    invalidateIndexForWorkspace(this.workspaceId, this);
   }
 
   async stat(filePath: string): Promise<FileStat> {
