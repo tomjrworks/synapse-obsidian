@@ -105,6 +105,12 @@ export const QUERY_STOP_WORDS: ReadonlySet<string> = new Set([
   "out",
   "off",
   "so",
+  // Domain filler: in a notes app EVERY item is a "note", so these carry no
+  // retrieval signal as part of a multi-word query ("quantum computing notes"
+  // → the topic is quantum computing). A bare "note(s)" query still works (the
+  // whole-query-stopword fallback keeps it).
+  "note",
+  "notes",
 ]);
 
 // Emit letter-run / digit-run sub-tokens, but only for mixed letter+digit tokens.

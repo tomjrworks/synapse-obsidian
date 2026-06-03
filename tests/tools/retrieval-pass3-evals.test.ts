@@ -317,90 +317,100 @@ const mrr = (paths: string[], gold: string[]) => {
   const i = paths.slice(0, 10).findIndex((p) => gold.includes(p));
   return i === -1 ? 0 : 1 / (i + 1);
 };
+const avg = (xs: number[]) =>
+  xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+
+interface SuiteResult {
+  rows: Record<string, unknown>[];
+  byCat: Record<string, { g3: number[]; ag3: number[]; mrr: number[] }>;
+  catAvg: Record<string, { gold3: number; antiGold3: number; mrr: number }>;
+  q: (id: string) => Record<string, unknown>;
+  combinedGold3: (cats: string[]) => number;
+}
+
+// Run all 18 gold queries under one flag state and score them. Registers a
+// fresh backend (fresh WeakMap-keyed retrieval cache) so runs don't bleed.
+async function runSuite(useV2: boolean): Promise<SuiteResult> {
+  if (useV2) process.env.TAPROOT_RETRIEVAL_V2 = "1";
+  else delete process.env.TAPROOT_RETRIEVAL_V2;
+  delete process.env.SCAN_FILE_CAP;
+  const { server, registered } = makeServerCapture();
+  const backend = corpusBackend();
+  registerVaultTools(server, backend);
+  registerKnowledgeTools(server, backend);
+
+  const rows: Record<string, unknown>[] = [];
+  const byCat: SuiteResult["byCat"] = {};
+  for (const qd of GOLD) {
+    const { paths, flags, noResults } = await runQuery(
+      registered,
+      qd.tool,
+      qd.query,
+    );
+    const g3 =
+      qd.gold.length === 0
+        ? noResults
+          ? 1
+          : 0
+        : inTopK(paths, qd.gold, 3)
+          ? 1
+          : 0;
+    const ag3 = qd.antiGold && inTopK(paths, qd.antiGold, 3) ? 1 : 0;
+    const mrrV =
+      qd.gold.length === 0 ? (noResults ? 1 : 0) : mrr(paths, qd.gold);
+    byCat[qd.cat] ??= { g3: [], ag3: [], mrr: [] };
+    byCat[qd.cat].g3.push(g3);
+    byCat[qd.cat].ag3.push(ag3);
+    byCat[qd.cat].mrr.push(mrrV);
+    rows.push({
+      id: qd.id,
+      tool: qd.tool,
+      gold3: g3,
+      antiGold3: ag3,
+      recall10: Number(recallAt(paths, qd.gold, 10).toFixed(2)),
+      mrr: Number(mrrV.toFixed(2)),
+      noResults,
+      top3: paths.slice(0, 3).join(" | ") || "(none)",
+      scoring_path: flags.scoring_path,
+    });
+  }
+  const catAvg = Object.fromEntries(
+    Object.entries(byCat).map(([c, m]) => [
+      c,
+      {
+        gold3: Number(avg(m.g3).toFixed(2)),
+        antiGold3: Number(avg(m.ag3).toFixed(2)),
+        mrr: Number(avg(m.mrr).toFixed(2)),
+      },
+    ]),
+  );
+  return {
+    rows,
+    byCat,
+    catAvg,
+    q: (id) => rows.find((r) => r.id === id)!,
+    combinedGold3: (cats) => avg(cats.flatMap((c) => byCat[c]?.g3 ?? [])),
+  };
+}
 
 describe("Pass 3 retrieval — V1 floor (failing-eval-first evidence)", () => {
-  let handlers: Map<string, ToolHandler>;
-  beforeEach(() => {
-    delete process.env.TAPROOT_RETRIEVAL_V2;
-    delete process.env.SCAN_FILE_CAP;
-    const { server, registered } = makeServerCapture();
-    const backend = corpusBackend();
-    registerVaultTools(server, backend);
-    registerKnowledgeTools(server, backend);
-    handlers = registered;
-  });
   afterEach(() => {
     delete process.env.TAPROOT_RETRIEVAL_V2;
   });
 
   it("captures + dumps the V1 baseline across all 18 queries", async () => {
-    const rows: Record<string, unknown>[] = [];
-    const byCat: Record<
-      string,
-      { g3: number[]; ag3: number[]; r10: number[]; mrr: number[] }
-    > = {};
-    for (const q of GOLD) {
-      const { paths, flags, noResults } = await runQuery(
-        handlers,
-        q.tool,
-        q.query,
-      );
-      const g3 =
-        q.gold.length === 0
-          ? noResults
-            ? 1
-            : 0
-          : inTopK(paths, q.gold, 3)
-            ? 1
-            : 0;
-      const ag3 = q.antiGold && inTopK(paths, q.antiGold, 3) ? 1 : 0;
-      const r10 = recallAt(paths, q.gold, 10);
-      const mrrV =
-        q.gold.length === 0 ? (noResults ? 1 : 0) : mrr(paths, q.gold);
-      byCat[q.cat] ??= { g3: [], ag3: [], r10: [], mrr: [] };
-      byCat[q.cat].g3.push(g3);
-      byCat[q.cat].ag3.push(ag3);
-      byCat[q.cat].r10.push(r10);
-      byCat[q.cat].mrr.push(mrrV);
-      rows.push({
-        id: q.id,
-        tool: q.tool,
-        gold3: g3,
-        antiGold3: ag3,
-        recall10: Number(r10.toFixed(2)),
-        mrr: Number(mrrV.toFixed(2)),
-        noResults,
-        top3: paths.slice(0, 3).join(" | ") || "(none)",
-        body_fb: flags.body_fallback_fired,
-        scoring_path: flags.scoring_path,
-      });
-    }
-    const avg = (xs: number[]) =>
-      xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
-    const catSummary = Object.fromEntries(
-      Object.entries(byCat).map(([c, m]) => [
-        c,
-        {
-          gold3: Number(avg(m.g3).toFixed(2)),
-          antiGold3: Number(avg(m.ag3).toFixed(2)),
-          recall10: Number(avg(m.r10).toFixed(2)),
-          mrr: Number(avg(m.mrr).toFixed(2)),
-        },
-      ]),
-    );
-    // V1 FLOOR — record into the PLAN VERIFY section.
+    const v1 = await runSuite(false);
     // eslint-disable-next-line no-console
     console.log("\n=== Pass 3 V1 FLOOR (per query) ===");
     // eslint-disable-next-line no-console
-    console.table(rows);
+    console.table(v1.rows);
     // eslint-disable-next-line no-console
-    console.log("=== Pass 3 V1 FLOOR (per category) ===");
+    console.table(v1.catAvg);
     // eslint-disable-next-line no-console
-    console.table(catSummary);
-    const trap = ["A", "B", "C", "E"].flatMap((c) => byCat[c]?.g3 ?? []);
-    // eslint-disable-next-line no-console
-    console.log(`V1 trap Gold@3 (A+B+C+E) = ${avg(trap).toFixed(3)}`);
-    expect(rows.length).toBe(GOLD.length);
+    console.log(
+      `V1 trap Gold@3 (A+B+C) = ${v1.combinedGold3(["A", "B", "C"]).toFixed(3)}`,
+    );
+    expect(v1.rows.length).toBe(GOLD.length);
   });
 });
 
@@ -564,7 +574,47 @@ describe("Pass 3 retrieval — taproot_harvest V2 (RC #3/#4)", () => {
   });
 });
 
-describe("Pass 3 retrieval — V2 ship-bar", () => {
-  // Un-skipped in C8 once all three tools are on V2.
-  it.skip("V2 ship-bar — A2 gate + anti-gold=0 + A4/C2 recovered + F1 clean + Gold@3(A+B+C)>=0.90 (C8)", () => {});
+describe("Pass 3 retrieval — V2 ship-bar (all tools on V2)", () => {
+  afterEach(() => {
+    delete process.env.TAPROOT_RETRIEVAL_V2;
+  });
+
+  it("meets every ship-bar gate (revised post-V1-floor)", async () => {
+    const v1 = await runSuite(false);
+    const v2 = await runSuite(true);
+
+    // eslint-disable-next-line no-console
+    console.log("\n=== Pass 3 V2 RESULT (per query) ===");
+    // eslint-disable-next-line no-console
+    console.table(v2.rows);
+    // eslint-disable-next-line no-console
+    console.table(v2.catAvg);
+
+    const v1abc = v1.combinedGold3(["A", "B", "C"]);
+    const v2abc = v2.combinedGold3(["A", "B", "C"]);
+    // eslint-disable-next-line no-console
+    console.log(
+      `Gold@3(A+B+C): V1=${v1abc.toFixed(3)} → V2=${v2abc.toFixed(3)} (Δ ${(v2abc - v1abc).toFixed(3)})`,
+    );
+
+    // (a) A2 HARD GATE — course note top-3, zero anti-gold.
+    expect(v2.q("A2").gold3).toBe(1);
+    expect(v2.q("A2").antiGold3).toBe(0);
+    // (b) Anti-gold@3 = 0 on A2 AND B1 (V1 leaked both).
+    expect(v2.q("B1").antiGold3).toBe(0);
+    // (c) A4 + C2 recovered (V1 floor = 0).
+    expect(v2.q("A4").gold3).toBe(1);
+    expect(v2.q("C2").gold3).toBe(1);
+    // (d) F1 stays a clean no_results (no confabulation).
+    expect(v2.q("F1").noResults).toBe(true);
+    // (e) Gold@3(A+B+C) >= 0.90 absolute AND >= +0.20 over the V1 floor.
+    expect(v2abc).toBeGreaterThanOrEqual(0.9);
+    expect(v2abc - v1abc).toBeGreaterThanOrEqual(0.2);
+    // (f) Control (G) non-regression under BOTH flags.
+    expect(v1.combinedGold3(["G"])).toBe(1);
+    expect(v2.combinedGold3(["G"])).toBe(1);
+    // (g) MRR up on the trap categories A and C.
+    expect(v2.catAvg.A.mrr).toBeGreaterThanOrEqual(v1.catAvg.A.mrr);
+    expect(v2.catAvg.C.mrr).toBeGreaterThanOrEqual(v1.catAvg.C.mrr);
+  });
 });

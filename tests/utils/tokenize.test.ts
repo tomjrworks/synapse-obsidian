@@ -108,6 +108,14 @@ describe("tokenizeQuery — stopwords stripped from query only", () => {
   it("keeps the stopword when it IS the entire query", () => {
     expect(tokenizeQuery("the")).toEqual(["the"]);
     expect(tokenizeQuery("of")).toEqual(["of"]);
+    expect(tokenizeQuery("notes")).toEqual(["notes"]); // bare query still works
+  });
+
+  it("strips the domain-filler word `notes` from a multi-word query", () => {
+    expect(tokenizeQuery("quantum computing notes")).toEqual([
+      "quantum",
+      "computing",
+    ]);
   });
 
   it("does NOT strip short identifiers/acronyms (is, it, ai, pr)", () => {
