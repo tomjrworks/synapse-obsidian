@@ -291,13 +291,27 @@ export async function getRetrievalIndex(
 const tokenBackfillInFlight = new WeakSet<StorageBackend>();
 
 /**
+ * Resolve the token-backfill chunk concurrency from RETRIEVAL_BACKFILL_PARALLELISM
+ * (mirrors INDEX_BACKFILL_PARALLELISM / *_PARALLELISM precedent). Default 10 —
+ * held, not lowered, deliberately: the per-workspace cohort flag (Option A/B)
+ * already removed the fleet-synchronized flip that motivated a "Supabase spike"
+ * concern, so flips now backfill ONE workspace at a time. And lowering it would
+ * SLOW each backfill, pushing a >15k-file run past the 5-min backend-LRU eviction
+ * → a second concurrent re-read (the known LOAD event). The knob exists so ops can
+ * dial DOWN without a redeploy if real telemetry ever shows a spike. Clamped ≥1. */
+export function resolveBackfillConcurrency(): number {
+  const raw = parseInt(process.env.RETRIEVAL_BACKFILL_PARALLELISM ?? "10", 10);
+  return Math.max(1, Number.isNaN(raw) ? 10 : raw);
+}
+
+/**
  * Read + extract + persist tokens for files whose extracted_tokens column is
  * null (the migration-day cold tail, and anything past the old 1000 cap). This
  * is the ONE expensive path — it reads file content (encrypted blobs on
  * Supabase) — so it is:
  *   - one-time per file (the column is null exactly once, ever),
  *   - fire-and-forget (never blocks a user query),
- *   - chunked (concurrency 10), and
+ *   - chunked (concurrency via resolveBackfillConcurrency, default 10), and
  *   - in-flight-guarded (no concurrent duplicate runs per backend).
  * Identical cost shape to the extracted_cardinality backfill that already
  * shipped. On success it drops the cached (partial) index so the next read
@@ -312,7 +326,7 @@ export async function backfillNullTokens(
   if (tokenBackfillInFlight.has(backend)) return;
   tokenBackfillInFlight.add(backend);
   try {
-    const concurrency = 10;
+    const concurrency = resolveBackfillConcurrency();
     const updates = new Map<string, FileTokens>();
     for (let i = 0; i < paths.length; i += concurrency) {
       const chunk = paths.slice(i, i + concurrency);

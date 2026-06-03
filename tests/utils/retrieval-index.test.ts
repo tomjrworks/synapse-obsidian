@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   buildIndex,
   scoreQuery,
+  resolveBackfillConcurrency,
   type IndexedFile,
 } from "../../src/utils/retrieval-index.js";
 import type { FileTokens } from "../../src/utils/frontmatter.js";
@@ -21,6 +22,50 @@ function f(filePath: string, t: Partial<FileTokens> = {}): IndexedFile {
 
 const rank = (hits: { path: string }[], p: string) =>
   hits.findIndex((h) => h.path === p);
+
+describe("buildIndex — path-dedup (OFFSET-race duplicate collapse)", () => {
+  it("collapses a duplicated path to a single record and does not double-count bodyDf", () => {
+    // Same path twice (what an insert-between-OFFSET-pages read yields). Dedup
+    // keeps the first → one record, one hit, and df counts the body token once.
+    const index = buildIndex([
+      f("notes/a.md", { body: ["alpha"] }),
+      f("notes/a.md", { body: ["alpha"] }),
+      f("notes/b.md", { body: ["beta"] }),
+    ]);
+    expect(index.n).toBe(2);
+    expect(index.bodyDf.get("alpha")).toBe(1);
+    expect(scoreQuery(index, "alpha").map((h) => h.path)).toEqual([
+      "notes/a.md",
+    ]);
+  });
+});
+
+describe("resolveBackfillConcurrency — RETRIEVAL_BACKFILL_PARALLELISM", () => {
+  const prev = process.env.RETRIEVAL_BACKFILL_PARALLELISM;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.RETRIEVAL_BACKFILL_PARALLELISM;
+    else process.env.RETRIEVAL_BACKFILL_PARALLELISM = prev;
+  });
+
+  it("defaults to 10 when unset", () => {
+    delete process.env.RETRIEVAL_BACKFILL_PARALLELISM;
+    expect(resolveBackfillConcurrency()).toBe(10);
+  });
+  it("honors a valid override", () => {
+    process.env.RETRIEVAL_BACKFILL_PARALLELISM = "3";
+    expect(resolveBackfillConcurrency()).toBe(3);
+  });
+  it("falls back to 10 on a non-numeric value", () => {
+    process.env.RETRIEVAL_BACKFILL_PARALLELISM = "abc";
+    expect(resolveBackfillConcurrency()).toBe(10);
+  });
+  it("clamps below 1 up to 1 (never zero/negative concurrency)", () => {
+    process.env.RETRIEVAL_BACKFILL_PARALLELISM = "0";
+    expect(resolveBackfillConcurrency()).toBe(1);
+    process.env.RETRIEVAL_BACKFILL_PARALLELISM = "-5";
+    expect(resolveBackfillConcurrency()).toBe(1);
+  });
+});
 
 describe("scoreQuery — word-boundary (RC #1 dissolved)", () => {
   it("a query token does NOT match a filename that merely contains it as a substring", () => {

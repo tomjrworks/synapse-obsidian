@@ -600,6 +600,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       : null;
 
     const out: FileMeta[] = [];
+    // TODO: keyset pagination (WHERE path > lastPath ORDER BY path LIMIT PAGE)
+    // before ~10k files. OFFSET .range() over a live table is not a consistent
+    // snapshot — a concurrent insert/delete shifts the window and can skip or
+    // duplicate a boundary row (see retrieval-pagination-race.test.ts; buildIndex
+    // path-dedup now collapses the duplicate, but keyset removes the race itself).
     for (let from = 0; ; from += PAGE) {
       let query = this.supabase
         .from("vault_files")
