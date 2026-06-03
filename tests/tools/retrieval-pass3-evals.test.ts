@@ -527,6 +527,43 @@ describe("Pass 3 retrieval — garden_forage V2 (RC #5)", () => {
   });
 });
 
+describe("Pass 3 retrieval — taproot_harvest V2 (RC #3/#4)", () => {
+  let handlers: Map<string, ToolHandler>;
+  beforeEach(() => {
+    process.env.TAPROOT_RETRIEVAL_V2 = "1";
+    delete process.env.SCAN_FILE_CAP;
+    const { server, registered } = makeServerCapture();
+    registerVaultTools(server, corpusBackend());
+    registerKnowledgeTools(server, corpusBackend());
+    handlers = registered;
+  });
+  afterEach(() => {
+    delete process.env.TAPROOT_RETRIEVAL_V2;
+  });
+
+  it("A1 — `is-7011-it-management` surfaces a course note with scoring_path=body", async () => {
+    const { paths, flags } = await runQuery(
+      handlers,
+      "harvest",
+      "is-7011-it-management",
+    );
+    expect(
+      paths.some((p) => p.startsWith("school/is-7011-it-management/")),
+    ).toBe(true);
+    // RC #4: body-token relevance entered the score, not a junk index summary.
+    expect(flags.scoring_path).toBe("body");
+  });
+
+  it("C3 — `why did we kill freemium` finds the pricing-model decision (body synthesis)", async () => {
+    const { paths } = await runQuery(
+      handlers,
+      "harvest",
+      "why did we kill freemium",
+    );
+    expect(paths).toContain("decisions/2026-05-12-taproot-pricing-model.md");
+  });
+});
+
 describe("Pass 3 retrieval — V2 ship-bar", () => {
   // Un-skipped in C8 once all three tools are on V2.
   it.skip("V2 ship-bar — A2 gate + anti-gold=0 + A4/C2 recovered + F1 clean + Gold@3(A+B+C)>=0.90 (C8)", () => {});

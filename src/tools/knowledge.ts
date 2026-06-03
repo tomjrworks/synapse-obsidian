@@ -38,6 +38,12 @@ import { buildFrontmatter, stripControls } from "../utils/yaml.js";
 import { withTimeout } from "../utils/with-timeout.js";
 import { checkProtected } from "../utils/path-guard.js";
 import { newFenceNonce, safeFenceFile } from "./_format.js";
+import { tokenizeQuery } from "../utils/tokenize.js";
+import {
+  retrievalV2Enabled,
+  getRetrievalIndex,
+  scoreQuery,
+} from "../utils/retrieval-index.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
@@ -799,7 +805,13 @@ export function registerKnowledgeTools(
             index = await readVaultFile(backend, "index.md");
           }
 
-          const keywords = extractKeywords(question);
+          const useV2 = retrievalV2Enabled();
+          ctx.flags.retrieval_v2 = useV2;
+          // RC #3: tokenizeQuery keeps identifiers (is/7011/v2) that the V1
+          // extractKeywords length>3 + slice(0,5) filter dropped.
+          const keywords = useV2
+            ? tokenizeQuery(question)
+            : extractKeywords(question);
           ctx.flags.keywords_extracted_count = keywords.length;
           ctx.flags.temporal_branch_fired = isTemporalQuestion(question);
 
@@ -817,54 +829,83 @@ export function registerKnowledgeTools(
           );
 
           const hotPath = async () => {
-            const indexCandidates = index
-              ? parseIndexCandidates(index, keywords)
-              : [];
-            const scoredCandidates = indexCandidates.filter((c) => c.score > 0);
-            candidatesPreLimit = scoredCandidates.length;
-
-            if (scoredCandidates.length > 0) {
-              scoringPath = "index";
-              // Index-first path: read top 15 candidates in parallel chunks
-              const topCandidates = scoredCandidates.slice(0, 15);
-              for (let i = 0; i < topCandidates.length; i += concurrency) {
-                const chunk = topCandidates.slice(i, i + concurrency);
-                await Promise.all(
-                  chunk.map(async (c) => {
-                    if (!allResults.has(c.path)) {
-                      allResults.set(c.path, c.title);
-                    }
-                  }),
-                );
+            if (useV2) {
+              // RC #4: NO index-first short-circuit. Every candidate is scored
+              // through the shared token index (filename + folder + frontmatter
+              // + body blended), so a weak index-summary substring can no longer
+              // outrank real body relevance, and identifier tokens survive.
+              const idx = await getRetrievalIndex(backend);
+              const scored = scoreQuery(idx, question);
+              candidatesPreLimit = scored.length;
+              // scoring_path reports `body` whenever a body-token contribution
+              // entered the score (A1 mechanism check); else `index` (matched on
+              // filename/folder/frontmatter only); null when nothing scored.
+              scoringPath =
+                scored.length === 0
+                  ? null
+                  : scored.some((s) => s.bodyContributed)
+                    ? "body"
+                    : "index";
+              for (const hit of scored.slice(0, 15)) {
+                if (!allResults.has(hit.path)) {
+                  allResults.set(hit.path, path.basename(hit.path, ".md"));
+                }
               }
             } else {
-              scoringPath = "body";
-              // Body-search fallback: parallel across keywords, BOUNDED. Pre-fix
-              // each keyword's searchVault scanned the whole vault serially on a
-              // sparse keyword; now the file cap is divided across keywords so
-              // the total stays within SCAN_FILE_CAP.
-              const searchPath = (await backend.exists(notesFolder))
-                ? notesFolder
-                : undefined;
-              const kw = keywords.slice(0, 5);
-              const totalCap = resolveScanCap();
-              const perKw =
-                totalCap === undefined
-                  ? undefined
-                  : Math.max(1, Math.floor(totalCap / Math.max(1, kw.length)));
-              const resultSets = await Promise.all(
-                kw.map((k) =>
-                  scanVaultBodies(backend, k, {
-                    subPath: searchPath,
-                    maxResults: 5,
-                    maxFilesScanned: perKw,
-                  }).then((s) => s.results),
-                ),
+              const indexCandidates = index
+                ? parseIndexCandidates(index, keywords)
+                : [];
+              const scoredCandidates = indexCandidates.filter(
+                (c) => c.score > 0,
               );
-              for (const results of resultSets) {
-                for (const r of results) {
-                  if (!allResults.has(r.file)) {
-                    allResults.set(r.file, r.title);
+              candidatesPreLimit = scoredCandidates.length;
+
+              if (scoredCandidates.length > 0) {
+                scoringPath = "index";
+                // Index-first path: read top 15 candidates in parallel chunks
+                const topCandidates = scoredCandidates.slice(0, 15);
+                for (let i = 0; i < topCandidates.length; i += concurrency) {
+                  const chunk = topCandidates.slice(i, i + concurrency);
+                  await Promise.all(
+                    chunk.map(async (c) => {
+                      if (!allResults.has(c.path)) {
+                        allResults.set(c.path, c.title);
+                      }
+                    }),
+                  );
+                }
+              } else {
+                scoringPath = "body";
+                // Body-search fallback: parallel across keywords, BOUNDED. Pre-fix
+                // each keyword's searchVault scanned the whole vault serially on a
+                // sparse keyword; now the file cap is divided across keywords so
+                // the total stays within SCAN_FILE_CAP.
+                const searchPath = (await backend.exists(notesFolder))
+                  ? notesFolder
+                  : undefined;
+                const kw = keywords.slice(0, 5);
+                const totalCap = resolveScanCap();
+                const perKw =
+                  totalCap === undefined
+                    ? undefined
+                    : Math.max(
+                        1,
+                        Math.floor(totalCap / Math.max(1, kw.length)),
+                      );
+                const resultSets = await Promise.all(
+                  kw.map((k) =>
+                    scanVaultBodies(backend, k, {
+                      subPath: searchPath,
+                      maxResults: 5,
+                      maxFilesScanned: perKw,
+                    }).then((s) => s.results),
+                  ),
+                );
+                for (const results of resultSets) {
+                  for (const r of results) {
+                    if (!allResults.has(r.file)) {
+                      allResults.set(r.file, r.title);
+                    }
                   }
                 }
               }
