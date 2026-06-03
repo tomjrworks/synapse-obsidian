@@ -385,6 +385,7 @@ export function registerVaultTools(
           // Bounded scan: replaces the old inline scanPath + withTimeout race.
           // The in-loop cap/budget STOP the scan instead of leaving a losing
           // Promise.race scan churning all 1411 files in the background.
+          const useV2 = retrievalV2Enabled();
           const scan = await scanVaultBodies(backend, query, {
             subPath,
             maxResults: cap,
@@ -392,10 +393,14 @@ export function registerVaultTools(
             budgetMs,
             concurrency,
             priorityHints,
+            // V2: per-token line matching (RC #5) — a multi-word query matches a
+            // line sharing ANY query token, not the whole query as one substring.
+            tokenized: useV2,
           });
           const collectedResults = scan.results;
           const partialResults = scan.capped || scan.timedOut;
 
+          ctx.flags.retrieval_v2 = useV2;
           ctx.flags.partial_results = partialResults;
           ctx.flags.priority_hints_count = priorityHints.length;
           ctx.flags.files_scanned = scan.scannedCount;

@@ -505,6 +505,28 @@ describe("Pass 3 retrieval — A2 hard gate (V2)", () => {
   });
 });
 
+describe("Pass 3 retrieval — garden_forage V2 (RC #5)", () => {
+  it("C2 — `stripe webhook errors` finds the body-resident pr7 note under V2", async () => {
+    process.env.TAPROOT_RETRIEVAL_V2 = "1";
+    delete process.env.SCAN_FILE_CAP;
+    const { server, registered } = makeServerCapture();
+    registerVaultTools(server, corpusBackend());
+    registerKnowledgeTools(server, corpusBackend());
+    try {
+      const { paths } = await runQuery(
+        registered,
+        "forage",
+        "stripe webhook errors",
+      );
+      expect(paths).toContain(
+        "daily/2026-05/2026-05-21-pr7-stripe-webhook-shipped.md",
+      );
+    } finally {
+      delete process.env.TAPROOT_RETRIEVAL_V2;
+    }
+  });
+});
+
 describe("Pass 3 retrieval — V2 ship-bar", () => {
   // Un-skipped in C8 once all three tools are on V2.
   it.skip("V2 ship-bar — A2 gate + anti-gold=0 + A4/C2 recovered + F1 clean + Gold@3(A+B+C)>=0.90 (C8)", () => {});
