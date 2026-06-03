@@ -38,13 +38,22 @@ function retrievalV2Cohort(): Set<string> {
 /** The Pass 3 kill switch. Resolved once at handler entry (like resolveScanCap).
  * Off = V1 behavior byte-for-byte; on = the V2 blended ranked pass.
  *
- * Resolution order (Option A — per-workspace cohort, CONCERN #2 fix):
+ * Resolution order (CONCERN #2 fix — per-workspace rollout):
  *   1. global TAPROOT_RETRIEVAL_V2=1 → ON for everyone (override + stdio default).
- *   2. else workspaceId ∈ TAPROOT_RETRIEVAL_V2_WORKSPACES → ON for that cohort.
- *   3. else OFF.
- * Passing no workspaceId (local/stdio path) collapses to the global flag only. */
-export function retrievalV2Enabled(workspaceId?: string): boolean {
+ *   2. else perWorkspaceEnabled (Option B — workspaces.settings.retrieval_v2,
+ *      resolved + cached by retrievalV2Setting) → ON for that workspace.
+ *   3. else workspaceId ∈ TAPROOT_RETRIEVAL_V2_WORKSPACES (Option A — allowlist
+ *      env) → ON for that cohort.
+ *   4. else OFF.
+ * Pure + synchronous: the per-workspace bool is resolved upstream (server.ts)
+ * and passed in, so handlers stay non-async on the flag check. Passing neither
+ * arg (local/stdio path) collapses to the global flag only. */
+export function retrievalV2Enabled(
+  workspaceId?: string,
+  perWorkspaceEnabled?: boolean,
+): boolean {
   if (process.env.TAPROOT_RETRIEVAL_V2 === "1") return true;
+  if (perWorkspaceEnabled === true) return true;
   return workspaceId != null && retrievalV2Cohort().has(workspaceId);
 }
 

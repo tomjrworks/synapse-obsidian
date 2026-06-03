@@ -157,7 +157,7 @@ export function parseIndexCandidates(
 export function registerKnowledgeTools(
   server: McpServer,
   backend: StorageBackend,
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; retrievalV2?: boolean } = {},
 ): void {
   // ── taproot_seed ────────────────────────────────────────────────────
   server.registerTool(
@@ -805,7 +805,7 @@ export function registerKnowledgeTools(
             index = await readVaultFile(backend, "index.md");
           }
 
-          const useV2 = retrievalV2Enabled(opts.workspaceId);
+          const useV2 = retrievalV2Enabled(opts.workspaceId, opts.retrievalV2);
           ctx.flags.retrieval_v2 = useV2;
           // RC #3: tokenizeQuery keeps identifiers (is/7011/v2) that the V1
           // extractKeywords length>3 + slice(0,5) filter dropped.

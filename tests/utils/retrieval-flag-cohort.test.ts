@@ -82,3 +82,22 @@ describe("retrievalV2Enabled — workspace allowlist (Option A)", () => {
     expect(retrievalV2Enabled("ws-A")).toBe(false); // dropped from the cohort
   });
 });
+
+describe("retrievalV2Enabled — per-workspace settings flag (Option B)", () => {
+  it("the resolved per-workspace flag turns V2 on regardless of env/allowlist", () => {
+    expect(retrievalV2Enabled("ws-X", true)).toBe(true); // settings.retrieval_v2 = true
+    expect(retrievalV2Enabled(undefined, true)).toBe(true); // flag is workspace-independent
+  });
+
+  it("a false/undefined settings flag falls through to env + allowlist", () => {
+    expect(retrievalV2Enabled("ws-X", false)).toBe(false); // nothing else set → off
+    process.env.TAPROOT_RETRIEVAL_V2_WORKSPACES = "ws-X";
+    expect(retrievalV2Enabled("ws-X", false)).toBe(true); // allowlist still applies
+    expect(retrievalV2Enabled("ws-X", undefined)).toBe(true); // undefined ≡ not set
+  });
+
+  it("the global env still wins over a false settings flag", () => {
+    process.env.TAPROOT_RETRIEVAL_V2 = "1";
+    expect(retrievalV2Enabled("ws-X", false)).toBe(true);
+  });
+});

@@ -25,6 +25,7 @@ import { mountApiRoutes } from "./api/routes.js";
 import { initSentry, Sentry } from "./observability/sentry.js";
 import { stripeWebhookHandler } from "./api/stripe-webhook.js";
 import { getBackend } from "./utils/backend-cache.js";
+import { retrievalV2Setting } from "./utils/workspace-flags.js";
 import { buildHealthPayload } from "./utils/health.js";
 import { formatRequestBody } from "./utils/body-log.js";
 
@@ -47,7 +48,13 @@ async function createMcpServer(
     },
     { instructions },
   );
-  const toolOpts = { workspaceId: opts.workspaceId };
+  // Option B: resolve the per-workspace V2 opt-in once per server (cached 5 min
+  // by retrievalV2Setting), so every tool shares one consistent flag for this
+  // request and the per-request cost is a cache lookup, not a DB read.
+  const retrievalV2 = opts.workspaceId
+    ? await retrievalV2Setting(opts.workspaceId)
+    : false;
+  const toolOpts = { workspaceId: opts.workspaceId, retrievalV2 };
   registerVaultTools(server, backend, toolOpts);
   registerKnowledgeTools(server, backend, toolOpts);
   registerInitTools(server, backend, toolOpts);

@@ -55,7 +55,7 @@ function pathDepth(p: string): number {
 export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; retrievalV2?: boolean } = {},
 ): void {
   // ── garden_read ──────────────────────────────────────────────────────
   server.registerTool(
@@ -385,7 +385,7 @@ export function registerVaultTools(
           // Bounded scan: replaces the old inline scanPath + withTimeout race.
           // The in-loop cap/budget STOP the scan instead of leaving a losing
           // Promise.race scan churning all 1411 files in the background.
-          const useV2 = retrievalV2Enabled(opts.workspaceId);
+          const useV2 = retrievalV2Enabled(opts.workspaceId, opts.retrievalV2);
           const scan = await scanVaultBodies(backend, query, {
             subPath,
             maxResults: cap,
@@ -607,7 +607,7 @@ export function registerVaultTools(
       async ({ query, limit }, ctx) => {
         try {
           const max = limit ?? 10;
-          const useV2 = retrievalV2Enabled(opts.workspaceId);
+          const useV2 = retrievalV2Enabled(opts.workspaceId, opts.retrievalV2);
           ctx.flags.retrieval_v2 = useV2;
 
           type Match = {
