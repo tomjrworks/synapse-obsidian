@@ -113,27 +113,46 @@ function splitLetterDigit(token: string): string[] {
   return token.match(RUN_RE) ?? [];
 }
 
+// Internal: yield every token in order WITH repeats (no dedup), applying the
+// split + additive letter/digit rules. Shared core of tokenize() and
+// tokenizeWithCounts() so the split logic lives in exactly one place.
+function* rawTokens(text: string): Generator<string> {
+  if (!text) return;
+  for (const raw of text.toLowerCase().split(SPLIT_RE)) {
+    if (!raw) continue;
+    yield raw;
+    for (const sub of splitLetterDigit(raw)) yield sub;
+  }
+}
+
 /**
  * Base tokenizer. Pure, deterministic, env-free. Does NOT strip stopwords — use
  * this for file/field tokens (which keep everything) and as the core of query
- * tokenization.
+ * tokenization. Deduped, first-occurrence order.
  */
 export function tokenize(text: string): string[] {
-  if (!text) return [];
   const out: string[] = [];
   const seen = new Set<string>();
-  const push = (t: string): void => {
-    if (t && !seen.has(t)) {
+  for (const t of rawTokens(text)) {
+    if (!seen.has(t)) {
       seen.add(t);
       out.push(t);
     }
-  };
-  for (const raw of text.toLowerCase().split(SPLIT_RE)) {
-    if (!raw) continue;
-    push(raw);
-    for (const sub of splitLetterDigit(raw)) push(sub);
   }
   return out;
+}
+
+/**
+ * Like tokenize() but returns per-token occurrence counts (no dedup). Drives the
+ * body-token frequency cap in extractTokens (SPEC §2.2). Map insertion order is
+ * first-occurrence order, matching tokenize().
+ */
+export function tokenizeWithCounts(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const t of rawTokens(text)) {
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /**

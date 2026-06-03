@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   tokenize,
   tokenizeQuery,
+  tokenizeWithCounts,
   isIdentifierToken,
   QUERY_STOP_WORDS,
 } from "../../src/utils/tokenize.js";
@@ -140,5 +141,30 @@ describe("isIdentifierToken", () => {
     expect(isIdentifierToken("is")).toBe(false);
     expect(isIdentifierToken("management")).toBe(false);
     expect(isIdentifierToken("ai")).toBe(false);
+  });
+});
+
+describe("tokenizeWithCounts — frequency map (drives body cap)", () => {
+  it("counts occurrences without deduping", () => {
+    const counts = tokenizeWithCounts("ai ai ai governance");
+    expect(counts.get("ai")).toBe(3);
+    expect(counts.get("governance")).toBe(1);
+  });
+
+  it("counts additive sub-tokens too", () => {
+    const counts = tokenizeWithCounts("is7011 is7011");
+    expect(counts.get("is7011")).toBe(2);
+    expect(counts.get("is")).toBe(2);
+    expect(counts.get("7011")).toBe(2);
+  });
+
+  it("keys match tokenize() (same split rules), counts >= 1", () => {
+    const text = "stripe webhook errors stripe";
+    const keys = [...tokenizeWithCounts(text).keys()];
+    expect(keys).toEqual(tokenize(text)); // first-occurrence order preserved
+  });
+
+  it("returns an empty map for empty input", () => {
+    expect(tokenizeWithCounts("").size).toBe(0);
   });
 });

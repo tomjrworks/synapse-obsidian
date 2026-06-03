@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   enrichCardinalitySummary,
   extractCardinality,
+  extractTokens,
   renderCardinalityLine,
+  BODY_TOKEN_CAP,
   MANAGED_INDEX_MARKER,
 } from "../../src/utils/frontmatter.js";
 
@@ -179,5 +181,82 @@ describe("enrichCardinalitySummary", () => {
     const card = { custom: {} };
     const result = enrichCardinalitySummary(card, longLine);
     expect(result.summary).toHaveLength(200);
+  });
+});
+
+describe("extractTokens", () => {
+  it("returns empty record for empty content", () => {
+    expect(extractTokens("")).toEqual({
+      frontmatter: [],
+      body: [],
+      identifiers: [],
+    });
+  });
+
+  it("tokenizes title + tags + summary + type into frontmatter", () => {
+    const content = [
+      "---",
+      "title: IS 7011 IT Management",
+      "tags: [school, information-systems]",
+      "summary: course on competitive advantage",
+      "type: course",
+      "status: active", // NOT a token field — excluded
+      "---",
+      "# Body",
+    ].join("\n");
+    const t = extractTokens(content);
+    expect(t.frontmatter).toEqual(
+      expect.arrayContaining([
+        "is",
+        "7011",
+        "it",
+        "management",
+        "school",
+        "information",
+        "systems",
+        "course",
+        "competitive",
+      ]),
+    );
+    // status value is not tokenized into frontmatter
+    expect(t.frontmatter).not.toContain("active");
+  });
+
+  it("tokenizes the body and records identifiers", () => {
+    const content = "# Notes\n\nThe IS 7011 syllabus covers v2 of the model.";
+    const t = extractTokens(content);
+    expect(t.body).toEqual(
+      expect.arrayContaining(["syllabus", "covers", "model", "7011", "v2"]),
+    );
+    expect(t.identifiers).toEqual(expect.arrayContaining(["7011", "v2"]));
+    // word-boundary: the substring "is" of nothing here; "is" IS a real token
+    expect(t.body).toContain("is");
+  });
+
+  it("caps non-identifier body tokens at BODY_TOKEN_CAP but keeps ALL identifiers", () => {
+    // 300 distinct letter-only (non-identifier) words + 5 identifiers buried
+    // at the end. Each (i%26, i/26) pair is unique for i in 0..299 → distinct.
+    const filler = Array.from(
+      { length: 300 },
+      (_, i) =>
+        `lex${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}`,
+    );
+    const idents = ["7011", "s62", "pr9", "v2", "is7011"];
+    const content = `# T\n\n${filler.join(" ")} ${idents.join(" ")}`;
+    const t = extractTokens(content);
+    const nonId = t.body.filter((w) => !/[0-9]/.test(w));
+    expect(nonId.length).toBeLessThanOrEqual(BODY_TOKEN_CAP);
+    // every identifier survived the cap regardless of frequency/position
+    for (const id of idents) expect(t.body).toContain(id);
+  });
+
+  it("falls back to body tokens on malformed frontmatter (no recall loss)", () => {
+    const malformed = "---\nfoo: [unclosed\n---\nstripe webhook 7011 errors";
+    const t = extractTokens(malformed);
+    // even though YAML is broken, body recall survives
+    expect(t.body).toEqual(
+      expect.arrayContaining(["stripe", "webhook", "errors", "7011"]),
+    );
+    expect(t.identifiers).toContain("7011");
   });
 });

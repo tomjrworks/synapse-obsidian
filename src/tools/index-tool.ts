@@ -7,9 +7,11 @@ import { parseFrontmatter } from "../utils/vault.js";
 import {
   enrichCardinalitySummary,
   extractCardinality,
+  extractTokens,
   renderCardinalityLine,
   MANAGED_INDEX_MARKER,
   type Cardinality,
+  type FileTokens,
 } from "../utils/frontmatter.js";
 import {
   loadIgnorePatterns,
@@ -343,9 +345,20 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
   const groups = new Map<string, string[]>();
   const root: string[] = [];
   const cardinalities = new Map<string, Cardinality | null>();
-  const needsBackfill: string[] = [];
+  // AUDIT B1 fix: the backfill read-decision is widened from "cardinality is
+  // null" to "cardinality OR tokens is null". On Tom's vault cardinality is
+  // already fully backfilled, so the old predicate read NOTHING — tokens would
+  // never populate for untouched notes and the V2 flag would serve degraded
+  // recall. Now any token-null row is read here too. (Strict === null: a mock
+  // FileMeta that omits `tokens` is `undefined`, not null, and must not trip
+  // the token path.)
+  const needsBackfill: {
+    path: string;
+    needCard: boolean;
+    needTokens: boolean;
+  }[] = [];
 
-  for (const { path: filePath, cardinality } of allMeta) {
+  for (const { path: filePath, cardinality, tokens } of allMeta) {
     const slash = filePath.indexOf("/");
     if (slash === -1) {
       root.push(filePath);
@@ -356,17 +369,20 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
       groups.set(folder, arr);
     }
 
-    if (cardinality !== null) {
-      cardinalities.set(filePath, cardinality);
-    } else {
-      needsBackfill.push(filePath);
+    const needCard = cardinality === null;
+    const needTokens = tokens === null;
+    if (!needCard) cardinalities.set(filePath, cardinality);
+    if (needCard || needTokens) {
+      needsBackfill.push({ path: filePath, needCard, needTokens });
     }
   }
 
-  // Backfill: read files whose cardinality wasn't stored yet, extract +
-  // enrich, hand back to the backend to persist async. On migration day
-  // this covers every existing file (one-time cost equal to the old hot
-  // path). After that, this list is normally empty.
+  // Backfill: read files whose cardinality OR tokens wasn't stored yet, extract
+  // + enrich, hand back to the backend to persist async. On migration day this
+  // covers every existing file (one-time cost equal to the old hot path). After
+  // that, this list is normally empty. Cardinality is recomputed ONLY when it
+  // was null (idempotent — never clobbers a populated value); tokens are written
+  // whenever they were null.
   if (needsBackfill.length > 0) {
     const parallelismRaw = parseInt(
       process.env.INDEX_BACKFILL_PARALLELISM ?? "10",
@@ -376,32 +392,48 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
       1,
       Number.isNaN(parallelismRaw) ? 10 : parallelismRaw,
     );
-    const backfillUpdates = new Map<string, Cardinality>();
+    const cardUpdates = new Map<string, Cardinality>();
+    const tokenUpdates = new Map<string, FileTokens>();
 
     for (let i = 0; i < needsBackfill.length; i += concurrency) {
       const chunk = needsBackfill.slice(i, i + concurrency);
       await Promise.all(
-        chunk.map(async (filePath) => {
+        chunk.map(async ({ path: filePath, needCard, needTokens }) => {
           try {
             const content = await backend.readFile(filePath);
-            const card = enrichCardinalitySummary(
-              extractCardinality(content),
-              content,
-            );
-            cardinalities.set(filePath, card);
-            backfillUpdates.set(filePath, card);
+            if (needCard) {
+              const card = enrichCardinalitySummary(
+                extractCardinality(content),
+                content,
+              );
+              cardinalities.set(filePath, card);
+              cardUpdates.set(filePath, card);
+            }
+            if (needTokens) {
+              tokenUpdates.set(filePath, extractTokens(content));
+            }
           } catch {
-            cardinalities.set(filePath, null);
+            if (needCard) cardinalities.set(filePath, null);
           }
         }),
       );
     }
 
     void backend
-      .batchUpdateCardinalities(backfillUpdates)
+      .batchUpdateCardinalities(cardUpdates)
       .catch((err) =>
         console.error(`[index-tool] cardinality backfill failed: ${err}`),
       );
+    // Guarded: skip the call entirely when nothing to write — avoids a pointless
+    // empty round trip and keeps backends that don't persist tokens (LocalBackend
+    // no-ops; older test mocks omit the method) off the hot path.
+    if (tokenUpdates.size > 0) {
+      void backend
+        .batchUpdateTokens(tokenUpdates)
+        .catch((err) =>
+          console.error(`[index-tool] token backfill failed: ${err}`),
+        );
+    }
   }
 
   root.sort();

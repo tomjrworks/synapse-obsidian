@@ -41,7 +41,9 @@ import { ConflictError, NotFoundError } from "./storage.js";
 import {
   enrichCardinalitySummary,
   extractCardinality,
+  extractTokens,
   type Cardinality,
+  type FileTokens,
 } from "./frontmatter.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
@@ -219,6 +221,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       content,
     );
 
+    // Pass 3: pre-bake the per-file token index alongside cardinality (plaintext
+    // is already in hand — zero extra reads). Passive under V1 (column ignored);
+    // serves the V2 retrieval read once TAPROOT_RETRIEVAL_V2 is flipped.
+    const extractedTokens = extractTokens(content);
+
     const legacy = legacyMissingBlobBehavior();
 
     // PR #2 (S99): determine the storage_object key BEFORE writing the
@@ -274,6 +281,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       nowIso,
       flagsUpdate,
       extractedCardinality: enrichedCardinality,
+      extractedTokens,
     });
 
     // V1.5a.1: Invalidate the index cache on any write except index.md itself
@@ -342,6 +350,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     nowIso: string;
     flagsUpdate: FlagsUpdate | null;
     extractedCardinality: Cardinality | null;
+    extractedTokens: FileTokens | null;
   }): Promise<void> {
     const {
       filePath,
@@ -353,6 +362,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       nowIso,
       flagsUpdate,
       extractedCardinality,
+      extractedTokens,
     } = args;
     if (existing) {
       const newFlags = mergeFlags(
@@ -364,6 +374,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         plaintext_sha256: sha256Param,
         modified_at: nowIso,
         extracted_cardinality: extractedCardinality,
+        extracted_tokens: extractedTokens,
       };
       if (newFlags) updateRow.flags = newFlags;
       await withRetry(async () => {
@@ -399,6 +410,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       storage_object: storageObject,
       modified_at: nowIso,
       extracted_cardinality: extractedCardinality,
+      extracted_tokens: extractedTokens,
     };
     if (insertFlags) insertRow.flags = insertFlags;
 
@@ -463,6 +475,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           plaintext_sha256: sha256Param,
           modified_at: nowIso,
           extracted_cardinality: extractedCardinality,
+          extracted_tokens: extractedTokens,
         };
         if (raceFlags) raceUpdateRow.flags = raceFlags;
         await withRetry(async () => {
@@ -541,7 +554,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   async listFilesMeta(subPath?: string): Promise<FileMeta[]> {
     let query = this.supabase
       .from("vault_files")
-      .select("path, extracted_cardinality")
+      .select("path, extracted_cardinality, extracted_tokens")
       .eq("workspace_id", this.workspaceId)
       .is("deleted_at", null);
 
@@ -562,6 +575,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return (data ?? []).map((r) => ({
       path: r.path as string,
       cardinality: (r.extracted_cardinality as Cardinality | null) ?? null,
+      tokens: (r.extracted_tokens as FileTokens | null) ?? null,
     }));
   }
 
@@ -592,6 +606,31 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
             .eq("path", filePath)
             .is("deleted_at", null)
             .is("extracted_cardinality", null),
+        ),
+      );
+    }
+  }
+
+  // Pass 3 token backfill — same chunked, fire-and-forget shape as
+  // batchUpdateCardinalities. The .is("extracted_tokens", null) race-guard is
+  // mandatory for the same reason: a debounced flush could race a fresh
+  // writeFile (which writes tokens directly); the guard makes backfill a strict
+  // null-fill that never clobbers a populated row.
+  async batchUpdateTokens(updates: Map<string, FileTokens>): Promise<void> {
+    if (updates.size === 0) return;
+    const concurrency = 10;
+    const entries = [...updates.entries()];
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const chunk = entries.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(([filePath, tokens]) =>
+          this.supabase
+            .from("vault_files")
+            .update({ extracted_tokens: tokens })
+            .eq("workspace_id", this.workspaceId)
+            .eq("path", filePath)
+            .is("deleted_at", null)
+            .is("extracted_tokens", null),
         ),
       );
     }

@@ -1,6 +1,11 @@
 import { promises as fsp, constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { extractCardinality, type Cardinality } from "./frontmatter.js";
+import {
+  extractCardinality,
+  extractTokens,
+  type Cardinality,
+  type FileTokens,
+} from "./frontmatter.js";
 
 /**
  * Abstract storage backend interface.
@@ -66,6 +71,10 @@ export interface ListChangedResult {
 export interface FileMeta {
   path: string;
   cardinality: Cardinality | null;
+  // Pass 3: per-file content tokens for the retrieval index. null when the
+  // backend hasn't extracted them yet (one-time backfill, exactly like
+  // cardinality). Always null on backends/rows predating the column.
+  tokens?: FileTokens | null;
 }
 
 export interface StorageBackend {
@@ -86,6 +95,9 @@ export interface StorageBackend {
   getPendingCount(cursor: PullCursor | null): Promise<number>;
   listFilesMeta(subPath?: string): Promise<FileMeta[]>;
   batchUpdateCardinalities(updates: Map<string, Cardinality>): Promise<void>;
+  // Pass 3: persist backfilled per-file tokens. Strict null-fill on the
+  // Supabase backend (never clobbers a fresh writeFile value); no-op on Local.
+  batchUpdateTokens(updates: Map<string, FileTokens>): Promise<void>;
 }
 
 /**
@@ -236,9 +248,12 @@ export class LocalBackend implements StorageBackend {
         results.push({
           path: filePath,
           cardinality: extractCardinality(content),
+          // Local reads are fast unencrypted disk reads — build tokens inline
+          // (no column). The assembly + scoring logic is backend-identical.
+          tokens: extractTokens(content),
         });
       } catch {
-        results.push({ path: filePath, cardinality: null });
+        results.push({ path: filePath, cardinality: null, tokens: null });
       }
     }
     return results;
@@ -250,6 +265,11 @@ export class LocalBackend implements StorageBackend {
     // No-op: LocalBackend reads fresh from disk on every listFilesMeta call,
     // so there's nowhere to "store" extracted cardinalities. Only the
     // Supabase backend persists this column.
+  }
+
+  async batchUpdateTokens(_updates: Map<string, FileTokens>): Promise<void> {
+    // No-op: same reason as batchUpdateCardinalities — Local rebuilds tokens
+    // from disk every listFilesMeta call. Only Supabase persists the column.
   }
 
   private async listRecursive(
