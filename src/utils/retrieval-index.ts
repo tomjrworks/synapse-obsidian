@@ -125,8 +125,15 @@ function fieldsFromPath(p: string): { filename: string[]; folder: string[] } {
 export function buildIndex(files: IndexedFile[]): RetrievalIndex {
   const records: ScoringRecord[] = [];
   const bodyDf = new Map<string, number>();
+  // Path-dedup (keep first per path): an OFFSET-paginated read over a LIVE table
+  // can return the same path twice when a row is inserted mid-read (see
+  // retrieval-pagination-race.test.ts). Collapsing here keeps a concurrent write
+  // from ever doubling a hit, and stops the duplicate from double-counting bodyDf.
+  const seenPaths = new Set<string>();
 
   for (const { path: filePath, tokens } of files) {
+    if (seenPaths.has(filePath)) continue;
+    seenPaths.add(filePath);
     const { filename, folder } = fieldsFromPath(filePath);
     const body = new Set(tokens.body ?? []);
     records.push({

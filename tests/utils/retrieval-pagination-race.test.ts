@@ -27,8 +27,9 @@ import {
 //     boundary are affected; never wrong tokens, never arbitrary loss;
 //   • a delete also leaves a GHOST (a row read before it was deleted) — which is
 //     exactly the symptom C10's invalidate-on-delete exists to clear;
-//   • an insert produces a DUPLICATE path that buildIndex does NOT dedup → a
-//     DOUBLED hit (a NEW finding the single-user harness never showed);
+//   • an insert produces a DUPLICATE path in the raw OFFSET read — now COLLAPSED
+//     by buildIndex's path-dedup (keep first per path), so it can never double a
+//     hit even mid-race (was a doubled hit before the dedup landed);
 //   • EVERYTHING self-heals on the next clean rebuild (stable column, no
 //     concurrent mutation) — the honest "transient, not persistent" bound.
 //
@@ -120,8 +121,8 @@ describe("pagination race — DELETE between pages skips a row + leaves a ghost"
   });
 });
 
-describe("pagination race — INSERT between pages duplicates a row (NEW finding)", () => {
-  it("returns a path twice → buildIndex does NOT dedup → a doubled hit", async () => {
+describe("pagination race — INSERT between pages: duplicate collapsed by dedup", () => {
+  it("collapses the duplicated path to a single hit; the late insert is still missed", async () => {
     // store: [f1..f6]. Insert f0 (sorts FIRST) right after page 0 ([f1,f2]).
     //   page0 from0 → [f1,f2]; then insert f0 → store [f0,f1,f2,f3,f4,f5,f6]
     //   page1 from2 → slice(2,4) = [f2,f3] → f2 DUPLICATED (already on page 0)
@@ -145,12 +146,13 @@ describe("pagination race — INSERT between pages duplicates a row (NEW finding
 
     const index = await getRetrievalIndex(backend);
 
-    // FINDING: the duplicated path yields TWO records → a doubled hit. Non-corrupting
-    // (same correct tokens, self-heals next rebuild) but a user can briefly see the
-    // same note listed twice. getRetrievalIndex/buildIndex have no path-dedup pass.
+    // The OFFSET race still duplicates f2 in the raw meta, but buildIndex's
+    // path-dedup (keep first per path) collapses it → a single hit. No doubled
+    // note even mid-race; the tokens are correct either way.
     const f2hits = scoreQuery(index, "t2").filter((h) => h.path === pathOf(2));
-    expect(f2hits.length).toBe(2);
-    // f0 (the insert) is missed this round — it landed before the read offset.
+    expect(f2hits.length).toBe(1);
+    // BOUND unchanged: f0 (the insert) landed before the read offset, so it's
+    // still missed this round — it appears on the next clean rebuild (self-heal).
     expect(scoreQuery(index, "t0").length).toBe(0);
   });
 
@@ -177,11 +179,11 @@ describe("pagination race — INSERT between pages duplicates a row (NEW finding
     expect(scoreQuery(healed, "t0").map((h) => h.path)).toEqual([pathOf(0)]); // insert now seen
   });
 
-  // DESIRED property, not yet built (encoded as the fix target the way C4 skipped
-  // the A2 gate before C5 wired it). Activate when a path-dedup pass lands in
-  // getRetrievalIndex/buildIndex so an in-flight OFFSET race can never double a
-  // hit even mid-race. Until then, the self-heal above is the only guarantee.
-  it.skip("DESIRED: a mid-race duplicate path collapses to a single record", async () => {
+  // A path-dedup pass in buildIndex (keep first record per path) collapses an
+  // in-flight OFFSET race so it can never double a hit even mid-race. Before this
+  // landed the self-heal on the next clean rebuild was the only guarantee; now the
+  // racy read itself is dedup'd.
+  it("DESIRED: a mid-race duplicate path collapses to a single record", async () => {
     const store = new SharedVaultStore(sixFiles());
     let mutated = false;
     const backend = makeBackend(store, {
