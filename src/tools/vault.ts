@@ -22,6 +22,11 @@ import {
 import { checkProtected } from "../utils/path-guard.js";
 import { maybeInjectDateModified } from "../utils/date-modified.js";
 import {
+  retrievalV2Enabled,
+  getRetrievalIndex,
+  scoreQuery,
+} from "../utils/retrieval-index.js";
+import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
@@ -50,7 +55,7 @@ function pathDepth(p: string): number {
 export function registerVaultTools(
   server: McpServer,
   backend: StorageBackend,
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; retrievalV2?: boolean } = {},
 ): void {
   // ── garden_read ──────────────────────────────────────────────────────
   server.registerTool(
@@ -380,6 +385,7 @@ export function registerVaultTools(
           // Bounded scan: replaces the old inline scanPath + withTimeout race.
           // The in-loop cap/budget STOP the scan instead of leaving a losing
           // Promise.race scan churning all 1411 files in the background.
+          const useV2 = retrievalV2Enabled(opts.workspaceId, opts.retrievalV2);
           const scan = await scanVaultBodies(backend, query, {
             subPath,
             maxResults: cap,
@@ -387,10 +393,14 @@ export function registerVaultTools(
             budgetMs,
             concurrency,
             priorityHints,
+            // V2: per-token line matching (RC #5) — a multi-word query matches a
+            // line sharing ANY query token, not the whole query as one substring.
+            tokenized: useV2,
           });
           const collectedResults = scan.results;
           const partialResults = scan.capped || scan.timedOut;
 
+          ctx.flags.retrieval_v2 = useV2;
           ctx.flags.partial_results = partialResults;
           ctx.flags.priority_hints_count = priorityHints.length;
           ctx.flags.files_scanned = scan.scannedCount;
@@ -597,11 +607,8 @@ export function registerVaultTools(
       async ({ query, limit }, ctx) => {
         try {
           const max = limit ?? 10;
-          const allFiles = await listVaultFiles(backend);
-          const lowerQuery = query.toLowerCase();
-          const queryWords = lowerQuery
-            .split(/\s+/)
-            .filter((w) => w.length >= 2);
+          const useV2 = retrievalV2Enabled(opts.workspaceId, opts.retrievalV2);
+          ctx.flags.retrieval_v2 = useV2;
 
           type Match = {
             file: string;
@@ -610,106 +617,166 @@ export function registerVaultTools(
             preview: string;
             modified?: string;
           };
-          const filenameMatches: Match[] = [];
+          let results: Match[] = [];
 
-          for (const file of allFiles) {
-            const basename = path.basename(file, ".md").toLowerCase();
-            const folder = path.dirname(file).toLowerCase();
-            let score = 0;
-
-            if (basename === lowerQuery) score += 100;
-            if (basename.includes(lowerQuery)) score += 50;
-            for (const w of queryWords) {
-              if (basename.includes(w)) score += 10;
-              if (folder.includes(w)) score += 3;
-            }
-
-            if (score > 0) {
-              filenameMatches.push({
-                file,
-                title: path.basename(file, ".md"),
-                score,
-                preview: "",
-              });
-            }
-          }
-
-          filenameMatches.sort((a, b) => b.score - a.score);
-
-          const candidates = filenameMatches.slice(0, max * 2);
-          const results: Match[] = [];
-
-          for (const m of candidates) {
-            if (results.length >= max) break;
-            try {
-              const content = await readVaultFile(backend, m.file);
-              const fm = parseFrontmatter(content);
-              const fmTitle = typeof fm.title === "string" ? fm.title : null;
-              const modified =
-                normalizeFrontmatterDate(fm.date_modified) ?? undefined;
-              const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
-              const previewLine =
-                body
-                  .split("\n")
-                  .find((l) => l.trim() && !l.startsWith("#"))
-                  ?.slice(0, 160) || body.slice(0, 160);
-              results.push({
-                file: m.file,
-                title: fmTitle || m.title,
-                score: m.score,
-                preview: previewLine,
-                modified,
-              });
-            } catch {
-              results.push(m);
-            }
-          }
-
-          // Filename-hit count captured BEFORE fallback. This is the
-          // load-bearing branch flag for Pass 3's IS-7011 anchor.
-          ctx.flags.filename_hits = results.length;
-
-          // If no filename hits, fall back to a BOUNDED body search. Pre-fix
-          // this used the naive serial searchVault, which read + decrypted the
-          // entire vault on a no-match query (the confirmed hang). scanVaultBodies
-          // caps the scan and covers index.md-relevant notes first.
-          let bodyFallbackFired = false;
-          let bodyHits = 0;
-          let filesScanned = 0;
-          let scanCapped = false;
-          if (results.length === 0) {
-            bodyFallbackFired = true;
-            let priorityHints: string[] = [];
-            try {
-              if (await backend.exists("index.md").catch(() => false)) {
-                const indexContent = await readVaultFile(backend, "index.md");
-                priorityHints = parseForageHints(indexContent, query);
+          if (useV2) {
+            // ── V2: one blended ranked pass over the token index. Body is IN
+            // the score (RC #2 fixed by construction — no results.length===0
+            // gate). Bodies are read for PREVIEW only, same as V1. ──
+            const index = await getRetrievalIndex(backend);
+            const scored = scoreQuery(index, query, { limit: max });
+            for (const hit of scored) {
+              try {
+                const content = await readVaultFile(backend, hit.path);
+                const fm = parseFrontmatter(content);
+                const fmTitle = typeof fm.title === "string" ? fm.title : null;
+                const modified =
+                  normalizeFrontmatterDate(fm.date_modified) ?? undefined;
+                const body = content
+                  .replace(/^---\n[\s\S]*?\n---\n/, "")
+                  .trim();
+                const previewLine =
+                  body
+                    .split("\n")
+                    .find((l) => l.trim() && !l.startsWith("#"))
+                    ?.slice(0, 160) || body.slice(0, 160);
+                results.push({
+                  file: hit.path,
+                  title: fmTitle || path.basename(hit.path, ".md"),
+                  score: hit.score,
+                  preview: previewLine,
+                  modified,
+                });
+              } catch {
+                results.push({
+                  file: hit.path,
+                  title: path.basename(hit.path, ".md"),
+                  score: hit.score,
+                  preview: "",
+                });
               }
-            } catch {
-              /* non-fatal — priority ordering is best-effort */
             }
-            const scan = await scanVaultBodies(backend, query, {
-              maxResults: max,
-              maxFilesScanned: resolveScanCap(),
-              priorityHints,
-            });
-            filesScanned = scan.scannedCount;
-            scanCapped = scan.capped || scan.timedOut;
-            bodyHits = scan.results.length;
-            for (const r of scan.results) {
-              const firstMatch = r.matches[0]?.text || "";
-              results.push({
-                file: r.file,
-                title: r.title,
-                score: 1,
-                preview: firstMatch.slice(0, 160),
+            const bodyContributors = scored.filter(
+              (s) => s.bodyContributed,
+            ).length;
+            ctx.flags.filename_hits = results.length;
+            // Re-interpreted under V2: ≥1 body-token contribution entered the
+            // score (so the EVALS "body_fallback_fired on junk-filename traps"
+            // mechanism check still maps).
+            ctx.flags.body_fallback_fired = bodyContributors > 0;
+            ctx.flags.body_hits = bodyContributors;
+            ctx.flags.files_scanned = results.length; // top-limit preview reads
+            ctx.flags.scan_capped = false;
+          } else {
+            // ── V1 (preserved verbatim = the TAPROOT_RETRIEVAL_V2=0 rollback) ──
+            const allFiles = await listVaultFiles(backend);
+            const lowerQuery = query.toLowerCase();
+            const queryWords = lowerQuery
+              .split(/\s+/)
+              .filter((w) => w.length >= 2);
+
+            const filenameMatches: Match[] = [];
+
+            for (const file of allFiles) {
+              const basename = path.basename(file, ".md").toLowerCase();
+              const folder = path.dirname(file).toLowerCase();
+              let score = 0;
+
+              if (basename === lowerQuery) score += 100;
+              if (basename.includes(lowerQuery)) score += 50;
+              for (const w of queryWords) {
+                if (basename.includes(w)) score += 10;
+                if (folder.includes(w)) score += 3;
+              }
+
+              if (score > 0) {
+                filenameMatches.push({
+                  file,
+                  title: path.basename(file, ".md"),
+                  score,
+                  preview: "",
+                });
+              }
+            }
+
+            filenameMatches.sort((a, b) => b.score - a.score);
+
+            const candidates = filenameMatches.slice(0, max * 2);
+
+            for (const m of candidates) {
+              if (results.length >= max) break;
+              try {
+                const content = await readVaultFile(backend, m.file);
+                const fm = parseFrontmatter(content);
+                const fmTitle = typeof fm.title === "string" ? fm.title : null;
+                const modified =
+                  normalizeFrontmatterDate(fm.date_modified) ?? undefined;
+                const body = content
+                  .replace(/^---\n[\s\S]*?\n---\n/, "")
+                  .trim();
+                const previewLine =
+                  body
+                    .split("\n")
+                    .find((l) => l.trim() && !l.startsWith("#"))
+                    ?.slice(0, 160) || body.slice(0, 160);
+                results.push({
+                  file: m.file,
+                  title: fmTitle || m.title,
+                  score: m.score,
+                  preview: previewLine,
+                  modified,
+                });
+              } catch {
+                results.push(m);
+              }
+            }
+
+            // Filename-hit count captured BEFORE fallback. This is the
+            // load-bearing branch flag for Pass 3's IS-7011 anchor.
+            ctx.flags.filename_hits = results.length;
+
+            // If no filename hits, fall back to a BOUNDED body search. Pre-fix
+            // this used the naive serial searchVault, which read + decrypted the
+            // entire vault on a no-match query (the confirmed hang). scanVaultBodies
+            // caps the scan and covers index.md-relevant notes first.
+            let bodyFallbackFired = false;
+            let bodyHits = 0;
+            let filesScanned = 0;
+            let scanCapped = false;
+            if (results.length === 0) {
+              bodyFallbackFired = true;
+              let priorityHints: string[] = [];
+              try {
+                if (await backend.exists("index.md").catch(() => false)) {
+                  const indexContent = await readVaultFile(backend, "index.md");
+                  priorityHints = parseForageHints(indexContent, query);
+                }
+              } catch {
+                /* non-fatal — priority ordering is best-effort */
+              }
+              const scan = await scanVaultBodies(backend, query, {
+                maxResults: max,
+                maxFilesScanned: resolveScanCap(),
+                priorityHints,
               });
+              filesScanned = scan.scannedCount;
+              scanCapped = scan.capped || scan.timedOut;
+              bodyHits = scan.results.length;
+              for (const r of scan.results) {
+                const firstMatch = r.matches[0]?.text || "";
+                results.push({
+                  file: r.file,
+                  title: r.title,
+                  score: 1,
+                  preview: firstMatch.slice(0, 160),
+                });
+              }
             }
+            ctx.flags.body_fallback_fired = bodyFallbackFired;
+            ctx.flags.body_hits = bodyHits;
+            ctx.flags.files_scanned = filesScanned;
+            ctx.flags.scan_capped = scanCapped;
           }
-          ctx.flags.body_fallback_fired = bodyFallbackFired;
-          ctx.flags.body_hits = bodyHits;
-          ctx.flags.files_scanned = filesScanned;
-          ctx.flags.scan_capped = scanCapped;
 
           ctx.resultCount = results.length;
           ctx.noResults = results.length === 0;

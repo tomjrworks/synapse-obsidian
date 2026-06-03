@@ -41,7 +41,9 @@ import { ConflictError, NotFoundError } from "./storage.js";
 import {
   enrichCardinalitySummary,
   extractCardinality,
+  extractTokens,
   type Cardinality,
+  type FileTokens,
 } from "./frontmatter.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
@@ -219,6 +221,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       content,
     );
 
+    // Pass 3: pre-bake the per-file token index alongside cardinality (plaintext
+    // is already in hand — zero extra reads). Passive under V1 (column ignored);
+    // serves the V2 retrieval read once TAPROOT_RETRIEVAL_V2 is flipped.
+    const extractedTokens = extractTokens(content);
+
     const legacy = legacyMissingBlobBehavior();
 
     // PR #2 (S99): determine the storage_object key BEFORE writing the
@@ -274,6 +281,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       nowIso,
       flagsUpdate,
       extractedCardinality: enrichedCardinality,
+      extractedTokens,
     });
 
     // V1.5a.1: Invalidate the index cache on any write except index.md itself
@@ -342,6 +350,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     nowIso: string;
     flagsUpdate: FlagsUpdate | null;
     extractedCardinality: Cardinality | null;
+    extractedTokens: FileTokens | null;
   }): Promise<void> {
     const {
       filePath,
@@ -353,6 +362,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       nowIso,
       flagsUpdate,
       extractedCardinality,
+      extractedTokens,
     } = args;
     if (existing) {
       const newFlags = mergeFlags(
@@ -364,6 +374,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         plaintext_sha256: sha256Param,
         modified_at: nowIso,
         extracted_cardinality: extractedCardinality,
+        extracted_tokens: extractedTokens,
       };
       if (newFlags) updateRow.flags = newFlags;
       await withRetry(async () => {
@@ -399,6 +410,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       storage_object: storageObject,
       modified_at: nowIso,
       extracted_cardinality: extractedCardinality,
+      extracted_tokens: extractedTokens,
     };
     if (insertFlags) insertRow.flags = insertFlags;
 
@@ -463,6 +475,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           plaintext_sha256: sha256Param,
           modified_at: nowIso,
           extracted_cardinality: extractedCardinality,
+          extracted_tokens: extractedTokens,
         };
         if (raceFlags) raceUpdateRow.flags = raceFlags;
         await withRetry(async () => {
@@ -541,7 +554,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
   async listFilesMeta(subPath?: string): Promise<FileMeta[]> {
     let query = this.supabase
       .from("vault_files")
-      .select("path, extracted_cardinality")
+      .select("path, extracted_cardinality, extracted_tokens")
       .eq("workspace_id", this.workspaceId)
       .is("deleted_at", null);
 
@@ -562,7 +575,59 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return (data ?? []).map((r) => ({
       path: r.path as string,
       cardinality: (r.extracted_cardinality as Cardinality | null) ?? null,
+      tokens: (r.extracted_tokens as FileTokens | null) ?? null,
     }));
+  }
+
+  // Pass 3 (Path B): UNCAPPED per-file token reader for the V2 retrieval index.
+  // listFilesMeta caps at 1000 (index.md's map wants that); retrieval cannot, or
+  // notes past the 1000th go dark on big vaults. Paginated with .range() over a
+  // stable .order("path") so every row is returned exactly once. Selects only
+  // path + extracted_tokens (no cardinality) — the smallest payload that still
+  // covers the whole vault in a handful of round trips (tokens are bounded by
+  // BODY_TOKEN_CAP). No blob downloads — this is a plaintext column read, NOT
+  // the encrypted-body scan that caused the original hang.
+  async listFileTokensMeta(subPath?: string): Promise<FileMeta[]> {
+    const PAGE = 1000;
+    const trimmedSub = subPath?.trim();
+    const prefix = trimmedSub
+      ? trimmedSub.endsWith("/")
+        ? trimmedSub
+        : `${trimmedSub}/`
+      : null;
+    const escapedPrefix = prefix
+      ? prefix.replace(/[\\%_]/g, (c) => `\\${c}`)
+      : null;
+
+    const out: FileMeta[] = [];
+    // TODO: keyset pagination (WHERE path > lastPath ORDER BY path LIMIT PAGE)
+    // before ~10k files. OFFSET .range() over a live table is not a consistent
+    // snapshot — a concurrent insert/delete shifts the window and can skip or
+    // duplicate a boundary row (see retrieval-pagination-race.test.ts; buildIndex
+    // path-dedup now collapses the duplicate, but keyset removes the race itself).
+    for (let from = 0; ; from += PAGE) {
+      let query = this.supabase
+        .from("vault_files")
+        .select("path, extracted_tokens")
+        .eq("workspace_id", this.workspaceId)
+        .is("deleted_at", null)
+        .order("path", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (escapedPrefix) query = query.like("path", `${escapedPrefix}%`);
+
+      const { data, error } = await query;
+      if (error) throw new Error(`listFileTokensMeta failed: ${error.message}`);
+      const rows = data ?? [];
+      for (const r of rows) {
+        out.push({
+          path: r.path as string,
+          cardinality: null,
+          tokens: (r.extracted_tokens as FileTokens | null) ?? null,
+        });
+      }
+      if (rows.length < PAGE) break;
+    }
+    return out;
   }
 
   // Fire-and-forget backfill writes from loadIndexData when it encounters
@@ -592,6 +657,31 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
             .eq("path", filePath)
             .is("deleted_at", null)
             .is("extracted_cardinality", null),
+        ),
+      );
+    }
+  }
+
+  // Pass 3 token backfill — same chunked, fire-and-forget shape as
+  // batchUpdateCardinalities. The .is("extracted_tokens", null) race-guard is
+  // mandatory for the same reason: a debounced flush could race a fresh
+  // writeFile (which writes tokens directly); the guard makes backfill a strict
+  // null-fill that never clobbers a populated row.
+  async batchUpdateTokens(updates: Map<string, FileTokens>): Promise<void> {
+    if (updates.size === 0) return;
+    const concurrency = 10;
+    const entries = [...updates.entries()];
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const chunk = entries.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(([filePath, tokens]) =>
+          this.supabase
+            .from("vault_files")
+            .update({ extracted_tokens: tokens })
+            .eq("workspace_id", this.workspaceId)
+            .eq("path", filePath)
+            .is("deleted_at", null)
+            .is("extracted_tokens", null),
         ),
       );
     }
@@ -638,6 +728,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     if (error) throw new Error(`delete failed: ${error.message}`);
     if ((count ?? 0) === 0) throw new NotFoundError(normalized);
 
+    // Drop the index.md + V2 retrieval caches (debounced flush). Without this,
+    // the cached retrieval index keeps serving this deleted note as a ghost hit
+    // for up to the backend TTL — V1 read listFiles live and never did.
+    invalidateIndexForWorkspace(this.workspaceId, this);
+
     // Storage blob is intentionally NOT removed on soft delete. T4.6's
     // nuke flow is what reclaims storage; this leaves a paper trail and
     // makes "restore from trash" straightforward in a future Stage 2 UX.
@@ -670,6 +765,11 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       throw new Error(`move failed: ${error.message}`);
     }
     if ((count ?? 0) === 0) throw new NotFoundError(oldNorm);
+
+    // Same as delete(): the cached retrieval index would otherwise surface the
+    // OLD path as a ghost hit until the TTL. (Content tokens are unchanged by a
+    // move — filename/folder tokens re-derive from the live path at build time.)
+    invalidateIndexForWorkspace(this.workspaceId, this);
   }
 
   async stat(filePath: string): Promise<FileStat> {

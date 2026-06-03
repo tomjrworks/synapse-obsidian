@@ -1,6 +1,7 @@
 import path from "node:path";
 import matter from "gray-matter";
 import type { StorageBackend } from "./storage.js";
+import { tokenize, tokenizeQuery } from "./tokenize.js";
 
 /**
  * Read a file from the vault, returning its content.
@@ -59,6 +60,15 @@ export interface ScanVaultBodiesOptions {
    * or basename, mirroring garden_forage's prior inline ordering.
    */
   priorityHints?: string[];
+  /**
+   * Pass 3 (TAPROOT_RETRIEVAL_V2): match per-TOKEN instead of testing the whole
+   * query as one substring per line (RC #5). A line matches if it shares ANY
+   * query token (word-boundary, via the shared tokenizer), so a multi-word query
+   * like `stripe webhook errors` matches a line containing just `errors`. Default
+   * false = V1 whole-query substring (byte-for-byte rollback). Bounding/budget
+   * semantics are unchanged either way.
+   */
+  tokenized?: boolean;
 }
 
 export interface ScanVaultBodiesResult {
@@ -96,10 +106,18 @@ export async function scanVaultBodies(
     budgetMs = 15000,
     concurrency = 10,
     priorityHints,
+    tokenized = false,
   } = options;
 
   const start = Date.now();
   const lowerQuery = query.toLowerCase();
+  // Per-token (V2) vs whole-query-substring (V1) line matcher. Resolved once.
+  const queryTokenSet = tokenized ? new Set(tokenizeQuery(query)) : null;
+  const lineMatches = (line: string): boolean => {
+    if (queryTokenSet === null) return line.toLowerCase().includes(lowerQuery);
+    for (const t of tokenize(line)) if (queryTokenSet.has(t)) return true;
+    return false;
+  };
   const results: SearchResult[] = [];
   let scannedCount = 0;
   let capped = false;
@@ -158,7 +176,7 @@ export async function scanVaultBodies(
           const lines = content.split("\n");
           const matches: SearchMatch[] = [];
           for (let j = 0; j < lines.length; j++) {
-            if (lines[j].toLowerCase().includes(lowerQuery)) {
+            if (lineMatches(lines[j])) {
               matches.push({ line: j + 1, text: lines[j].trim() });
             }
           }

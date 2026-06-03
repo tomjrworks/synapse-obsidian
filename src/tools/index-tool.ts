@@ -15,6 +15,10 @@ import {
   loadIgnorePatterns,
   pathMatchesIgnore,
 } from "../utils/taproot-ignore.js";
+import {
+  invalidateRetrievalIndex,
+  getRetrievalIndex,
+} from "../utils/retrieval-index.js";
 
 const INDEX_TTL_MS = 60 * 60 * 1000;
 const INDEX_FRESHNESS_DAYS = 7;
@@ -86,8 +90,10 @@ async function flushIndexForWorkspace(
   workspaceId: string,
   backend: StorageBackend,
 ): Promise<void> {
-  // 1. Evict in-memory cache
+  // 1. Evict in-memory cache (index.md render + the Pass 3 retrieval index,
+  // which rides the same debounced flush on any vault write).
   indexCache.delete(backend);
+  invalidateRetrievalIndex(backend);
 
   // 2. Single pass through the vault — listFiles + per-file readFile happen
   // ONCE. Both renderers (MCP cache + disk write-back) operate off this data.
@@ -119,6 +125,16 @@ async function flushIndexForWorkspace(
   // 5. Populate cache with the MCP-format result
   const wrapped = wrap(mcpRendered, "synthesized");
   indexCache.set(backend, { rendered: wrapped, cachedAt: Date.now() });
+
+  // 6. Warm the V2 retrieval index off the SAME debounced flush (flag-
+  // independent, fire-and-forget). On a vault write this rebuilds the dropped
+  // cache; on the deploy-day "no-op write" warm it reads the uncapped token
+  // column and kicks off the full-vault token backfill BEFORE the read flag
+  // flips — the populate-before-flip step. Steady state: one cheap column read,
+  // zero blob reads (no null tokens left to backfill).
+  void getRetrievalIndex(backend).catch((err) =>
+    console.error(`[index-tool] retrieval index warm failed: ${err}`),
+  );
 }
 
 /**
@@ -363,10 +379,19 @@ async function loadIndexData(backend: StorageBackend): Promise<IndexData> {
     }
   }
 
-  // Backfill: read files whose cardinality wasn't stored yet, extract +
-  // enrich, hand back to the backend to persist async. On migration day
-  // this covers every existing file (one-time cost equal to the old hot
-  // path). After that, this list is normally empty.
+  // Backfill: read files whose cardinality wasn't stored yet, extract + enrich,
+  // hand back to the backend to persist async. On migration day this covers
+  // every existing file (one-time cost equal to the old hot path). After that,
+  // this list is normally empty.
+  //
+  // NOTE: token (extracted_tokens) backfill is intentionally NOT here. It lives
+  // in the V2 retrieval warm (getRetrievalIndex → backfillNullTokens, fired off
+  // this same flush at step 6) — UNCAPPED, so it covers the whole vault, not
+  // just loadIndexData's first 1000. Keeping the two backfills separate avoids
+  // double-reading the same files and keeps this index.md loader cardinality-
+  // only. (This supersedes the earlier "AUDIT B1" widening: the B1 case —
+  // cardinality present, tokens null — is now handled by the uncapped warm,
+  // which doesn't gate on cardinality at all.)
   if (needsBackfill.length > 0) {
     const parallelismRaw = parseInt(
       process.env.INDEX_BACKFILL_PARALLELISM ?? "10",

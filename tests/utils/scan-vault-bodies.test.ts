@@ -186,3 +186,35 @@ describe("resolveScanCap — SCAN_FILE_CAP env policy (cap ON by default)", () =
     }
   });
 });
+
+describe("scanVaultBodies — tokenized matcher (Pass 3 RC #5)", () => {
+  const files = {
+    // The stripe-webhook story: "errors" lives on its own line; the literal
+    // phrase "stripe webhook errors" appears on NO single line.
+    "daily/pr7.md":
+      "# PR7\nShipped the stripe webhook handler.\nChasing signature verification errors.",
+    "notes/decoy.md": "# Decoy\nUnrelated content about decisions and analysis.",
+  };
+
+  it("V2 (tokenized): a multi-word query matches a line sharing ANY token", async () => {
+    const backend = mkBackend(files);
+    const out = await scanVaultBodies(backend, "stripe webhook errors", {
+      tokenized: true,
+    });
+    expect(out.results.map((r) => r.file)).toContain("daily/pr7.md");
+  });
+
+  it("V1 (whole-query substring): the same query matches NO line (the RC #5 bug)", async () => {
+    const backend = mkBackend(files);
+    const out = await scanVaultBodies(backend, "stripe webhook errors", {
+      tokenized: false,
+    });
+    expect(out.results).toHaveLength(0);
+  });
+
+  it("V2: word-boundary — `is` does NOT match a line containing only `decisions`", async () => {
+    const backend = mkBackend({ "notes/d.md": "# D\nlogged the decisions today" });
+    const out = await scanVaultBodies(backend, "is", { tokenized: true });
+    expect(out.results).toHaveLength(0);
+  });
+});

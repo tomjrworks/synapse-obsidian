@@ -19,6 +19,12 @@ function makeBackend(overrides: Partial<StorageBackend> = {}): StorageBackend {
     recentFiles: vi.fn(async () => []),
     listChanged: vi.fn(async () => ({ files: [], next: null })),
     batchUpdateCardinalities: vi.fn(async () => undefined),
+    batchUpdateTokens: vi.fn(async () => undefined),
+    // The flush warms the V2 retrieval index off a SEPARATE uncapped query
+    // (listFileTokensMeta), NOT loadIndexData's listFilesMeta pass. These tests
+    // count listFiles as the index.md synthesis-pass proxy; the warm must not
+    // inflate it. Retrieval index CONTENT is covered in retrieval-index-coverage.
+    listFileTokensMeta: vi.fn(async () => []),
   };
   const merged = { ...base, ...overrides } as StorageBackend;
   // Default listFilesMeta delegates to listFiles + readFile so existing
