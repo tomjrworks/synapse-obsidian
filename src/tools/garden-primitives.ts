@@ -174,6 +174,116 @@ async function renderHits(
   return lines.join("\n");
 }
 
+// ── garden_query: minimal boolean grammar (PLAN §2b) ───────────────────────
+// Supports `A B` (AND), `A OR B …` (one OR group), `X NOT Y`, and field scopes
+// tag:/type:/folder:/path: — exactly enough for GQ1–GQ5. No nested parens /
+// quoted phrases (graceful: unknown key:val → a bare term, never throws).
+type QueryTerm =
+  | { kind: "tag" | "type" | "folder"; value: string }
+  | { kind: "path"; value: string }
+  | { kind: "bare"; value: string };
+
+function classifyTerm(word: string): QueryTerm {
+  const m = /^(tag|type|folder|path):(.+)$/i.exec(word);
+  if (m) {
+    const field = m[1].toLowerCase();
+    const raw = m[2];
+    if (field === "path") return { kind: "path", value: raw.toLowerCase() };
+    // tag/type/folder → content-tokenize the value, take the first token (the
+    // scope values in 4a are single-token; exact set membership downstream).
+    const value = tokenize(raw)[0] ?? raw.toLowerCase();
+    return { kind: field as "tag" | "type" | "folder", value };
+  }
+  return { kind: "bare", value: tokenize(word)[0] ?? word.toLowerCase() };
+}
+
+interface ParsedQuery {
+  and: QueryTerm[];
+  orGroups: QueryTerm[][];
+  not: QueryTerm[];
+  scopeCount: number;
+  operatorCount: number;
+}
+
+function parseQuery(query: string): ParsedQuery {
+  const words = query.split(/\s+/).filter(Boolean);
+  const and: QueryTerm[] = [];
+  const orGroups: QueryTerm[][] = [];
+  const not: QueryTerm[] = [];
+  let orGroup: QueryTerm[] = [];
+  let pendingNot = false;
+  let expectOrOperand = false;
+  let operatorCount = 0;
+  const flushOr = () => {
+    if (orGroup.length) {
+      orGroups.push(orGroup);
+      orGroup = [];
+    }
+  };
+  for (const w of words) {
+    const U = w.toUpperCase();
+    if (U === "NOT") {
+      operatorCount += 1;
+      pendingNot = true;
+      continue;
+    }
+    if (U === "OR") {
+      operatorCount += 1;
+      // The term just before this OR joins the group (pull it back out of AND).
+      if (orGroup.length === 0 && and.length) orGroup.push(and.pop()!);
+      expectOrOperand = true;
+      continue;
+    }
+    const term = classifyTerm(w);
+    if (pendingNot) {
+      not.push(term);
+      pendingNot = false;
+    } else if (expectOrOperand) {
+      orGroup.push(term);
+      expectOrOperand = false;
+    } else {
+      flushOr();
+      and.push(term);
+    }
+  }
+  flushOr();
+  const scopeCount = [...and, ...orGroups.flat(), ...not].filter(
+    (t) => t.kind !== "bare",
+  ).length;
+  return { and, orGroups, not, scopeCount, operatorCount };
+}
+
+/** Is a term satisfied by a record? Scopes use their exact field; a bare term
+ * matches NON-body (filename ∪ frontmatter ∪ folder) under AND, but the FULL
+ * token set (incl. body) under OR / NOT — the audit-resolved asymmetry that
+ * lets GQ4 exclude the body-only `mcp` standup while GQ5 keeps body-resident
+ * OR terms. */
+function termPresent(rec: Rec, term: QueryTerm, allowBody: boolean): boolean {
+  switch (term.kind) {
+    case "tag":
+    case "type":
+      return rec.frontmatter.has(term.value);
+    case "folder":
+      return rec.folder.has(term.value);
+    case "path":
+      return rec.path.toLowerCase().includes(term.value);
+    case "bare":
+      return allowBody
+        ? fileTokenSet(rec).has(term.value)
+        : rec.filename.has(term.value) ||
+            rec.frontmatter.has(term.value) ||
+            rec.folder.has(term.value);
+  }
+}
+
+function queryMatches(rec: Rec, p: ParsedQuery): boolean {
+  return (
+    p.and.every((t) => termPresent(rec, t, false)) &&
+    p.orGroups.every((g) => g.some((t) => termPresent(rec, t, true))) &&
+    !p.not.some((t) => termPresent(rec, t, true))
+  );
+}
+
 export function registerGardenPrimitives(
   server: McpServer,
   backend: StorageBackend,
@@ -327,15 +437,66 @@ export function registerGardenPrimitives(
         workspaceId: opts.workspaceId,
         argsShape: ({ query }) => ({ query_len: query.length }),
       },
-      async ({ query: _query }, ctx) => {
+      async ({ query }, ctx) => {
         try {
           if (!gardenQueryEnabled()) {
             ctx.flags.tool_disabled = true;
             return disabledResponse("garden_query");
           }
-          // TODO(PLAN §7.4): parse → predicate over ScoringRecord → scoreQuery rank.
-          ctx.flags.not_implemented = true;
-          return notImplemented();
+
+          const parsed = parseQuery(query);
+          ctx.flags.query_scopes = parsed.scopeCount;
+          ctx.flags.query_operators = parsed.operatorCount;
+
+          const noResult = (text: string) => {
+            ctx.noResults = true;
+            ctx.resultCount = 0;
+            return { content: [{ type: "text" as const, text }] };
+          };
+
+          // No positive constraint (empty, or NOT-only) → nothing to return.
+          if (parsed.and.length === 0 && parsed.orGroups.length === 0) {
+            return noResult(`No files match \`${query}\`.`);
+          }
+
+          const index = await getRetrievalIndex(backend);
+
+          // Inclusion IS the predicate (not scoreQuery coverage — GOTCHA #3):
+          // every predicate-passing file is included; scoreQuery only ORDERS
+          // within the survivor set. The managed catalog is never a hit.
+          const survivors = index.files.filter(
+            (rec) =>
+              !isExcludedFromResults(rec.path) && queryMatches(rec, parsed),
+          );
+
+          if (survivors.length === 0) {
+            return noResult(`No files match \`${query}\`.`);
+          }
+
+          // Rank survivors by relevance over the positive content terms.
+          const rankTerms = [...parsed.and, ...parsed.orGroups.flat()].map(
+            (t) => t.value,
+          );
+          const order = new Map<string, number>();
+          scoreQuery(index, rankTerms.join(" ")).forEach((hit, i) => {
+            if (!order.has(hit.path)) order.set(hit.path, i);
+          });
+          const top = survivors
+            .map((rec) => rec.path)
+            .sort(
+              (a, b) =>
+                (order.get(a) ?? Number.MAX_SAFE_INTEGER) -
+                  (order.get(b) ?? Number.MAX_SAFE_INTEGER) ||
+                a.localeCompare(b),
+            )
+            .slice(0, RESULT_LIMIT);
+
+          ctx.resultCount = top.length;
+          return {
+            content: [
+              { type: "text" as const, text: await renderHits(backend, top) },
+            ],
+          };
         } catch (err) {
           ctx.errorCode = "garden_query_failed";
           return respondToolError("garden_query_failed", err);
