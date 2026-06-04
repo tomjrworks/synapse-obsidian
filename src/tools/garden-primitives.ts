@@ -1,8 +1,17 @@
 import { z } from "zod";
+import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
 import { respondToolError } from "./_rate-limit.js";
 import { withTelemetry } from "../observability/tool-telemetry.js";
+import {
+  getRetrievalIndex,
+  scoreQuery,
+  type RetrievalIndex,
+} from "../utils/retrieval-index.js";
+import { tokenize, isIdentifierToken } from "../utils/tokenize.js";
+import { runsOf } from "../utils/honesty-contract.js";
+import { readVaultFile, parseFrontmatter } from "../utils/vault.js";
 
 /**
  * Pass 4a — three READ-ONLY retrieval primitives layered on the EXISTING Pass 3
@@ -51,12 +60,118 @@ function disabledResponse(tool: string): {
   };
 }
 
-// Enabled-path logic for all three tools lands in subsequent commits (PLAN §7
-// steps 3–5). The stub keeps the ENABLED path honestly RED against the eval
-// behavior bars until each handler is implemented.
+// Enabled-path logic for garden_query / garden_cluster lands in PLAN §7.4–5.
+// The stub keeps those ENABLED paths honestly RED against the eval behavior
+// bars until each handler is implemented.
 const NOT_IMPLEMENTED = "garden primitive not implemented yet (scaffold)";
 function notImplemented(): { content: [{ type: "text"; text: string }] } {
   return { content: [{ type: "text" as const, text: NOT_IMPLEMENTED }] };
+}
+
+// ── Shared retrieval helpers (PLAN §2.0 / §2a) ─────────────────────────────
+type Rec = RetrievalIndex["files"][number];
+
+/** The TAPROOT-MANAGED root index is a generated catalog — it lexically
+ * contains nearly every identifier/term in the vault, so a set-membership
+ * primitive must never surface it as a hit (it would break precision). */
+const MANAGED_INDEX_PATH = "index.md";
+function isExcludedFromResults(p: string): boolean {
+  return p === MANAGED_INDEX_PATH;
+}
+
+const RESULT_LIMIT = 20;
+
+/** Every token of a record across all fields (mirrors honesty-contract.ts:92). */
+function fileTokenSet(rec: Rec): Set<string> {
+  return new Set<string>([
+    ...rec.filename,
+    ...rec.frontmatter,
+    ...rec.folder,
+    ...rec.body,
+  ]);
+}
+
+/**
+ * Identifier match targets (the SUBTLE sub-token rule — do not "simplify"):
+ * tokenize the raw identifier, keep only id-shaped tokens, and for each emit
+ * the token itself PLUS its digit/letter sub-runs, dropping any run of length
+ * < 2 and any pure-letter (non-id) run. Threads two needles at once:
+ *   is7011 → {is7011, 7011}  (course notes carry only the `7011` sub-token)
+ *   pr7    → {pr7}           (`7` dropped len<2, `pr` dropped non-id → never pr8/pr9)
+ *   7011   → {7011};  is → {} (no id target → IDN5 hint)
+ */
+function deriveIdentifierTargets(identifier: string): string[] {
+  const targets = new Set<string>();
+  for (const tok of tokenize(identifier)) {
+    if (!isIdentifierToken(tok)) continue;
+    for (const part of [tok, ...runsOf(tok)]) {
+      if (part.length < 2) continue;
+      if (!isIdentifierToken(part)) continue;
+      targets.add(part);
+    }
+  }
+  return [...targets];
+}
+
+/** Identifier-shaped vocabulary (token → cross-field document frequency). */
+function identifierVocab(index: RetrievalIndex): Map<string, number> {
+  const vocab = new Map<string, number>();
+  for (const rec of index.files) {
+    for (const t of fileTokenSet(rec)) {
+      if (isIdentifierToken(t)) vocab.set(t, (vocab.get(t) ?? 0) + 1);
+    }
+  }
+  return vocab;
+}
+
+/**
+ * Related identifiers for an exact miss: vault identifier tokens sharing a
+ * digit/letter run with an unmatched id-shaped query token, ranked by vocab
+ * frequency, capped. Duplicates honesty-contract.ts:148-165 (audit decision:
+ * share runsOf only, not the whole matcher).
+ */
+function relatedIdentifiers(
+  unmatchedIds: string[],
+  vocab: Map<string, number>,
+  cap = 3,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const vocabIds = [...vocab.keys()];
+  for (const qt of unmatchedIds) {
+    const qRuns = new Set(runsOf(qt));
+    const cands = vocabIds
+      .filter(
+        (c) => c !== qt && !seen.has(c) && runsOf(c).some((r) => qRuns.has(r)),
+      )
+      .sort((a, b) => (vocab.get(b) ?? 0) - (vocab.get(a) ?? 0));
+    for (const c of cands.slice(0, cap)) {
+      out.push(c);
+      seen.add(c);
+    }
+  }
+  return out.slice(0, cap);
+}
+
+/** Render matched paths as `- **<title>** — <path>` (mirrors garden_find so a
+ * shared parse branch works). Reads frontmatter title for the rendered slice
+ * only (already limited), basename fallback. */
+async function renderHits(
+  backend: StorageBackend,
+  paths: string[],
+): Promise<string> {
+  const lines: string[] = [];
+  for (const p of paths) {
+    let title = path.basename(p, ".md");
+    try {
+      const fm = parseFrontmatter(await readVaultFile(backend, p));
+      if (typeof fm.title === "string" && fm.title.trim()) title = fm.title;
+    } catch {
+      /* title is best-effort — basename fallback */
+    }
+    lines.push(`- **${title}** — ${p}`);
+  }
+  return lines.join("\n");
 }
 
 export function registerGardenPrimitives(
@@ -64,8 +179,6 @@ export function registerGardenPrimitives(
   backend: StorageBackend,
   opts: { workspaceId?: string; retrievalV2?: boolean } = {},
 ): void {
-  void backend; // index reads land with the handler logic (PLAN §7.3–5)
-
   // ── garden_identifier ──────────────────────────────────────────────────
   server.registerTool(
     "garden_identifier",
@@ -93,15 +206,90 @@ export function registerGardenPrimitives(
         workspaceId: opts.workspaceId,
         argsShape: ({ identifier }) => ({ identifier_len: identifier.length }),
       },
-      async ({ identifier: _identifier }, ctx) => {
+      async ({ identifier }, ctx) => {
         try {
           if (!gardenIdentifierEnabled()) {
             ctx.flags.tool_disabled = true;
             return disabledResponse("garden_identifier");
           }
-          // TODO(PLAN §7.3): exact-id recall + IDN4 suggest + IDN5 hint.
-          ctx.flags.not_implemented = true;
-          return notImplemented();
+
+          const targets = deriveIdentifierTargets(identifier);
+          ctx.flags.identifier_targets = targets.length;
+
+          // IDN5 — no id-shaped target (e.g. "is"): empty-with-hint, not error.
+          if (targets.length === 0) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `"${identifier}" isn't an identifier — identifiers contain a digit (e.g. is7011, pr7, v2). Try garden_find for keyword search.`,
+                },
+              ],
+            };
+          }
+
+          const index = await getRetrievalIndex(backend);
+          const targetSet = new Set(targets);
+
+          // Match: any target token ∈ the file's token set; the managed root
+          // index is a generated catalog → never a hit (precision).
+          const matched = new Set(
+            index.files
+              .filter(
+                (rec) =>
+                  !isExcludedFromResults(rec.path) &&
+                  [...fileTokenSet(rec)].some((t) => targetSet.has(t)),
+              )
+              .map((rec) => rec.path),
+          );
+
+          // Order survivors by relevance (scoreQuery), then append any matched
+          // path the scorer didn't rank (defensive — matched ⊆ scored here).
+          const ordered: string[] = [];
+          const seen = new Set<string>();
+          for (const hit of scoreQuery(index, identifier)) {
+            if (matched.has(hit.path) && !seen.has(hit.path)) {
+              ordered.push(hit.path);
+              seen.add(hit.path);
+            }
+          }
+          for (const p of [...matched].sort()) {
+            if (!seen.has(p)) ordered.push(p);
+          }
+          const top = ordered.slice(0, RESULT_LIMIT);
+
+          ctx.flags.exact_hits = top.length;
+          ctx.resultCount = top.length;
+
+          // IDN4 — id target(s) but zero exact hits: related-id suggestions
+          // (never as exact hits), reusing the run-overlap matcher.
+          if (top.length === 0) {
+            ctx.noResults = true;
+            const queryIds = tokenize(identifier).filter(isIdentifierToken);
+            const related = relatedIdentifiers(
+              queryIds,
+              identifierVocab(index),
+            );
+            ctx.flags.related_suggested = related.length;
+            const tail = related.length
+              ? ` Related identifiers in your vault: ${related.join(", ")}.`
+              : " No related identifiers found.";
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No exact match for "${identifier}".${tail}`,
+                },
+              ],
+            };
+          }
+
+          return {
+            content: [
+              { type: "text" as const, text: await renderHits(backend, top) },
+            ],
+          };
         } catch (err) {
           ctx.errorCode = "garden_identifier_failed";
           return respondToolError("garden_identifier_failed", err);
