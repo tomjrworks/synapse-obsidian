@@ -45,9 +45,12 @@ export interface HonestySections {
   didYouMean: string[];
 }
 
-/** Maximal runs of digits vs non-digits, in order (mirrors tokenize's RUN_RE). */
+/** Maximal runs of digits vs non-digits, in order (mirrors tokenize's RUN_RE).
+ * Exported (Pass 4a) so garden_identifier shares ONE run-splitter — its
+ * related-id suggestion loop duplicates the ~6-line matcher (audit decision:
+ * export-only, do NOT refactor relatedIdentifiers out of the shipped file). */
 const RUN_RE = /[0-9]+|[^0-9]+/gu;
-function runsOf(token: string): string[] {
+export function runsOf(token: string): string[] {
   return token.match(RUN_RE) ?? [];
 }
 
