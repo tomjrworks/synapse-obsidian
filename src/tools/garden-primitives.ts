@@ -277,23 +277,35 @@ function queryMatches(rec: Rec, p: ParsedQuery): boolean {
 }
 
 // ── garden_cluster: topic clustering + landing-note proposal (PLAN §2c) ────
-// Structure locked, numbers tuned against the fixture (audit §6.3). Two files
-// are "related" if they (a) share an identifier RUN of len≥2 — the family
-// signal that binds pr7/pr8/pr9 and the is-7011 modules even though their
-// bodies are dissimilar — OR (b) clear a content-Jaccard floor on high-signal
-// tokens. Identifier runs are taken from frontmatter+body ONLY (NOT filename),
-// so filename DATE tokens (2026/05) never manufacture a false family across
-// every dated daily.
+// Two files are "related" if they (a) share a FAMILY identifier run — OR (b)
+// clear a content-Jaccard floor on high-signal tokens. A "family run" is the
+// narrow case the 4a signal got wrong: the un-gated "any shared run len≥2"
+// rule collapsed the real vault (the year `2026` alone bonded 1009/1479 notes,
+// every 2-digit calendar/count number bonded hundreds, and the `is` alpha run
+// merged every IS-NNNN course). Pass 4b gates the run signal three ways
+// (clusterIdRuns + the per-pool DF cap below) so only a genuine code/series
+// run (7011, pr) survives. Runs are taken from frontmatter+body ONLY.
 const CLUSTER_JACCARD_MIN = 0.25;
 const CLUSTER_MAX = 12;
 const CLUSTER_MEMBER_MAX = 25;
-const CLUSTER_SCAN_CAP = 500; // O(n²) pairing guard for large vaults (4a)
+const CLUSTER_SCAN_CAP = 2000; // O(n²) pairing guard; raised once the over-merge
+// was fixed (4a's 500 silently dropped 978 of a 1479-note vault from clustering).
 const GENERIC_TOP_FOLDERS = new Set(["daily", "notes", "inbox", "meetings"]);
+// Gate 2 (DF cap): a shared run only bonds a family if it is RARE across the
+// vault. Common codes (the real vault's 100/200/500, each in hundreds of notes)
+// carry no family signal. Cap = max(floor, frac·pool) so it scales but never
+// drops below a small-vault floor (a 3-note family must still bond).
+const CLUSTER_RUN_DF_FLOOR = 8;
+const CLUSTER_RUN_DF_FRAC = 0.08;
+// A 4-digit calendar year is never a code. Real course/version codes (7011,
+// 7060) are 3+ digits and not year-shaped.
+const YEAR_RE = /^(?:19|20)\d\d$/;
 
 interface ClusterNode {
   rec: Rec;
   sig: Set<string>; // high-signal content tokens
-  runs: Set<string>; // identifier runs (len≥2) from frontmatter+body
+  runs: Set<string>; // gated identifier runs (gates 1+3) from frontmatter+body
+  familyRuns: Set<string>; // runs surviving the per-pool DF cap (gate 2)
 }
 
 function clusterDf(files: Rec[]): Map<string, number> {
@@ -318,11 +330,38 @@ function contentSig(
   return s;
 }
 
+/** A numeric run is a CODE (a real family signal) only if it is specific:
+ * length ≥ 3 and not a 4-digit calendar year. 2-digit dates/counts (05, 16, 30)
+ * and years (2026) are calendar noise — on the real vault they manufactured a
+ * giant false family across every dated note. */
+function isCodeNumericRun(r: string): boolean {
+  return r.length >= 3 && !YEAR_RE.test(r);
+}
+
+/**
+ * Family runs for a record (gates 1 + 3). For each identifier-shaped token,
+ * split into runs and keep only those that can signal a genuine family:
+ *   • numeric run  → kept only if it's a CODE (isCodeNumericRun): 7011 ✓,
+ *     2026/05/30 ✗. (gate 1 — calendar/short guard)
+ *   • alpha run    → kept only if the SAME token carries no numeric code, i.e.
+ *     it's a series prefix not a category prefix: pr7 keeps `pr` (1-digit
+ *     index), is7011 drops `is` (4-digit course code, else every IS-NNNN
+ *     course collapses into one cluster). (gate 3 — alpha suppression)
+ * Gate 2 (rare-run DF cap) is applied per-pool by the caller.
+ */
 function clusterIdRuns(rec: Rec): Set<string> {
   const runs = new Set<string>();
   for (const t of [...rec.frontmatter, ...rec.body]) {
     if (!isIdentifierToken(t)) continue;
-    for (const r of runsOf(t)) if (r.length >= 2) runs.add(r);
+    const parts = runsOf(t).filter((r) => r.length >= 2);
+    const hasCode = parts.some(isCodeNumericRun);
+    for (const r of parts) {
+      if (/[0-9]/.test(r)) {
+        if (isCodeNumericRun(r)) runs.add(r); // gate 1
+      } else if (!hasCode) {
+        runs.add(r); // gate 3
+      }
+    }
   }
   return runs;
 }
@@ -335,7 +374,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 }
 
 function clusterRelated(a: ClusterNode, b: ClusterNode): boolean {
-  for (const r of a.runs) if (b.runs.has(r)) return true; // identifier family
+  for (const r of a.familyRuns) if (b.familyRuns.has(r)) return true; // family
   return jaccard(a.sig, b.sig) >= CLUSTER_JACCARD_MIN; // content similarity
 }
 
@@ -676,7 +715,23 @@ export function registerGardenPrimitives(
             rec,
             sig: contentSig(rec, df, maxDf),
             runs: clusterIdRuns(rec),
+            familyRuns: new Set<string>(),
           }));
+          // Gate 2: a shared run only bonds a family if it is RARE. Drop runs
+          // whose pool DF exceeds the cap (the real vault's 100/200/500-style
+          // common codes); keep genuinely scarce codes (7011, pr).
+          const runDf = new Map<string, number>();
+          for (const n of nodes)
+            for (const r of n.runs) runDf.set(r, (runDf.get(r) ?? 0) + 1);
+          const runDfCap = Math.max(
+            CLUSTER_RUN_DF_FLOOR,
+            Math.floor(pool.length * CLUSTER_RUN_DF_FRAC),
+          );
+          for (const n of nodes) {
+            for (const r of n.runs) {
+              if ((runDf.get(r) ?? 0) <= runDfCap) n.familyRuns.add(r);
+            }
+          }
 
           const noResult = (text: string) => {
             ctx.noResults = true;
