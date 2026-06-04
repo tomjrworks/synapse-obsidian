@@ -27,12 +27,12 @@ import { readVaultFile, parseFrontmatter } from "../utils/vault.js";
  * telemetry wrapper sees attempted calls; a flag-OFF call returns a short inert
  * "disabled" response with NO index read. Flags are independent.
  *
- * This commit is the SCAFFOLD: tools registered inert (flag-OFF → disabled;
- * flag-ON → not-implemented stub) so the failing-eval-first baseline can capture
- * tool-present + flag-off RED/GREEN. Handler logic lands in PLAN §7 steps 3–5.
+ * The TAPROOT-MANAGED root index.md is excluded from every result — it is a
+ * generated catalog that lexically contains nearly every term/identifier, so a
+ * set-membership primitive must never surface it (precision).
  *
  * PLAN: 2026-06-04-pass-4a-plan. SPEC: 2026-06-04-pass-4a-spec. Gates:
- * 2026-06-04-pass-4-primitives-evals (§2–4 + cross-cutting).
+ * 2026-06-04-pass-4-primitives-evals (§2–4 + cross-cutting), all GREEN.
  */
 
 // ── Per-tool behavior flags (honesty-contract.ts:33 one-liner pattern) ──
@@ -58,14 +58,6 @@ function disabledResponse(tool: string): {
       },
     ],
   };
-}
-
-// Enabled-path logic for garden_query / garden_cluster lands in PLAN §7.4–5.
-// The stub keeps those ENABLED paths honestly RED against the eval behavior
-// bars until each handler is implemented.
-const NOT_IMPLEMENTED = "garden primitive not implemented yet (scaffold)";
-function notImplemented(): { content: [{ type: "text"; text: string }] } {
-  return { content: [{ type: "text" as const, text: NOT_IMPLEMENTED }] };
 }
 
 // ── Shared retrieval helpers (PLAN §2.0 / §2a) ─────────────────────────────
@@ -282,6 +274,131 @@ function queryMatches(rec: Rec, p: ParsedQuery): boolean {
     p.orGroups.every((g) => g.some((t) => termPresent(rec, t, true))) &&
     !p.not.some((t) => termPresent(rec, t, true))
   );
+}
+
+// ── garden_cluster: topic clustering + landing-note proposal (PLAN §2c) ────
+// Structure locked, numbers tuned against the fixture (audit §6.3). Two files
+// are "related" if they (a) share an identifier RUN of len≥2 — the family
+// signal that binds pr7/pr8/pr9 and the is-7011 modules even though their
+// bodies are dissimilar — OR (b) clear a content-Jaccard floor on high-signal
+// tokens. Identifier runs are taken from frontmatter+body ONLY (NOT filename),
+// so filename DATE tokens (2026/05) never manufacture a false family across
+// every dated daily.
+const CLUSTER_JACCARD_MIN = 0.25;
+const CLUSTER_MAX = 12;
+const CLUSTER_MEMBER_MAX = 25;
+const CLUSTER_SCAN_CAP = 500; // O(n²) pairing guard for large vaults (4a)
+const GENERIC_TOP_FOLDERS = new Set(["daily", "notes", "inbox", "meetings"]);
+
+interface ClusterNode {
+  rec: Rec;
+  sig: Set<string>; // high-signal content tokens
+  runs: Set<string>; // identifier runs (len≥2) from frontmatter+body
+}
+
+function clusterDf(files: Rec[]): Map<string, number> {
+  const df = new Map<string, number>();
+  for (const rec of files) {
+    for (const t of fileTokenSet(rec)) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  return df;
+}
+
+function contentSig(
+  rec: Rec,
+  df: Map<string, number>,
+  maxDf: number,
+): Set<string> {
+  const s = new Set<string>();
+  for (const t of fileTokenSet(rec)) {
+    if (!(isIdentifierToken(t) || t.length > 2)) continue; // drop len≤2 non-id
+    if ((df.get(t) ?? 0) > maxDf) continue; // drop ubiquitous (handoff, the…)
+    s.add(t);
+  }
+  return s;
+}
+
+function clusterIdRuns(rec: Rec): Set<string> {
+  const runs = new Set<string>();
+  for (const t of [...rec.frontmatter, ...rec.body]) {
+    if (!isIdentifierToken(t)) continue;
+    for (const r of runsOf(t)) if (r.length >= 2) runs.add(r);
+  }
+  return runs;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  return inter / (a.size + b.size - inter);
+}
+
+function clusterRelated(a: ClusterNode, b: ClusterNode): boolean {
+  for (const r of a.runs) if (b.runs.has(r)) return true; // identifier family
+  return jaccard(a.sig, b.sig) >= CLUSTER_JACCARD_MIN; // content similarity
+}
+
+function isGenericFolder(folder: string): boolean {
+  if (folder === ".") return true;
+  if (GENERIC_TOP_FOLDERS.has(folder.split("/")[0])) return true;
+  return /^\d/.test(path.basename(folder)); // bare date folder
+}
+
+const titleCase = (toks: string[]): string =>
+  toks.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(" ");
+
+/** Landing-note title + proposed path for a cluster. Prefers a specific
+ * dominant folder's name (e.g. is-7011-it-management); falls back to the
+ * cluster's shared distinctive tokens, then to a generic label. */
+function clusterTitleAndPath(
+  recs: Rec[],
+  df: Map<string, number>,
+): { title: string; landingPath: string } {
+  const folderCounts = new Map<string, number>();
+  for (const r of recs) {
+    const f = path.dirname(r.path);
+    folderCounts.set(f, (folderCounts.get(f) ?? 0) + 1);
+  }
+  const dominant = [...folderCounts.entries()].sort(
+    (a, b) =>
+      b[1] - a[1] ||
+      Number(isGenericFolder(a[0])) - Number(isGenericFolder(b[0])) ||
+      a[0].localeCompare(b[0]),
+  )[0][0];
+
+  let titleToks: string[] = [];
+  if (!isGenericFolder(dominant)) {
+    titleToks = tokenize(path.basename(dominant)).filter((t) => t.length >= 2);
+  }
+  if (titleToks.length === 0) {
+    // Shared distinctive tokens across all members, rarest first.
+    const sigs = recs.map((r) => contentSig(r, df, recs.length));
+    const shared = [...sigs[0]].filter(
+      (t) => t.length >= 2 && sigs.every((s) => s.has(t)),
+    );
+    titleToks = shared
+      .sort((a, b) => (df.get(a) ?? 0) - (df.get(b) ?? 0))
+      .slice(0, 4);
+  }
+  const title = titleToks.length ? titleCase(titleToks) : "Related notes";
+  const landingPath = dominant === "." ? "index.md" : `${dominant}/index.md`;
+  return { title, landingPath };
+}
+
+function renderCluster(
+  titleRecs: Rec[],
+  memberPaths: string[],
+  df: Map<string, number>,
+): string {
+  const { title, landingPath } = clusterTitleAndPath(titleRecs, df);
+  const lines = [
+    `## ${title}`,
+    `Suggested landing note: \`${landingPath}\` — "${title}" (proposal — call garden_plant to create; nothing is written).`,
+    `Members (${memberPaths.length}):`,
+    ...memberPaths.map((p) => `- ${p}`),
+  ];
+  return lines.join("\n");
 }
 
 export function registerGardenPrimitives(
@@ -537,17 +654,132 @@ export function registerGardenPrimitives(
           seed_present: seed != null && seed !== "",
         }),
       },
-      async ({ seed: _seed }, ctx) => {
+      async ({ seed }, ctx) => {
         try {
           if (!gardenClusterEnabled()) {
             ctx.flags.tool_disabled = true;
             return disabledResponse("garden_cluster");
           }
-          // TODO(PLAN §7.5): seeded scoreQuery / unseeded Jaccard agglomeration
-          // + landing-note proposal. ZERO writes (CL4 invariant).
-          ctx.flags.not_implemented = true;
+
+          // CL4 invariant: clustering is read-only — it NEVER calls
+          // backend.writeFile/delete/move. Landing notes are PROPOSALS only.
           ctx.flags.writes = 0;
-          return notImplemented();
+          ctx.flags.seed_present = seed != null && seed !== "";
+
+          const index = await getRetrievalIndex(backend);
+          const pool = index.files.filter(
+            (rec) => !isExcludedFromResults(rec.path),
+          );
+          const df = clusterDf(pool);
+          const maxDf = Math.max(3, Math.floor(pool.length * 0.4));
+          const nodes: ClusterNode[] = pool.map((rec) => ({
+            rec,
+            sig: contentSig(rec, df, maxDf),
+            runs: clusterIdRuns(rec),
+          }));
+
+          const noResult = (text: string) => {
+            ctx.noResults = true;
+            ctx.resultCount = 0;
+            return { content: [{ type: "text" as const, text }] };
+          };
+
+          // ── Seeded: "more like this" around one note ──
+          if (seed != null && seed !== "") {
+            const base = path.basename(seed, ".md");
+            const seedNode =
+              nodes.find((n) => n.rec.path === seed) ??
+              nodes.find((n) => path.basename(n.rec.path, ".md") === base);
+            if (!seedNode) {
+              return noResult(`No note matching seed \`${seed}\`.`);
+            }
+            const members = nodes
+              .filter(
+                (n) =>
+                  n.rec.path !== seedNode.rec.path &&
+                  clusterRelated(seedNode, n),
+              )
+              .map((n) => n.rec.path)
+              .sort()
+              .slice(0, CLUSTER_MEMBER_MAX);
+            if (members.length === 0) {
+              return noResult(
+                `No related notes found for \`${seedNode.rec.path}\`.`,
+              );
+            }
+            ctx.flags.cluster_count = 1;
+            ctx.flags.largest_cluster_size = members.length;
+            ctx.resultCount = members.length;
+            const titleRecs = [
+              seedNode.rec,
+              ...members.map((p) => nodes.find((n) => n.rec.path === p)!.rec),
+            ];
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: renderCluster(titleRecs, members, df),
+                },
+              ],
+            };
+          }
+
+          // ── Unseeded: connected components under the related() relation ──
+          const scanned = nodes.slice(0, CLUSTER_SCAN_CAP);
+          const truncated = nodes.length - scanned.length;
+          const parent = scanned.map((_, i) => i);
+          const find = (i: number): number => {
+            while (parent[i] !== i) {
+              parent[i] = parent[parent[i]];
+              i = parent[i];
+            }
+            return i;
+          };
+          const union = (a: number, b: number) => {
+            parent[find(a)] = find(b);
+          };
+          for (let i = 0; i < scanned.length; i++) {
+            for (let j = i + 1; j < scanned.length; j++) {
+              if (clusterRelated(scanned[i], scanned[j])) union(i, j);
+            }
+          }
+          const groups = new Map<number, ClusterNode[]>();
+          for (let i = 0; i < scanned.length; i++) {
+            const root = find(i);
+            (groups.get(root) ?? groups.set(root, []).get(root)!).push(
+              scanned[i],
+            );
+          }
+          const clusters = [...groups.values()]
+            .filter((g) => g.length >= 2) // singletons dropped
+            .sort((a, b) => b.length - a.length)
+            .slice(0, CLUSTER_MAX);
+
+          if (clusters.length === 0) {
+            return noResult(
+              "No clusters found — no notes are closely related.",
+            );
+          }
+          ctx.flags.cluster_count = clusters.length;
+          ctx.flags.largest_cluster_size = clusters[0].length;
+          ctx.resultCount = clusters.length;
+
+          const blocks = clusters.map((g) => {
+            const recs = g.map((n) => n.rec);
+            const members = recs
+              .map((r) => r.path)
+              .sort()
+              .slice(0, CLUSTER_MEMBER_MAX);
+            return renderCluster(recs, members, df);
+          });
+          const header = `Found ${clusters.length} related-note ${
+            clusters.length === 1 ? "cluster" : "clusters"
+          }.${truncated > 0 ? ` (Scanned the first ${scanned.length} of ${nodes.length} notes; ${truncated} not clustered this pass.)` : ""}`;
+          return {
+            content: [
+              { type: "text" as const, text: [header, ...blocks].join("\n\n") },
+            ],
+          };
         } catch (err) {
           ctx.errorCode = "garden_cluster_failed";
           return respondToolError("garden_cluster_failed", err);
