@@ -43,7 +43,15 @@ import {
   retrievalV2Enabled,
   getRetrievalIndex,
   scoreQuery,
+  type RetrievalIndex,
 } from "../utils/retrieval-index.js";
+import {
+  honestyContractEnabled,
+  buildHonestySections,
+  renderHonestySections,
+  countHonestySections,
+  shouldFireHonesty,
+} from "../utils/honesty-contract.js";
 
 const TODAY = () => new Date().toISOString().split("T")[0];
 
@@ -822,6 +830,9 @@ export function registerKnowledgeTools(
           // hangs), in which case null is the truthful value for telemetry.
           let scoringPath: "index" | "body" | null = null;
           let candidatesPreLimit = 0;
+          // Hoisted for the honesty contract (Pass 2) in output assembly; set in
+          // the V2 hotPath, null on V1 (read lazily on the miss path there).
+          let harvestIndex: RetrievalIndex | null = null;
 
           const concurrency = Math.max(
             1,
@@ -835,6 +846,7 @@ export function registerKnowledgeTools(
               // + body blended), so a weak index-summary substring can no longer
               // outrank real body relevance, and identifier tokens survive.
               const idx = await getRetrievalIndex(backend);
+              harvestIndex = idx;
               const scored = scoreQuery(idx, question);
               candidatesPreLimit = scored.length;
               // scoring_path reports `body` whenever a body-token contribution
@@ -987,6 +999,23 @@ export function registerKnowledgeTools(
             }
           }
 
+          // ── Honesty contract (Pass 2). Skip the budget-exhausted path. On a
+          // genuine no-candidate result or partial query coverage, append honest
+          // helper sections so the synthesizer doesn't confabulate. Decoupled
+          // from the ranking flag — reuse the V2 index or read it lazily. ──
+          let honestyBlock = "";
+          if (honestyContractEnabled() && !partialResults) {
+            const idx = harvestIndex ?? (await getRetrievalIndex(backend));
+            const sections = buildHonestySections(idx, question, [
+              ...allResults.keys(),
+            ]);
+            if (shouldFireHonesty(sections, allResults.size === 0)) {
+              honestyBlock = renderHonestySections(sections, question);
+              ctx.flags.honesty_fired = true;
+              ctx.flags.honesty_sections = countHonestySections(sections);
+            }
+          }
+
           const output = [
             `## Query: ${question}`,
             "",
@@ -1004,6 +1033,7 @@ export function registerKnowledgeTools(
             `### Relevant Pages (${relevantFiles.length} found)`,
             "",
             ...pageContents,
+            ...(honestyBlock ? ["", honestyBlock] : []),
             "",
             "### Instructions",
             "",
