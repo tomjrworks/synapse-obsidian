@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { StorageBackend } from "./utils/storage.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
+import { registerGardenPrimitives } from "./tools/garden-primitives.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerRulesTool } from "./tools/rules.js";
 import { registerIndexTool } from "./tools/index-tool.js";
@@ -57,6 +58,7 @@ async function createMcpServer(
   const toolOpts = { workspaceId: opts.workspaceId, retrievalV2 };
   registerVaultTools(server, backend, toolOpts);
   registerKnowledgeTools(server, backend, toolOpts);
+  registerGardenPrimitives(server, backend, toolOpts);
   registerInitTools(server, backend, toolOpts);
   registerRulesTool(server, backend, toolOpts);
   registerIndexTool(server, backend, toolOpts);

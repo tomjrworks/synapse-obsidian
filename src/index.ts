@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerVaultTools } from "./tools/vault.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
+import { registerGardenPrimitives } from "./tools/garden-primitives.js";
 import { registerInitTools } from "./tools/init.js";
 import { registerRulesTool } from "./tools/rules.js";
 import { registerIndexTool } from "./tools/index-tool.js";
@@ -34,6 +35,7 @@ async function main() {
 
     registerVaultTools(server, backend);
     registerKnowledgeTools(server, backend);
+    registerGardenPrimitives(server, backend);
     registerInitTools(server, backend);
     registerRulesTool(server, backend);
     registerIndexTool(server, backend);
