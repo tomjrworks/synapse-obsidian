@@ -25,7 +25,15 @@ import {
   retrievalV2Enabled,
   getRetrievalIndex,
   scoreQuery,
+  type RetrievalIndex,
 } from "../utils/retrieval-index.js";
+import {
+  honestyContractEnabled,
+  buildHonestySections,
+  renderHonestySections,
+  countHonestySections,
+  shouldFireHonesty,
+} from "../utils/honesty-contract.js";
 import {
   loadIgnorePatterns,
   pathMatchesIgnore,
@@ -408,6 +416,25 @@ export function registerVaultTools(
           ctx.resultCount = collectedResults.length;
           ctx.noResults = collectedResults.length === 0;
 
+          // ── Honesty contract (Pass 2). Skip the budget-exhausted path — that
+          // is "ran out of time", not "nothing there", so a "closest context"
+          // block would mislead. On a genuine miss or partial query coverage,
+          // read the (cached) index and append honest helper sections. ──
+          let honestyBlock = "";
+          if (honestyContractEnabled() && !partialResults) {
+            const idx = await getRetrievalIndex(backend);
+            const sections = buildHonestySections(
+              idx,
+              query,
+              collectedResults.map((r) => r.file),
+            );
+            if (shouldFireHonesty(sections, collectedResults.length === 0)) {
+              honestyBlock = renderHonestySections(sections, query);
+              ctx.flags.honesty_fired = true;
+              ctx.flags.honesty_sections = countHonestySections(sections);
+            }
+          }
+
           if (collectedResults.length === 0) {
             if (partialResults) {
               return {
@@ -419,8 +446,14 @@ export function registerVaultTools(
                 ],
               };
             }
+            const miss = `No results for "${query}"`;
             return {
-              content: [{ type: "text", text: `No results for "${query}"` }],
+              content: [
+                {
+                  type: "text",
+                  text: honestyBlock ? `${miss}\n\n${honestyBlock}` : miss,
+                },
+              ],
             };
           }
 
@@ -452,7 +485,12 @@ export function registerVaultTools(
             content: [
               {
                 type: "text",
-                text: [...headerLines, "", fileBlocks.join("\n\n")].join("\n"),
+                text: [
+                  ...headerLines,
+                  "",
+                  fileBlocks.join("\n\n"),
+                  ...(honestyBlock ? ["", honestyBlock] : []),
+                ].join("\n"),
               },
             ],
           };
@@ -618,12 +656,18 @@ export function registerVaultTools(
             modified?: string;
           };
           let results: Match[] = [];
+          // Lifted so the honesty-contract block (below) can reuse the V2 index
+          // with zero extra reads; null on the V1 path (it reads the index
+          // lazily on the miss/thin branch — the contract is decoupled from the
+          // ranking flag, SPEC §5-RESOLVED).
+          let v2Index: RetrievalIndex | null = null;
 
           if (useV2) {
             // ── V2: one blended ranked pass over the token index. Body is IN
             // the score (RC #2 fixed by construction — no results.length===0
             // gate). Bodies are read for PREVIEW only, same as V1. ──
             const index = await getRetrievalIndex(backend);
+            v2Index = index;
             const scored = scoreQuery(index, query, { limit: max });
             for (const hit of scored) {
               try {
@@ -781,12 +825,33 @@ export function registerVaultTools(
           ctx.resultCount = results.length;
           ctx.noResults = results.length === 0;
 
+          // ── Honesty contract (Pass 2, behind TAPROOT_HONESTY_CONTRACT) ──
+          // Decoupled from the ranking flag: on the V2 path reuse the already
+          // built index; on V1 read it lazily (cached). Fires only on a genuine
+          // miss or partial query coverage — never on strong/fully-matched
+          // results — so it stays silent on good queries.
+          let honestyBlock = "";
+          if (honestyContractEnabled()) {
+            const idx = v2Index ?? (await getRetrievalIndex(backend));
+            const sections = buildHonestySections(
+              idx,
+              query,
+              results.map((r) => r.file),
+            );
+            if (shouldFireHonesty(sections, results.length === 0)) {
+              honestyBlock = renderHonestySections(sections, query);
+              ctx.flags.honesty_fired = true;
+              ctx.flags.honesty_sections = countHonestySections(sections);
+            }
+          }
+
           if (results.length === 0) {
+            const miss = `No notes found matching "${query}". Try \`garden_forage\` for a full-text search inside note bodies.`;
             return {
               content: [
                 {
                   type: "text",
-                  text: `No notes found matching "${query}". Try \`garden_forage\` for a full-text search inside note bodies.`,
+                  text: honestyBlock ? `${miss}\n\n${honestyBlock}` : miss,
                 },
               ],
             };
@@ -804,6 +869,7 @@ export function registerVaultTools(
             results.length === 1
               ? `Call \`garden_read({ path: "${results[0].file}" })\` to fetch the full note.`
               : "Show the user this list and ask which one to open, or call `garden_read` directly if context makes the choice obvious.",
+            ...(honestyBlock ? ["", honestyBlock] : []),
           ];
 
           return {
