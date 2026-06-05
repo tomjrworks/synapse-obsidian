@@ -40,10 +40,45 @@ const WIKILINK_RE = /\[\[([^[\]]+?)\]\]/g;
 // only ever bites a multi-MB adversarial body. Far above any real Obsidian note.
 const MAX_OUTLINK_SCAN = 5_000_000;
 
-/** The set of [[wikilink]] target keys a body links OUT to (deduped). */
+// C1 — a [[wikilink]] inside a code fence or an inline-code span is NOT a real
+// edge: Tom's engineering notes quote wikilink SYNTAX inside code blocks. The
+// precision ship-bar is zero false edges, so we strip code spans BEFORE the
+// wikilink scan. Line-oriented fence toggle (an unterminated fence swallows to
+// EOF, matching how Obsidian renders it).
+function stripFences(body: string): string {
+  const out: string[] = [];
+  let fenceChar: "`" | "~" | null = null;
+  for (const line of body.split("\n")) {
+    const m = /^[ \t]*(`{3,}|~{3,})/.exec(line);
+    if (m) {
+      const ch = m[1][0] as "`" | "~";
+      if (fenceChar === null) {
+        fenceChar = ch; // opening fence
+        continue;
+      }
+      if (ch === fenceChar) {
+        fenceChar = null; // closing fence of the same type
+        continue;
+      }
+      // a different fence char while already inside a fence → it's content
+    }
+    if (fenceChar === null) out.push(line);
+    // else: inside a fence → drop the line
+  }
+  return out.join("\n");
+}
+
+// Strip inline-code spans: a run of N backticks … the same run. Handles
+// single- and multi-backtick spans; an unmatched lone backtick is left alone.
+const INLINE_CODE_RE = /`+[^`]*`+/g;
+
+/** The set of [[wikilink]] target keys a body links OUT to (deduped). Code
+ * fences and inline-code spans are excluded first (C1) so quoted wikilink
+ * syntax never manufactures a false edge. */
 export function outlinkKeys(body: string): Set<string> {
   const keys = new Set<string>();
-  for (const m of body.matchAll(WIKILINK_RE)) {
+  const prose = stripFences(body).replace(INLINE_CODE_RE, " ");
+  for (const m of prose.matchAll(WIKILINK_RE)) {
     const k = linkKey(m[1]);
     if (k) keys.add(k);
   }
@@ -57,8 +92,9 @@ export type FileOutlinks = string[];
 
 /**
  * Extract the per-file outlink record for the `extracted_outlinks` column
- * (write hook + backfill). Scans the WHOLE content — a [[wikilink]] is a real
- * edge wherever it appears (frontmatter or body). Pure; never throws.
+ * (write hook + backfill). Scans the whole content — a [[wikilink]] is a real
+ * edge wherever it appears (frontmatter or body) EXCEPT inside a code fence or
+ * inline-code span (C1: quoted syntax is not an edge). Pure; never throws.
  */
 export function extractOutlinks(content: string): FileOutlinks {
   if (!content) return [];
