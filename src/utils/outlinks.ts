@@ -50,7 +50,10 @@ export type FileOutlinks = string[];
  * (write hook + backfill). Scans the WHOLE content — a [[wikilink]] is a real
  * edge wherever it appears (frontmatter or body). Pure; never throws.
  */
-export function extractOutlinks(_content: string): FileOutlinks {
-  // STUB (RED baseline) — implemented in the next commit.
-  return [];
+export function extractOutlinks(content: string): FileOutlinks {
+  if (!content) return [];
+  // Whole-content scan: a [[wikilink]] is a real edge wherever it sits
+  // (frontmatter `related:` field or body prose alike). Sorted so the stored
+  // column payload is deterministic — stable diffs, stable backfill idempotency.
+  return [...outlinkKeys(content)].sort();
 }
