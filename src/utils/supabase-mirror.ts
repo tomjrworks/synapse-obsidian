@@ -45,6 +45,7 @@ import {
   type Cardinality,
   type FileTokens,
 } from "./frontmatter.js";
+import { extractOutlinks, type FileOutlinks } from "./outlinks.js";
 import { supabaseService } from "../api/supabase.js";
 import { decryptBlob, encryptBlob, unwrapDek } from "../api/crypto.js";
 import {
@@ -226,6 +227,12 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     // serves the V2 retrieval read once TAPROOT_RETRIEVAL_V2 is flipped.
     const extractedTokens = extractTokens(content);
 
+    // Pass 4b: pre-bake the per-file [[wikilink]] outlink keys alongside tokens
+    // (same plaintext-in-hand, zero extra reads). Passive until garden_backlinks
+    // is flipped. UNCONDITIONAL write — migration 0031 MUST be applied before
+    // this code deploys (post-extracted_tokens 2026-06-03 gate).
+    const extractedOutlinks = extractOutlinks(content);
+
     const legacy = legacyMissingBlobBehavior();
 
     // PR #2 (S99): determine the storage_object key BEFORE writing the
@@ -282,6 +289,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       flagsUpdate,
       extractedCardinality: enrichedCardinality,
       extractedTokens,
+      extractedOutlinks,
     });
 
     // V1.5a.1: Invalidate the index cache on any write except index.md itself
@@ -351,6 +359,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     flagsUpdate: FlagsUpdate | null;
     extractedCardinality: Cardinality | null;
     extractedTokens: FileTokens | null;
+    extractedOutlinks: FileOutlinks | null;
   }): Promise<void> {
     const {
       filePath,
@@ -363,6 +372,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       flagsUpdate,
       extractedCardinality,
       extractedTokens,
+      extractedOutlinks,
     } = args;
     if (existing) {
       const newFlags = mergeFlags(
@@ -375,6 +385,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
         modified_at: nowIso,
         extracted_cardinality: extractedCardinality,
         extracted_tokens: extractedTokens,
+        extracted_outlinks: extractedOutlinks,
       };
       if (newFlags) updateRow.flags = newFlags;
       await withRetry(async () => {
@@ -411,6 +422,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
       modified_at: nowIso,
       extracted_cardinality: extractedCardinality,
       extracted_tokens: extractedTokens,
+      extracted_outlinks: extractedOutlinks,
     };
     if (insertFlags) insertRow.flags = insertFlags;
 
@@ -476,6 +488,7 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
           modified_at: nowIso,
           extracted_cardinality: extractedCardinality,
           extracted_tokens: extractedTokens,
+          extracted_outlinks: extractedOutlinks,
         };
         if (raceFlags) raceUpdateRow.flags = raceFlags;
         await withRetry(async () => {
@@ -630,6 +643,52 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
     return out;
   }
 
+  // Pass 4b — UNCAPPED per-file outlink reader for garden_backlinks. Same shape
+  // + rationale as listFileTokensMeta: backlinks is set-membership, so capping
+  // would silently miss real inbound links (can't cap). Paginated with .range()
+  // over a stable .order("path"). Selects only path + extracted_outlinks — a
+  // plaintext column read, NOT the encrypted-body scan that caused the bac2d1b
+  // hang. Same OFFSET-pagination caveat as listFileTokensMeta (buildIndex-style
+  // path-dedup not needed here — garden_backlinks dedups source paths via a Set).
+  async listFileOutlinksMeta(subPath?: string): Promise<FileMeta[]> {
+    const PAGE = 1000;
+    const trimmedSub = subPath?.trim();
+    const prefix = trimmedSub
+      ? trimmedSub.endsWith("/")
+        ? trimmedSub
+        : `${trimmedSub}/`
+      : null;
+    const escapedPrefix = prefix
+      ? prefix.replace(/[\\%_]/g, (c) => `\\${c}`)
+      : null;
+
+    const out: FileMeta[] = [];
+    for (let from = 0; ; from += PAGE) {
+      let query = this.supabase
+        .from("vault_files")
+        .select("path, extracted_outlinks")
+        .eq("workspace_id", this.workspaceId)
+        .is("deleted_at", null)
+        .order("path", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (escapedPrefix) query = query.like("path", `${escapedPrefix}%`);
+
+      const { data, error } = await query;
+      if (error)
+        throw new Error(`listFileOutlinksMeta failed: ${error.message}`);
+      const rows = data ?? [];
+      for (const r of rows) {
+        out.push({
+          path: r.path as string,
+          cardinality: null,
+          outlinks: (r.extracted_outlinks as FileOutlinks | null) ?? null,
+        });
+      }
+      if (rows.length < PAGE) break;
+    }
+    return out;
+  }
+
   // Fire-and-forget backfill writes from loadIndexData when it encounters
   // files with null extracted_cardinality. Chunked Promise.all with
   // concurrency=10 (same pattern as 0.1.7 sync push parallelism).
@@ -682,6 +741,31 @@ export class SupabaseEncryptedMirrorBackend implements StorageBackend {
             .eq("path", filePath)
             .is("deleted_at", null)
             .is("extracted_tokens", null),
+        ),
+      );
+    }
+  }
+
+  // Pass 4b outlink backfill — same chunked, fire-and-forget shape as
+  // batchUpdateTokens. The .is("extracted_outlinks", null) race-guard is
+  // mandatory for the same reason: a debounced flush could race a fresh
+  // writeFile (which writes outlinks directly); the guard makes backfill a
+  // strict null-fill that never clobbers a populated row.
+  async batchUpdateOutlinks(updates: Map<string, FileOutlinks>): Promise<void> {
+    if (updates.size === 0) return;
+    const concurrency = 10;
+    const entries = [...updates.entries()];
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const chunk = entries.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(([filePath, outlinks]) =>
+          this.supabase
+            .from("vault_files")
+            .update({ extracted_outlinks: outlinks })
+            .eq("workspace_id", this.workspaceId)
+            .eq("path", filePath)
+            .is("deleted_at", null)
+            .is("extracted_outlinks", null),
         ),
       );
     }
