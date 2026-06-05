@@ -45,6 +45,9 @@ function gardenQueryEnabled(): boolean {
 function gardenClusterEnabled(): boolean {
   return process.env.TAPROOT_GARDEN_CLUSTER === "1";
 }
+function gardenBacklinksEnabled(): boolean {
+  return process.env.TAPROOT_GARDEN_BACKLINKS === "1";
+}
 
 /** Inert flag-OFF response: no index read, short text, telemetry flag set. */
 function disabledResponse(tool: string): {
@@ -72,6 +75,30 @@ function isExcludedFromResults(p: string): boolean {
 }
 
 const RESULT_LIMIT = 20;
+
+// ── garden_backlinks: real [[wikilink]] edges only (PLAN §1) ───────────────
+// Resolve a link body or a target arg to its canonical basename KEY: drop a
+// `|alias` and a `#heading`, take the basename, strip a trailing .md, lowercase,
+// spaces→hyphens. Mirrors the vault's existing link convention (knowledge.ts
+// health scan) so backlinks resolve links the same way the rest of the system
+// does. The whole precision story rides on this: only a literal [[…]] edge
+// counts — a prose mention that merely tokenizes the same is NOT a backlink.
+function linkKey(raw: string): string {
+  const base = raw.split("|")[0].split("#")[0].trim().replace(/\.md$/i, "");
+  const name = base.slice(base.lastIndexOf("/") + 1);
+  return name.toLowerCase().replace(/\s+/g, "-");
+}
+
+const WIKILINK_RE = /\[\[([^\]]+?)\]\]/g;
+/** The set of [[wikilink]] target keys a body links OUT to (deduped). */
+function outlinkKeys(body: string): Set<string> {
+  const keys = new Set<string>();
+  for (const m of body.matchAll(WIKILINK_RE)) {
+    const k = linkKey(m[1]);
+    if (k) keys.add(k);
+  }
+  return keys;
+}
 
 /** Every token of a record across all fields (mirrors honesty-contract.ts:92). */
 function fileTokenSet(rec: Rec): Set<string> {
@@ -783,6 +810,108 @@ export function registerGardenPrimitives(
         } catch (err) {
           ctx.errorCode = "garden_cluster_failed";
           return respondToolError("garden_cluster_failed", err);
+        }
+      },
+    ),
+  );
+
+  // ── garden_backlinks ───────────────────────────────────────────────────
+  server.registerTool(
+    "garden_backlinks",
+    {
+      title: "Find notes that link to a target",
+      description:
+        "Use this to find every note whose body contains a [[wikilink]] pointing at a target note — its inbound links / 'what references this'. Set membership, not ranked relevance; returns ONLY real links — a prose mention that isn't a [[wikilink]] is never a backlink. Triggers: 'what links to X', 'backlinks for X', 'what references my X note', 'inbound links to X'. For a keyword/topic search prefer `garden_find`; for body-text search prefer `garden_forage`.",
+      inputSchema: {
+        target: z
+          .string()
+          .describe(
+            "The note to find inbound links for — basename or path (e.g. 'module-1-it-competitive-advantage' or 'school/.../module-1.md').",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withTelemetry(
+      {
+        tool: "garden_backlinks",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ target }) => ({ target_len: target.length }),
+      },
+      async ({ target }, ctx) => {
+        try {
+          if (!gardenBacklinksEnabled()) {
+            ctx.flags.tool_disabled = true;
+            return disabledResponse("garden_backlinks");
+          }
+
+          const want = linkKey(target);
+          if (!want) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `"${target}" isn't a resolvable note name.`,
+                },
+              ],
+            };
+          }
+
+          // Derive-on-read: scan bodies for real [[wikilink]] edges resolving to
+          // the target (SPEC §1 — no write-path/index change, no migration;
+          // precision is identical to a stored-outlinks column, only latency
+          // differs). The TAPROOT-MANAGED root index links to nearly every note,
+          // so it is never counted as a backlink SOURCE (precision).
+          const files = (await backend.listFiles()).filter(
+            (p) => p.endsWith(".md") && !isExcludedFromResults(p),
+          );
+          const matched: string[] = [];
+          for (const p of files) {
+            let body: string;
+            try {
+              body = await readVaultFile(backend, p);
+            } catch {
+              continue; // an unreadable file is not a backlink — never throw
+            }
+            if (outlinkKeys(body).has(want)) matched.push(p);
+          }
+          matched.sort();
+
+          ctx.flags.backlink_count = matched.length;
+          ctx.resultCount = matched.length;
+
+          // BL5 — orphan: honest empty, never confabulated.
+          if (matched.length === 0) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No notes link to "${target}".`,
+                },
+              ],
+            };
+          }
+
+          // No silent caps (CLAUDE.md): a hub note can have far more inbound
+          // links than RESULT_LIMIT — say so rather than truncating quietly.
+          const shown = matched.slice(0, RESULT_LIMIT);
+          const body = await renderHits(backend, shown);
+          const text =
+            matched.length > shown.length
+              ? `Showing the first ${shown.length} of ${matched.length} notes that link to "${target}" (alphabetical).\n${body}`
+              : body;
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+          ctx.errorCode = "garden_backlinks_failed";
+          return respondToolError("garden_backlinks_failed", err);
         }
       },
     ),
