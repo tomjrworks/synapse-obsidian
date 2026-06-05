@@ -152,6 +152,28 @@ function nullColumnBackend(onBackfillFlush: () => void): StorageBackend {
   } as unknown as StorageBackend;
 }
 
+// NIT (build-audit) — a hub with MORE than RESULT_LIMIT inbound links, so the
+// "Showing the first N of M" truncation branch (matched.length > shown.length)
+// is covered. Synthetic: the frozen corpus can't reach 21 distinct sources.
+function hubBackend(n: number, targetKey: string): StorageBackend {
+  const srcPaths = Array.from({ length: n }, (_, i) => `notes/hub-src-${i}.md`);
+  const base = corpusBackend();
+  return {
+    ...(base as object),
+    readFile: vi.fn(
+      async (p: string) => `---\ntitle: ${p}\n---\n[[${targetKey}]]`,
+    ),
+    listFileOutlinksMeta: vi.fn(
+      async (): Promise<FileMeta[]> =>
+        srcPaths.map((p) => ({
+          path: p,
+          cardinality: null,
+          outlinks: [targetKey],
+        })),
+    ),
+  } as unknown as StorageBackend;
+}
+
 const parseRows = (text: string): string[] =>
   [...text.matchAll(/^- \*\*.+?\*\* — (\S+\.md)/gm)].map((m) => m[1]);
 
@@ -252,6 +274,16 @@ describe("Pass 4b — garden_backlinks v2 (§1)", () => {
       } finally {
         delete process.env.OUTLINK_BACKFILL_CAP;
       }
+    });
+
+    it("NIT — >RESULT_LIMIT inbound links render the honest truncation message", async () => {
+      const reg = handlersForBackend(hubBackend(25, "nit-hub-target"));
+      const handler = reg.get("garden_backlinks");
+      if (!handler) throw new Error("tool not registered: garden_backlinks");
+      const res = await handler({ target: "nit-hub-target" });
+      const text = res.content.map((c) => c.text).join("\n");
+      expect(text).toMatch(/Showing the first 20 of 25/);
+      expect(parseRows(text)).toHaveLength(20);
     });
   });
 });
