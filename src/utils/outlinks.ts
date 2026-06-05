@@ -28,7 +28,17 @@ export function linkKey(raw: string): string {
   return name.toLowerCase().replace(/\s+/g, "-");
 }
 
-const WIKILINK_RE = /\[\[([^\]]+?)\]\]/g;
+// H1 — the link body forbids BOTH `]` and `[`. The old `[^\]]` allowed `[`,
+// so on a `[`-run the /g restart × lazy forward-scan to a `]]` that never comes
+// was O(n²) (a 400k-`[` blob froze the event loop ~28s). A `[` inside `[[…]]`
+// is invalid Obsidian syntax anyway, so no real note loses a link. extractOutlinks
+// runs UNCONDITIONALLY in writeFile on every sync, so this is a write-path DoS fix.
+const WIKILINK_RE = /\[\[([^[\]]+?)\]\]/g;
+
+// Belt-and-suspenders ceiling against a pathological synced blob, independent of
+// the regex fix. Real notes are tiny here (~720k chars / 20k links ≈ 3ms); this
+// only ever bites a multi-MB adversarial body. Far above any real Obsidian note.
+const MAX_OUTLINK_SCAN = 5_000_000;
 
 /** The set of [[wikilink]] target keys a body links OUT to (deduped). */
 export function outlinkKeys(body: string): Set<string> {
@@ -55,5 +65,10 @@ export function extractOutlinks(content: string): FileOutlinks {
   // Whole-content scan: a [[wikilink]] is a real edge wherever it sits
   // (frontmatter `related:` field or body prose alike). Sorted so the stored
   // column payload is deterministic — stable diffs, stable backfill idempotency.
-  return [...outlinkKeys(content)].sort();
+  // Capped (H1) so a pathological multi-MB blob can't drive an unbounded scan.
+  const scanned =
+    content.length > MAX_OUTLINK_SCAN
+      ? content.slice(0, MAX_OUTLINK_SCAN)
+      : content;
+  return [...outlinkKeys(scanned)].sort();
 }
