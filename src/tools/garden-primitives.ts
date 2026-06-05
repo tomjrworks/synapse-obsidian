@@ -183,6 +183,23 @@ async function renderHits(
 // chunked, and in-flight-guarded. The .is(null) write-side race-guard makes the
 // WRITES idempotent; this just avoids wasted duplicate reads.
 const outlinkBackfillInFlight = new WeakSet<StorageBackend>();
+
+// M2 — bound the per-call cold-tail backfill. Uncapped, the first backlinks
+// call on an all-null column decrypts EVERY file (per replica) — a background
+// CPU/DB spike. Cap ON by default (unset => 1000, the historical token-backfill
+// cap); the column still drains over a few calls, and deploy-warm populates it
+// up front anyway. OUTLINK_BACKFILL_CAP=0 is the explicit unbounded escape hatch
+// (mirrors resolveScanCap's SCAN_FILE_CAP=0). Clamped >= 1.
+function resolveOutlinkBackfillCap(): number | undefined {
+  const raw = process.env.OUTLINK_BACKFILL_CAP;
+  if (raw === undefined) return 1000;
+  const trimmed = raw.trim();
+  if (trimmed === "0") return undefined; // unbounded legacy
+  if (trimmed === "") return 1000;
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1000;
+}
+
 async function backfillNullOutlinks(
   backend: StorageBackend,
   paths: string[],
@@ -192,10 +209,13 @@ async function backfillNullOutlinks(
   if (outlinkBackfillInFlight.has(backend)) return;
   outlinkBackfillInFlight.add(backend);
   try {
+    // Chokepoint cap so EVERY caller is bounded, not just the dispatch site.
+    const cap = resolveOutlinkBackfillCap();
+    const work = cap === undefined ? paths : paths.slice(0, cap);
     const concurrency = resolveBackfillConcurrency();
     const updates = new Map<string, FileOutlinks>();
-    for (let i = 0; i < paths.length; i += concurrency) {
-      const chunk = paths.slice(i, i + concurrency);
+    for (let i = 0; i < work.length; i += concurrency) {
+      const chunk = work.slice(i, i + concurrency);
       await Promise.all(
         chunk.map(async (p) => {
           try {
