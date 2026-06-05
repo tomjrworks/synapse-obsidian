@@ -7,11 +7,17 @@ import { withTelemetry } from "../observability/tool-telemetry.js";
 import {
   getRetrievalIndex,
   scoreQuery,
+  resolveBackfillConcurrency,
   type RetrievalIndex,
 } from "../utils/retrieval-index.js";
 import { tokenize, isIdentifierToken } from "../utils/tokenize.js";
 import { runsOf } from "../utils/honesty-contract.js";
 import { readVaultFile, parseFrontmatter } from "../utils/vault.js";
+import {
+  linkKey,
+  extractOutlinks,
+  type FileOutlinks,
+} from "../utils/outlinks.js";
 
 /**
  * Pass 4a — three READ-ONLY retrieval primitives layered on the EXISTING Pass 3
@@ -44,6 +50,9 @@ function gardenQueryEnabled(): boolean {
 }
 function gardenClusterEnabled(): boolean {
   return process.env.TAPROOT_GARDEN_CLUSTER === "1";
+}
+function gardenBacklinksEnabled(): boolean {
+  return process.env.TAPROOT_GARDEN_BACKLINKS === "1";
 }
 
 /** Inert flag-OFF response: no index read, short text, telemetry flag set. */
@@ -164,6 +173,63 @@ async function renderHits(
     lines.push(`- **${title}** — ${p}`);
   }
   return lines.join("\n");
+}
+
+// ── garden_backlinks: stored-outlink backfill (the migration-day cold tail) ──
+// In-flight guard so a flush-warm and a concurrent backlinks call don't both
+// decrypt the same rows. Mirrors retrieval-index.ts backfillNullTokens exactly:
+// this is the ONE expensive path (reads encrypted blobs), so it is one-time per
+// file (column null exactly once, ever), fire-and-forget (never blocks a query),
+// chunked, and in-flight-guarded. The .is(null) write-side race-guard makes the
+// WRITES idempotent; this just avoids wasted duplicate reads.
+const outlinkBackfillInFlight = new WeakSet<StorageBackend>();
+
+// M2 — bound the per-call cold-tail backfill. Uncapped, the first backlinks
+// call on an all-null column decrypts EVERY file (per replica) — a background
+// CPU/DB spike. Cap ON by default (unset => 1000, the historical token-backfill
+// cap); the column still drains over a few calls, and deploy-warm populates it
+// up front anyway. OUTLINK_BACKFILL_CAP=0 is the explicit unbounded escape hatch
+// (mirrors resolveScanCap's SCAN_FILE_CAP=0). Clamped >= 1.
+function resolveOutlinkBackfillCap(): number | undefined {
+  const raw = process.env.OUTLINK_BACKFILL_CAP;
+  if (raw === undefined) return 1000;
+  const trimmed = raw.trim();
+  if (trimmed === "0") return undefined; // unbounded legacy
+  if (trimmed === "") return 1000;
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1000;
+}
+
+async function backfillNullOutlinks(
+  backend: StorageBackend,
+  paths: string[],
+): Promise<void> {
+  if (paths.length === 0) return;
+  if (!backend.batchUpdateOutlinks) return;
+  if (outlinkBackfillInFlight.has(backend)) return;
+  outlinkBackfillInFlight.add(backend);
+  try {
+    // Chokepoint cap so EVERY caller is bounded, not just the dispatch site.
+    const cap = resolveOutlinkBackfillCap();
+    const work = cap === undefined ? paths : paths.slice(0, cap);
+    const concurrency = resolveBackfillConcurrency();
+    const updates = new Map<string, FileOutlinks>();
+    for (let i = 0; i < work.length; i += concurrency) {
+      const chunk = work.slice(i, i + concurrency);
+      await Promise.all(
+        chunk.map(async (p) => {
+          try {
+            updates.set(p, extractOutlinks(await readVaultFile(backend, p)));
+          } catch {
+            // Unreadable (e.g. deleted mid-flight) — skip; never abort the run.
+          }
+        }),
+      );
+    }
+    if (updates.size > 0) await backend.batchUpdateOutlinks(updates);
+  } finally {
+    outlinkBackfillInFlight.delete(backend);
+  }
 }
 
 // ── garden_query: minimal boolean grammar (PLAN §2b) ───────────────────────
@@ -783,6 +849,134 @@ export function registerGardenPrimitives(
         } catch (err) {
           ctx.errorCode = "garden_cluster_failed";
           return respondToolError("garden_cluster_failed", err);
+        }
+      },
+    ),
+  );
+
+  // ── garden_backlinks (v2 — stored extracted_outlinks column) ─────────────
+  // Reads the column written at WRITE time (extractOutlinks → extracted_outlinks),
+  // NOT a per-call full-vault body scan — that derive-on-read shortcut (PR #15)
+  // was the bac2d1b 4-13min prod-hang class on the encrypted mirror. Set
+  // membership, precision = 1.0: only a literal [[wikilink]] edge counts.
+  server.registerTool(
+    "garden_backlinks",
+    {
+      title: "Find notes that link to a target",
+      description:
+        "Use this to find every note whose body contains a [[wikilink]] pointing at a target note — its inbound links / 'what references this'. Set membership, not ranked relevance; returns ONLY real links — a prose mention that isn't a [[wikilink]] is never a backlink. Triggers: 'what links to X', 'backlinks for X', 'what references my X note', 'inbound links to X'. For a keyword/topic search prefer `garden_find`; for body-text search prefer `garden_forage`.",
+      inputSchema: {
+        target: z
+          .string()
+          .describe(
+            "The note to find inbound links for — basename or path (e.g. 'module-1-it-competitive-advantage' or 'school/.../module-1.md').",
+          ),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    withTelemetry(
+      {
+        tool: "garden_backlinks",
+        kind: "read",
+        effect: "read",
+        workspaceId: opts.workspaceId,
+        argsShape: ({ target }) => ({ target_len: target.length }),
+      },
+      async ({ target }, ctx) => {
+        try {
+          if (!gardenBacklinksEnabled()) {
+            ctx.flags.tool_disabled = true;
+            return disabledResponse("garden_backlinks");
+          }
+
+          const want = linkKey(target);
+          if (!want) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `"${target}" isn't a resolvable note name.`,
+                },
+              ],
+            };
+          }
+
+          // Feature-detect the stored-outlinks reader. A backend without it (or
+          // a mock) → honest empty rather than a throw (BL5 posture).
+          if (!backend.listFileOutlinksMeta) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No notes link to "${target}".`,
+                },
+              ],
+            };
+          }
+
+          // Column read — paginated, no blob decrypt. Filter to source files
+          // whose stored outlink set contains the target key. The TAPROOT-MANAGED
+          // root index links to nearly every note, so it is never counted as a
+          // backlink SOURCE (precision).
+          const meta = await backend.listFileOutlinksMeta();
+          const matched: string[] = [];
+          const nullOutlinkPaths: string[] = [];
+          for (const m of meta) {
+            if (isExcludedFromResults(m.path)) continue;
+            if (m.outlinks == null) {
+              nullOutlinkPaths.push(m.path);
+              continue;
+            }
+            if (m.outlinks.includes(want)) matched.push(m.path);
+          }
+          matched.sort();
+
+          // Self-healing: any not-yet-extracted rows (migration-day cold tail)
+          // backfill fire-and-forget. A partial column yields FEWER hits, never
+          // WRONG ones — and the backfill drains the gap so subsequent reads are
+          // complete. The deploy-time warm populates the whole column before the
+          // read flag flips, so this is the rare-path safety net.
+          if (nullOutlinkPaths.length > 0) {
+            void backfillNullOutlinks(backend, nullOutlinkPaths).catch((err) =>
+              console.error(`[backlinks] outlink backfill failed: ${err}`),
+            );
+          }
+
+          ctx.flags.backlink_count = matched.length;
+          ctx.resultCount = matched.length;
+
+          // BL5 — orphan: honest empty, never confabulated.
+          if (matched.length === 0) {
+            ctx.noResults = true;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No notes link to "${target}".`,
+                },
+              ],
+            };
+          }
+
+          // No silent caps (CLAUDE.md): a hub note can have far more inbound
+          // links than RESULT_LIMIT — say so rather than truncating quietly.
+          const shown = matched.slice(0, RESULT_LIMIT);
+          const rendered = await renderHits(backend, shown);
+          const text =
+            matched.length > shown.length
+              ? `Showing the first ${shown.length} of ${matched.length} notes that link to "${target}" (alphabetical).\n${rendered}`
+              : rendered;
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+          ctx.errorCode = "garden_backlinks_failed";
+          return respondToolError("garden_backlinks_failed", err);
         }
       },
     ),

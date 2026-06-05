@@ -6,6 +6,7 @@ import {
   type Cardinality,
   type FileTokens,
 } from "./frontmatter.js";
+import { extractOutlinks, type FileOutlinks } from "./outlinks.js";
 
 /**
  * Abstract storage backend interface.
@@ -75,6 +76,11 @@ export interface FileMeta {
   // backend hasn't extracted them yet (one-time backfill, exactly like
   // cardinality). Always null on backends/rows predating the column.
   tokens?: FileTokens | null;
+  // Pass 4b: per-file [[wikilink]] outlink keys for garden_backlinks. null when
+  // the backend hasn't extracted them yet (one-time backfill, exactly like
+  // tokens). Always null on backends/rows predating the extracted_outlinks
+  // column. Only populated by listFileOutlinksMeta (the backlinks read path).
+  outlinks?: FileOutlinks | null;
 }
 
 export interface StorageBackend {
@@ -106,6 +112,17 @@ export interface StorageBackend {
   // Pass 3: persist backfilled per-file tokens. Strict null-fill on the
   // Supabase backend (never clobbers a fresh writeFile value); no-op on Local.
   batchUpdateTokens(updates: Map<string, FileTokens>): Promise<void>;
+  // Pass 4b: per-file outlink keys for garden_backlinks, UNCAPPED + paginated
+  // (same shape + rationale as listFileTokensMeta — a set-membership backlinks
+  // answer must see every file or it silently misses real inbound links).
+  // Reads the stored extracted_outlinks column; NO blob decrypt. Optional:
+  // callers feature-detect and fall back gracefully on backends/mocks without
+  // it (the tool returns honest-empty rather than throwing).
+  listFileOutlinksMeta?(subPath?: string): Promise<FileMeta[]>;
+  // Pass 4b: persist backfilled per-file outlinks. Strict null-fill on the
+  // Supabase backend (never clobbers a fresh writeFile value); no-op on Local.
+  // Optional for the same feature-detect reason as listFileOutlinksMeta.
+  batchUpdateOutlinks?(updates: Map<string, FileOutlinks>): Promise<void>;
 }
 
 /**
@@ -278,6 +295,34 @@ export class LocalBackend implements StorageBackend {
   async batchUpdateTokens(_updates: Map<string, FileTokens>): Promise<void> {
     // No-op: same reason as batchUpdateCardinalities — Local rebuilds tokens
     // from disk every listFilesMeta call. Only Supabase persists the column.
+  }
+
+  async batchUpdateOutlinks(
+    _updates: Map<string, FileOutlinks>,
+  ): Promise<void> {
+    // No-op: same reason as batchUpdateTokens — Local re-extracts outlinks from
+    // disk on every listFileOutlinksMeta call. Only Supabase persists the column.
+  }
+
+  async listFileOutlinksMeta(subPath?: string): Promise<FileMeta[]> {
+    // LocalBackend reads fast unencrypted disk, so the "stored column" is just
+    // an inline re-extraction over the live tree — no 1000-row cap to inherit
+    // (listFiles walks the whole tree). Backend-identical to the Supabase
+    // column read from garden_backlinks' perspective.
+    const files = await this.listFiles(subPath, true);
+    const results: FileMeta[] = [];
+    for (const filePath of files) {
+      try {
+        results.push({
+          path: filePath,
+          cardinality: null,
+          outlinks: extractOutlinks(await this.readFile(filePath)),
+        });
+      } catch {
+        results.push({ path: filePath, cardinality: null, outlinks: null });
+      }
+    }
+    return results;
   }
 
   async listFileTokensMeta(subPath?: string): Promise<FileMeta[]> {

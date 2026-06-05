@@ -1,0 +1,11 @@
+-- Pass 4b garden_backlinks (TAPROOT_GARDEN_BACKLINKS): per-file [[wikilink]]
+-- outlink-key storage. Nullable JSONB, mirrors 0030_vault_files_extracted_tokens.
+-- Populated passively by the writeFile hook + backfillNullOutlinks; read back in
+-- one paginated SELECT by garden_backlinks (set-membership, no per-call body
+-- scan — avoids the bac2d1b encrypted-mirror hang). Harmless when the read flag
+-- is OFF (ignored). Rollback: DROP COLUMN (isolated, nullable, no FKs).
+--
+-- MIGRATION GATE (post-extracted_tokens, 2026-06-03): writeFile writes this
+-- column UNCONDITIONALLY. This migration MUST be applied BEFORE the code that
+-- writes/reads it deploys, or every /api/sync/push write breaks for all users.
+ALTER TABLE vault_files ADD COLUMN extracted_outlinks JSONB;
