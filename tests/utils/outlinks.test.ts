@@ -137,3 +137,37 @@ describe("extractOutlinks — C1 code-span exclusion", () => {
     expect(extractOutlinks(body)).toEqual(["live-link"]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// OL-PERF-3 (build-audit follow-up) — the C1 strip paths (stripFences +
+// INLINE_CODE_RE) had a CORRECTNESS eval (OL-FENCE) but no PERF bound, the same
+// blind spot that hid H1. INLINE_CODE_RE = /`+[^`]*`+/g and the fence toggle are
+// both meant to be O(n); this time-boxes that against a multi-MB backtick-heavy
+// adversarial body (the worst shape: a `…`-alternation that maximizes match
+// restarts). A superlinear regression here would blow far past the bound (a
+// quadratic scan of 5MB is minutes, not ms). GREEN on 5eca2f3 (empirically
+// ~120–170ms); the generous ceiling keeps it non-flaky on slow CI while still
+// catching any return to backtracking. Sits BELOW the MAX_OUTLINK_SCAN cap so
+// the strip code — not the cap — is what's under test.
+// ─────────────────────────────────────────────────────────────────────────
+describe("outlinkKeys — C1 strip-path DoS bound", () => {
+  it("OL-PERF-3 — a 5MB backtick-alternation body strips in O(n); no false edges", () => {
+    const body = "`x".repeat(2_500_000); // 5,000,000 chars of `x`x`x… (no edges)
+    const start = performance.now();
+    const keys = outlinkKeys(body);
+    const elapsed = performance.now() - start;
+    expect(keys.size).toBe(0); // inline-code spans collapse → zero edges
+    expect(elapsed).toBeLessThan(2_000);
+  }, 60_000); // generous timeout so a FAILURE is the perf assert, not vitest
+
+  it("OL-PERF-3b — a ~4.9MB all-backtick run strips in O(n); real links still resolve", () => {
+    // Link FIRST so it sits inside the MAX_OUTLINK_SCAN (5MB) window; the
+    // unterminated backtick run after it is an open fence that swallows to EOF.
+    const body = "real [[live-link]] in prose\n" + "`".repeat(4_900_000);
+    const start = performance.now();
+    const out = extractOutlinks(body);
+    const elapsed = performance.now() - start;
+    expect(out).toEqual(["live-link"]);
+    expect(elapsed).toBeLessThan(2_000);
+  }, 60_000);
+});
