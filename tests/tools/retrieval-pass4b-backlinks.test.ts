@@ -14,6 +14,8 @@ import {
   MODULE3,
   RECAP,
   ORPHAN,
+  BL7_FENCED_SOURCE,
+  BL7_TARGET,
 } from "../fixtures/retrieval-pass4b-backlinks/corpus.js";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -113,15 +115,41 @@ function corpusBackend(): StorageBackend {
   } as unknown as StorageBackend;
 }
 
-function handlers(): Map<string, ToolHandler> {
+function handlersForBackend(backend: StorageBackend): Map<string, ToolHandler> {
   const reg = new Map<string, ToolHandler>();
   const server = {
     registerTool: vi.fn((n: string, _c: unknown, fn: ToolHandler) =>
       reg.set(n, fn),
     ),
   } as unknown as McpServer;
-  registerGardenPrimitives(server, corpusBackend());
+  registerGardenPrimitives(server, backend);
   return reg;
+}
+
+function handlers(): Map<string, ToolHandler> {
+  return handlersForBackend(corpusBackend());
+}
+
+// BL-M2 (security-audit) — a cold, all-null extracted_outlinks column. The
+// first garden_backlinks call dispatches a fire-and-forget backfill that, on
+// b79cdb0, decrypts EVERY file (uncapped). This backend forces that path and
+// signals when the backfill flushes (batchUpdateOutlinks) so the test can
+// assert the decrypt count is CAPPED, not N.
+function nullColumnBackend(onBackfillFlush: () => void): StorageBackend {
+  const base = corpusBackend();
+  return {
+    ...(base as object),
+    listFileOutlinksMeta: vi.fn(async (sub?: string): Promise<FileMeta[]> => {
+      spies.outlinksMetaCalls += 1;
+      const all = sub
+        ? MD.filter((f) => f === sub || f.startsWith(sub + "/"))
+        : MD;
+      return all.map((p) => ({ path: p, cardinality: null, outlinks: null }));
+    }),
+    batchUpdateOutlinks: vi.fn(async () => {
+      onBackfillFlush();
+    }),
+  } as unknown as StorageBackend;
 }
 
 const parseRows = (text: string): string[] =>
@@ -198,6 +226,32 @@ describe("Pass 4b — garden_backlinks v2 (§1)", () => {
       // whole corpus. A regression to derive-on-read would readFile every note.
       expect(spies.readFileCalls).toBeLessThanOrEqual(2);
       expect(spies.readFileCalls).toBeLessThan(MD.length);
+    });
+
+    it("BL7 — a wikilink only inside a code fence / inline span is NOT a backlink edge (C1)", async () => {
+      const { paths } = await callBacklinks(BL7_TARGET);
+      expect(paths).not.toContain(BL7_FENCED_SOURCE);
+      expect(paths).toEqual([]); // the only occurrence is code-fenced → honest empty
+    });
+
+    it("BL-M2 — cold all-null column: backfill decrypts are CAPPED, not N (DoS bound)", async () => {
+      process.env.OUTLINK_BACKFILL_CAP = "2";
+      spies.readFileCalls = 0;
+      let flush!: () => void;
+      const flushed = new Promise<void>((r) => (flush = r));
+      try {
+        const reg = handlersForBackend(nullColumnBackend(flush));
+        const handler = reg.get("garden_backlinks");
+        if (!handler) throw new Error("tool not registered: garden_backlinks");
+        await handler({ target: TARGET_M1_BASENAME });
+        await flushed; // wait for the fire-and-forget backfill to flush
+        // On b79cdb0 the backfill decrypts every (non-excluded) file (~N);
+        // after the cap it reads at most OUTLINK_BACKFILL_CAP.
+        expect(spies.readFileCalls).toBeLessThanOrEqual(2);
+        expect(spies.readFileCalls).toBeLessThan(MD.length);
+      } finally {
+        delete process.env.OUTLINK_BACKFILL_CAP;
+      }
     });
   });
 });

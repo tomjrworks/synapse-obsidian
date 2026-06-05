@@ -57,6 +57,22 @@ const backlinkAdditions: Record<string, string> = {
     "",
     "Nothing in the vault links to this note.",
   ].join("\n"),
+  // BL7 (C1) — the ONLY occurrence of [[bl7-target-note]] is inside a code
+  // fence + an inline-code span. After the C1 fix this note must NOT be a
+  // backlink source (dedicated isolated target so BL1–BL6 stay untouched).
+  "notes/code-quote-note.md": [
+    "---",
+    "title: Code quote note",
+    "type: note",
+    "---",
+    "# Quoting wikilink syntax in code",
+    "",
+    "Here is how you write an Obsidian link:",
+    "```",
+    "[[bl7-target-note]]",
+    "```",
+    "And inline: `[[bl7-target-note]]`. Neither is a real edge.",
+  ].join("\n"),
 };
 
 export const PASS4B_BACKLINKS_CORPUS: Record<string, string> = {
@@ -72,3 +88,6 @@ export const COURSE_INDEX = "school/is-7011-it-management/course-index.md";
 export const MODULE3 = "school/is-7011-it-management/module-3-it-strategy.md";
 export const RECAP = "daily/2026-06/2026-06-05-course-recap.md";
 export const ORPHAN = "notes/orphan-note.md";
+// BL7 (C1) — fenced/inline-code wikilink source + its isolated target key.
+export const BL7_FENCED_SOURCE = "notes/code-quote-note.md";
+export const BL7_TARGET = "bl7-target-note";

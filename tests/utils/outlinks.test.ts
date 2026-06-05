@@ -85,3 +85,55 @@ describe("extractOutlinks — stored column producer", () => {
     expect(extractOutlinks("just words, no brackets at all")).toEqual([]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// H1 (security-audit) — write-path O(n²) regex DoS. extractOutlinks runs
+// UNCONDITIONALLY in writeFile on every sync; a `[`-run drives the old
+// /\[\[([^\]]+?)\]\]/g into quadratic backtracking (the negated class matches
+// `[`). This bound is TIME-BOXED on purpose: a correctness-only eval stays
+// GREEN on the broken regex, which is exactly why the build-audit missed it.
+// RED on b79cdb0 (blocks ~45s synchronously, then the elapsed assert fails);
+// GREEN after the char-class tighten (<1ms).
+// ─────────────────────────────────────────────────────────────────────────
+describe("extractOutlinks — H1 write-path DoS bound", () => {
+  it("OL-PERF — a 500k-`[` body returns under 100ms (no O(n²) blowup)", () => {
+    const body = "[".repeat(500_000);
+    const start = performance.now();
+    const out = extractOutlinks(body);
+    const elapsed = performance.now() - start;
+    expect(out).toEqual([]); // a bare `[`-run has no valid [[…]] edge
+    expect(elapsed).toBeLessThan(100);
+  }, 60_000); // generous so the FAILURE is the perf assert, not a vitest timeout
+
+  it("OL-PERF-2 — tightened regex preserves every real-link shape (behavior-preserving)", () => {
+    expect(extractOutlinks("[[alpha]]")).toEqual(["alpha"]);
+    expect(extractOutlinks("[[alpha|Alpha display]]")).toEqual(["alpha"]);
+    expect(extractOutlinks("[[alpha#Heading]]")).toEqual(["alpha"]);
+    expect(
+      extractOutlinks("see [[alpha]] then [[beta]] and [[alpha]] again"),
+    ).toEqual(["alpha", "beta"]);
+    expect(extractOutlinks("[[module 1 spaces]]")).toEqual(["module-1-spaces"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// C1 (build-audit) — a [[wikilink]] inside a ``` / ~~~ code fence or an inline
+// `code` span is NOT a real edge (Tom's engineering vault quotes wikilink
+// syntax in code blocks). Precision ship-bar = zero false edges. RED on
+// b79cdb0 (no fence stripping); GREEN after outlinkKeys strips code spans.
+// ─────────────────────────────────────────────────────────────────────────
+describe("extractOutlinks — C1 code-span exclusion", () => {
+  it("OL-FENCE — wikilinks inside fenced/inline code are not edges; real links still resolve", () => {
+    const body = [
+      "Real link [[live-link]] in prose.",
+      "```",
+      "code with [[fenced-link]] inside a backtick fence",
+      "```",
+      "~~~",
+      "tilde fence with [[tilde-link]]",
+      "~~~",
+      "Inline `[[code-link]]` span is not an edge either.",
+    ].join("\n");
+    expect(extractOutlinks(body)).toEqual(["live-link"]);
+  });
+});
