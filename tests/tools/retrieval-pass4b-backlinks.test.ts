@@ -174,6 +174,53 @@ function hubBackend(n: number, targetKey: string): StorageBackend {
   } as unknown as StorageBackend;
 }
 
+// BL-M2-DRAIN (build-audit follow-up) — BL-M2 proves ONE cold call is capped;
+// it does NOT prove repeated calls DRAIN the column to empty. The drain relies
+// on three things working together: listFileOutlinksMeta re-queries on a stable
+// path order, batchUpdateOutlinks only fills still-null rows (.is(null) guard),
+// and the per-backend in-flight guard releases between calls. This stateful
+// backend models the real column over a CONTROLLED set of source files (a fresh
+// path set — NOT the big shared corpus, whose managed-index row is excluded from
+// the scan and so would never drain): listFileOutlinksMeta reflects current
+// state (sorted, mirroring .order("path")), each source links to one target, and
+// batchUpdateOutlinks persists writes to null rows only. Calling backlinks
+// ceil(N/cap) times must reach zero nulls, each step advancing by at most `cap`.
+// A regression that re-reads the same head chunk (unstable order) or clobbers a
+// populated row would stall or loop here.
+function drainingBackend(
+  state: Map<string, string[] | null>,
+  contentFor: (p: string) => string,
+  onFlush: () => void,
+): StorageBackend {
+  const base = corpusBackend();
+  const sortedPaths = () => [...state.keys()].sort();
+  return {
+    ...(base as object),
+    readFile: vi.fn(async (p: string) => {
+      spies.readFileCalls += 1;
+      if (state.has(p)) return contentFor(p);
+      throw new Error(`not found: ${p}`);
+    }),
+    listFileOutlinksMeta: vi.fn(async (): Promise<FileMeta[]> => {
+      spies.outlinksMetaCalls += 1;
+      return sortedPaths().map((p) => ({
+        path: p,
+        cardinality: null,
+        outlinks: state.get(p) ?? null,
+      }));
+    }),
+    batchUpdateOutlinks: vi.fn(async (updates: Map<string, string[]>) => {
+      for (const [p, ol] of updates) {
+        if (state.get(p) == null) state.set(p, ol); // .is(null) write-guard
+      }
+      onFlush();
+    }),
+  } as unknown as StorageBackend;
+}
+
+const nullCount = (state: Map<string, string[] | null>) =>
+  [...state.values()].filter((v) => v == null).length;
+
 const parseRows = (text: string): string[] =>
   [...text.matchAll(/^- \*\*.+?\*\* — (\S+\.md)/gm)].map((m) => m[1]);
 
@@ -271,6 +318,56 @@ describe("Pass 4b — garden_backlinks v2 (§1)", () => {
         // after the cap it reads at most OUTLINK_BACKFILL_CAP.
         expect(spies.readFileCalls).toBeLessThanOrEqual(2);
         expect(spies.readFileCalls).toBeLessThan(MD.length);
+      } finally {
+        delete process.env.OUTLINK_BACKFILL_CAP;
+      }
+    });
+
+    it("BL-M2-DRAIN — repeated cold calls drain the column to zero, ≤cap per call", async () => {
+      const CAP = 2;
+      const TARGET = "drain-target-note";
+      const N = 7; // odd + > a couple caps, so the tail (1 file) must drain too
+      const srcPaths = Array.from(
+        { length: N },
+        (_, i) => `notes/drain-src-${i}.md`,
+      );
+      process.env.OUTLINK_BACKFILL_CAP = String(CAP);
+      try {
+        // Controlled cold column: N source files, every one links to TARGET.
+        const state = new Map<string, string[] | null>(
+          srcPaths.map((p) => [p, null]),
+        );
+        const contentFor = (p: string) =>
+          `---\ntitle: ${p}\n---\n[[${TARGET}]]`;
+        let flushResolve: (() => void) | null = null;
+        const backend = drainingBackend(state, contentFor, () =>
+          flushResolve?.(),
+        );
+        const handler = handlersForBackend(backend).get("garden_backlinks");
+        if (!handler) throw new Error("tool not registered: garden_backlinks");
+
+        const expectedSteps = Math.ceil(N / CAP); // 4
+        let calls = 0;
+        while (nullCount(state) > 0 && calls < expectedSteps + 2) {
+          const before = nullCount(state);
+          const flushed = new Promise<void>((r) => (flushResolve = r));
+          await handler({ target: TARGET });
+          // wait for the fire-and-forget backfill flush, then a macrotask so the
+          // per-backend in-flight `finally` releases before the next call.
+          await Promise.race([flushed, new Promise((r) => setTimeout(r, 50))]);
+          await new Promise((r) => setTimeout(r, 5));
+          // Per-call advance is bounded by `cap` (the M2 bound holds every call).
+          expect(before - nullCount(state)).toBeLessThanOrEqual(CAP);
+          calls += 1;
+        }
+        // Converges to zero (no stalled tail) in ~ceil(N/cap) calls — i.e. it
+        // really IS capped-but-progressing, not draining-all-at-once nor looping.
+        expect(nullCount(state)).toBe(0);
+        expect(calls).toBeLessThanOrEqual(expectedSteps + 1);
+
+        // Now-warm column returns the COMPLETE inbound set (precision + no missed tail).
+        const res = await handler({ target: TARGET });
+        sameSet(parseRows(res.content.map((c) => c.text).join("\n")), srcPaths);
       } finally {
         delete process.env.OUTLINK_BACKFILL_CAP;
       }
