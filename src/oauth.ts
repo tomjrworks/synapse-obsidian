@@ -718,6 +718,7 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
       const { error: insertErr } = await sb.from("oauth_tokens").insert({
         workspace_id: authCode.workspaceId,
         client_id,
+        user_id: authCode.userId,
         token_hash: tokenHashByteaParam(token),
         expires_at: expiresAt.toISOString(),
       });
