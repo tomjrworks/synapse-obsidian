@@ -114,8 +114,8 @@ describe("assembleInstructions", () => {
 //   - KB gate (env TAPROOT_KB_PIPELINE, default OFF): default routes pasted text
 //     -> garden_plant, URL -> taproot_save_url, and does NOT advertise the gated
 //     seed/water/cultivate/sow chain. When ON, it advertises that chain.
-//   - Pass-4 primitives: advertise garden_backlinks (LIVE in prod) only; OMIT
-//     garden_query / garden_identifier / garden_cluster (OFF in prod).
+//   - Pass-4 primitives: advertise garden_backlinks / garden_query / garden_identifier
+//     (all LIVE in prod, flags verified 2026-06-08); OMIT garden_cluster (OFF).
 //   - V1-floor-safe: no Retrieval-V2 branch, no per-workspace conditionals.
 //   - Byte cap stays 1500: compressing BEHAVIOR/CURATION fits the routing tree
 //     (even gate-ON ~1393B) under the original cap — strict-client margin kept.
@@ -165,10 +165,12 @@ describe("Pass 6 — routing priors", () => {
       expect(out).toContain("garden_backlinks");
     });
 
-    it("does NOT advertise the disabled Pass-4 primitives", async () => {
+    it("advertises the LIVE Pass-4 primitives (query/identifier/backlinks) and omits the disabled cluster", async () => {
+      // Prod flags verified 2026-06-08: BACKLINKS/IDENTIFIER/QUERY=1, CLUSTER unset.
       const out = await assembleInstructions(makeBackend());
-      expect(out).not.toContain("garden_query");
-      expect(out).not.toContain("garden_identifier");
+      expect(out).toContain("garden_query");
+      expect(out).toContain("garden_identifier");
+      expect(out).toContain("garden_backlinks");
       expect(out).not.toContain("garden_cluster");
     });
 

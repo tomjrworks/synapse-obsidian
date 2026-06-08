@@ -10,8 +10,9 @@ const PREAMBLE = [
 
 /**
  * Routing decision-tree — the load-bearing prior (Pass 6). References ONLY tools
- * that are live in prod: the always-on garden_* surface + garden_backlinks
- * (TAPROOT_GARDEN_BACKLINKS=1). Omits the disabled garden_query/identifier/cluster.
+ * that are live in prod (verified via `railway variables` 2026-06-08): the
+ * always-on garden_* surface + garden_backlinks / garden_query / garden_identifier
+ * (all TAPROOT_GARDEN_*=1). Omits garden_cluster (flag unset → disabled).
  *
  * Gated on the SAME flag the handlers read (kbPipelineEnabled, default OFF) so the
  * prior can never steer the AI to a "not enabled" tool: OFF routes pasted text to
@@ -31,7 +32,7 @@ function buildRouting(kbOn: boolean): string {
     );
   }
   lines.push(
-    "- Recall: garden_find (search the vault), garden_recent (what you worked on), garden_index (project/folder map), garden_backlinks (notes linking to a note).",
+    "- Recall: garden_find (search), garden_query (structured/boolean query), garden_identifier (exact ID lookup), garden_recent (what you worked on), garden_index (project/folder map), garden_backlinks (inbound links).",
     "- garden_rules — fetch CLAUDE.md filing rules before saving in an unfamiliar folder.",
     "- On thin or no matches you get closest-matches / did-you-mean — use them, don't invent paths.",
   );
