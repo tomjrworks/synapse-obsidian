@@ -437,6 +437,9 @@ export function helperRouter(): Router {
         .from("helper_devices")
         .update({ last_seen_at: new Date().toISOString() })
         .eq("device_secret_hash", tokenHashByteaParam(bearer))
+        // M3/S14: scope the update to the caller's workspace, not the secret
+        // hash alone — defense-in-depth against a future hash/table desync.
+        .eq("workspace_id", workspaceId)
         .is("revoked_at", null)
         .select("id, last_seen_at")
         .maybeSingle();
