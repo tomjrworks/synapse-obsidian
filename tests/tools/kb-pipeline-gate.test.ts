@@ -117,6 +117,40 @@ describe("KB-pipeline gate — flag OFF short-circuits every pipeline tool", () 
   });
 });
 
+describe("taproot_status routing reflects the KB-pipeline gate", () => {
+  function statusHandler(): ToolHandler {
+    const capture = makeServerCapture();
+    registerKnowledgeTools(capture.server, makeBackend());
+    return capture.registered.get("taproot_status")!;
+  }
+  afterEach(() => {
+    delete process.env.TAPROOT_KB_PIPELINE;
+  });
+
+  it("KB-STATUS-OFF — flag off: routes pasted-text→garden_plant, URL→save_url; hides pipeline tools", async () => {
+    delete process.env.TAPROOT_KB_PIPELINE;
+    const text = (await statusHandler()({})).content
+      .map((c) => c.text)
+      .join("\n");
+    expect(text).toContain("garden_plant");
+    expect(text).toContain("taproot_save_url");
+    // The advertised tool list must not push the gated pipeline tools.
+    const availLine =
+      text.split("\n").find((l) => l.startsWith("**Available tools:**")) ?? "";
+    expect(availLine).not.toContain("taproot_seed");
+    expect(availLine).not.toContain("taproot_cultivate");
+    expect(availLine).not.toContain("taproot_water");
+  });
+
+  it("KB-STATUS-ON — flag on: the legacy pipeline workflow is still advertised", async () => {
+    process.env.TAPROOT_KB_PIPELINE = "1";
+    const text = (await statusHandler()({})).content
+      .map((c) => c.text)
+      .join("\n");
+    expect(text).toContain("taproot_cultivate");
+  });
+});
+
 describe("KB-pipeline gate — flag ON preserves the seed pasted-text path", () => {
   let capture: ReturnType<typeof makeServerCapture>;
   let writeFile: ReturnType<typeof vi.fn>;

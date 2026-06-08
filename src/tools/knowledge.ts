@@ -450,6 +450,11 @@ export function registerKnowledgeTools(
             output.push("");
           }
 
+          // KB pipeline (seed/water/cultivate) is gated default-off (Pass 5);
+          // when off, route users to garden_plant (pasted text) / taproot_save_url
+          // (URLs) instead of advertising tools that return "not enabled".
+          const kbOn = kbPipelineEnabled();
+
           // Build suggested actions
           const actions: string[] = [];
           if (!config) {
@@ -460,15 +465,22 @@ export function registerKnowledgeTools(
           if (rawFiles.length === 0) {
             const saveFolder = config?.sourcesFolder || "sources";
             actions.push(
-              `1. **Add sources:** Save articles with \`taproot_seed\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`,
+              kbOn
+                ? `1. **Add sources:** Save articles with \`taproot_seed\` (paste text or provide a URL), or add markdown files to \`${saveFolder}\`.`
+                : `1. **Add sources:** Save a URL with \`taproot_save_url\`, save pasted text or notes with \`garden_plant\`, or add markdown files to \`${saveFolder}\`.`,
             );
           }
-          if (unprocessedCount > 0) {
+          if (kbOn && unprocessedCount > 0) {
             actions.push(
               `1. **Process sources:** ${unprocessedCount} unprocessed source${unprocessedCount > 1 ? "s" : ""} ready. Run \`taproot_cultivate\` to see them, then \`taproot_water\` each one.`,
             );
           }
-          if (initialized && rawFiles.length > 0 && notesFiles.length <= 3) {
+          if (
+            kbOn &&
+            initialized &&
+            rawFiles.length > 0 &&
+            notesFiles.length <= 3
+          ) {
             actions.push(
               "2. **Build the wiki:** Run `taproot_cultivate` to process sources into organized pages.",
             );
@@ -505,12 +517,18 @@ export function registerKnowledgeTools(
             "Taproot turns your Obsidian vault into an AI-powered knowledge base. The workflow:",
           );
           output.push("");
-          output.push(
-            "1. **Save** sources with `taproot_seed` (URL or pasted text) or add files to your sources folder",
-          );
-          output.push(
-            "2. **Process** them with `taproot_cultivate` + `taproot_water` to build organized pages",
-          );
+          if (kbOn) {
+            output.push(
+              "1. **Save** sources with `taproot_seed` (URL or pasted text) or add files to your sources folder",
+            );
+            output.push(
+              "2. **Process** them with `taproot_cultivate` + `taproot_water` to build organized pages",
+            );
+          } else {
+            output.push(
+              "1. **Save** a URL with `taproot_save_url`, or pasted text / notes with `garden_plant` — or add files to your sources folder",
+            );
+          }
           output.push(
             "3. **Query** your knowledge with `taproot_harvest` — get answers with citations",
           );
@@ -519,7 +537,9 @@ export function registerKnowledgeTools(
           );
           output.push("");
           output.push(
-            "**Available tools:** taproot_setup_scan, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
+            kbOn
+              ? "**Available tools:** taproot_setup_scan, taproot_till, taproot_seed, taproot_status, taproot_cultivate, taproot_water, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag"
+              : "**Available tools:** taproot_setup_scan, taproot_till, taproot_save_url, taproot_status, taproot_harvest, taproot_prune, garden_read, garden_plant, garden_survey, garden_forage, garden_measure, garden_tag",
           );
 
           return { content: [{ type: "text", text: output.join("\n") }] };
