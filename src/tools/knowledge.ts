@@ -556,7 +556,7 @@ export function registerKnowledgeTools(
     "taproot_water",
     {
       title: "Process a source (chain)",
-      description: `FALLBACK for the multi-step ingestion pipeline. Use only when the user explicitly wants to re-process or deeply ingest an EXISTING source file at a known path into structured concept/entity pages with wikilinks. For "save this URL" — prefer \`taproot_save_url\` (single call). For "save this pasted text" — use \`taproot_seed\`. Triggers ONLY when: 'process this source file', 'ingest this into the wiki', 'turn this article into structured notes', 're-water X'. The tool returns instructions; you (the caller) must then read the source and create pages with \`garden_plant\` per the CLAUDE.md schema.`,
+      description: `FALLBACK for the multi-step ingestion pipeline. Use only when the user explicitly wants to re-process or deeply ingest an EXISTING source file at a known path into structured concept/entity pages with wikilinks. For "save this URL" — prefer \`taproot_save_url\` (single call). For "save this pasted text" — use \`garden_plant\`. Triggers ONLY when: 'process this source file', 'ingest this into the wiki', 'turn this article into structured notes', 're-water X'. The tool returns instructions; you (the caller) must then read the source and create pages with \`garden_plant\` per the CLAUDE.md schema.`,
       inputSchema: {
         sourcePath: z
           .string()
@@ -1347,7 +1347,7 @@ export function registerKnowledgeTools(
     "taproot_save_url",
     {
       title: "Save a URL",
-      description: `Use this whenever the user wants to save a URL, article, blog post, web page, or link to their vault. Single call: fetches the URL, extracts text, files it under the configured sources folder (or a folder you suggest) with frontmatter. PREFER this over the \`taproot_seed\` → \`taproot_water\` chain for any URL save. Triggers: 'save this article', 'save this URL', 'add this link to my notes', 'archive this', 'remember this page', plus any URL the user shares with intent to keep. Use \`preview_only: true\` first if you want to confirm filing/title before committing.`,
+      description: `Use this whenever the user wants to save a URL, article, blog post, web page, or link to their vault. Single call: fetches the URL, extracts text, files it under the configured sources folder (or a folder you suggest) with frontmatter. PREFER this for any URL save. Triggers: 'save this article', 'save this URL', 'add this link to my notes', 'archive this', 'remember this page', plus any URL the user shares with intent to keep. Use \`preview_only: true\` first if you want to confirm filing/title before committing.`,
       inputSchema: {
         url: z.string().describe("The URL to fetch and save"),
         title: z
