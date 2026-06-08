@@ -797,10 +797,9 @@ export function registerOAuthRoutes(app: Express, baseUrl: string): void {
  * valid bearer. After `requireAuth` returns false, downstream handlers
  * may read `req.workspaceId` directly.
  *
- * Stage 1 single-user-per-workspace: `userId` is not plumbed onto the
- * request — MCP tool calls operate on the workspace's vault, and any
- * actor-attribution work uses `workspaces.owner_user_id` server-side.
- * Stage 2 (teams) will revisit this once tokens are minted per user.
+ * `userId` is stored in `oauth_tokens` (M1) but not forwarded onto the
+ * request — MCP tool calls operate on the workspace's vault. Stage 2
+ * (teams) will surface userId here for per-user attribution.
  */
 export interface AuthedMcpRequest extends Request {
   workspaceId: string;
