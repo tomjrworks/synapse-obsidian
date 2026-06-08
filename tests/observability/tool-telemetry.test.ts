@@ -276,6 +276,9 @@ beforeEach(() => {
   // Rate limiting OFF by default so it never interferes with emit-capture
   // tests; test 6 re-enables it explicitly with a unique workspace.
   vi.stubEnv("TAPROOT_DISABLE_TOOL_RATE_LIMIT", "1");
+  // KB pipeline (seed/water/cultivate/sow) is behavior-gated default-off (Pass 5).
+  // Telemetry coverage must still exercise their real handlers, so enable it here.
+  vi.stubEnv("TAPROOT_KB_PIPELINE", "1");
   // Telemetry ON (default). The kill-switch test (7) flips it to "0".
   h.inserted.length = 0;
   h.state.throwOnInsert = false;

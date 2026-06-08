@@ -3,6 +3,7 @@ import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
 import { respondToolError } from "./_rate-limit.js";
+import { disabledResponse } from "./tool-gate.js";
 import { withTelemetry } from "../observability/tool-telemetry.js";
 import {
   getRetrievalIndex,
@@ -55,19 +56,7 @@ function gardenBacklinksEnabled(): boolean {
   return process.env.TAPROOT_GARDEN_BACKLINKS === "1";
 }
 
-/** Inert flag-OFF response: no index read, short text, telemetry flag set. */
-function disabledResponse(tool: string): {
-  content: [{ type: "text"; text: string }];
-} {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: `${tool} is not enabled for this workspace.`,
-      },
-    ],
-  };
-}
+// disabledResponse is shared from tool-gate.ts (imported above).
 
 // ── Shared retrieval helpers (PLAN §2.0 / §2a) ─────────────────────────────
 type Rec = RetrievalIndex["files"][number];
