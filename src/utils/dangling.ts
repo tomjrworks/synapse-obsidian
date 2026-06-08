@@ -29,12 +29,23 @@ export type DanglingTarget = { key: string; sources: string[] };
  *                  its sorted source paths deduped.
  */
 export function danglingTargets(
-  _existing: Set<string>,
-  _outlinksByFile: Record<string, string[]>,
+  existing: Set<string>,
+  outlinksByFile: Record<string, string[]>,
 ): DanglingTarget[] {
-  // STUB (Pass 5 RED baseline): not implemented — returns nothing so the
-  // positive-detection evals (D1/D5/D7) fail until the diff is built. The
-  // precision evals (alias/#heading/code-fence/subfolder NOT flagged) ride on
-  // `extractOutlinks` resolution and must hold once this is real.
-  return [];
+  // target key → set of source paths that link to it but find no existing page.
+  const bySources = new Map<string, Set<string>>();
+  for (const [sourcePath, keys] of Object.entries(outlinksByFile)) {
+    for (const key of keys) {
+      if (existing.has(key)) continue; // resolves → not dangling
+      let sources = bySources.get(key);
+      if (!sources) {
+        sources = new Set<string>();
+        bySources.set(key, sources);
+      }
+      sources.add(sourcePath);
+    }
+  }
+  return [...bySources.entries()]
+    .map(([key, sources]) => ({ key, sources: [...sources].sort() }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
