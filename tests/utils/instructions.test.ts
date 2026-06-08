@@ -198,6 +198,12 @@ describe("Pass 6 — routing priors", () => {
       const out = await assembleInstructions(makeBackend());
       expect(out).toMatch(/pasted[^\n]*taproot_seed/i);
     });
+
+    it("does NOT also route pasted text to garden_plant when on (seed owns source text)", async () => {
+      // Audit concern #1: gate-ON must not give two overlapping rules for "pasted".
+      const out = await assembleInstructions(makeBackend());
+      expect(out).not.toMatch(/pasted[^\n]*garden_plant/i);
+    });
   });
 
   it("keeps the load-bearing routing even when workspace context forces truncation", async () => {
