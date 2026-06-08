@@ -308,7 +308,10 @@ export async function startServer(port: number): Promise<void> {
     ) => {
       Sentry.captureException(err, {
         tags: {
-          route: req.path,
+          // Route TEMPLATE (e.g. "/api/feedback"), never the raw req.path, so
+          // no user-controlled path fragment becomes a Sentry tag. Falls back
+          // to "unmatched" for errors thrown before a route matched.
+          route: req.route?.path ?? "unmatched",
           workspaceId: (req as { workspaceId?: string }).workspaceId,
         },
       });
