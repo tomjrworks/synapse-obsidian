@@ -3,6 +3,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "node:path";
 import type { StorageBackend } from "../utils/storage.js";
 import { respondToolError } from "./_rate-limit.js";
+import { disabledResponse } from "./tool-gate.js";
+import { kbPipelineEnabled } from "../utils/kb-pipeline-flag.js";
+import { linkKey, outlinkKeys } from "../utils/outlinks.js";
+import { danglingTargets } from "../utils/dangling.js";
 import { withTelemetry } from "../observability/tool-telemetry.js";
 
 // Coarse cardinality bucket — used by taproot_status, taproot_cultivate,
@@ -212,6 +216,10 @@ export function registerKnowledgeTools(
         }),
       },
       async ({ title, url, content, folder }, ctx) => {
+        if (!kbPipelineEnabled()) {
+          ctx.flags.kb_pipeline_disabled = true;
+          return disabledResponse("taproot_seed");
+        }
         ctx.flags.error_stage = null;
         ctx.flags.fetch_failed = false;
         ctx.flags.protected_blocked = false;
@@ -554,6 +562,10 @@ export function registerKnowledgeTools(
         }),
       },
       async ({ sourcePath }, ctx) => {
+        if (!kbPipelineEnabled()) {
+          ctx.flags.kb_pipeline_disabled = true;
+          return disabledResponse("taproot_water");
+        }
         try {
           const config = await loadConfig(backend);
           const notesFolder = config?.wikiFolder || "notes";
@@ -670,6 +682,10 @@ export function registerKnowledgeTools(
         argsShape: () => ({}),
       },
       async (_args, ctx) => {
+        if (!kbPipelineEnabled()) {
+          ctx.flags.kb_pipeline_disabled = true;
+          return disabledResponse("taproot_cultivate");
+        }
         try {
           const config = await loadConfig(backend);
           const sourcesFolder = config?.sourcesFolder || "sources";
@@ -1137,18 +1153,22 @@ export function registerKnowledgeTools(
           }
 
           const allLinks = new Set<string>();
-          const allPages = new Set<string>();
+          // Canonical page-key set (linkKey of each path) — symmetric with how
+          // outlinkKeys resolves link targets (A1: was raw basename + an ad-hoc
+          // regex that didn't strip #heading / code fences / case, producing
+          // false broken-link reports).
+          const existing = new Set<string>();
           const orphans: string[] = [];
           const missingFm: string[] = [];
           const stalePages: string[] = [];
-          const brokenLinks: string[] = [];
 
           const inboundLinks = new Map<string, number>();
+          const outlinksByFile: Record<string, string[]> = {};
 
           for (const file of scannedFiles) {
-            const basename = path.basename(file, ".md");
-            allPages.add(basename);
-            inboundLinks.set(basename, 0);
+            const key = linkKey(file);
+            existing.add(key);
+            inboundLinks.set(key, 0);
           }
 
           for (const file of scannedFiles) {
@@ -1168,18 +1188,15 @@ export function registerKnowledgeTools(
               }
             }
 
-            const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-            let match;
-            while ((match = linkRegex.exec(content)) !== null) {
-              const linkTarget = match[1].toLowerCase().replace(/\s+/g, "-");
-              allLinks.add(linkTarget);
-
-              const current = inboundLinks.get(linkTarget) || 0;
-              inboundLinks.set(linkTarget, current + 1);
-
-              if (!allPages.has(linkTarget)) {
-                brokenLinks.push(`${file} -> [[${match[1]}]]`);
-              }
+            // Canonical resolver: strips code fences/inline-code (not edges) and
+            // #heading / |alias before resolving — the same path the write hook
+            // and garden_backlinks use. Feeds broken-link, inbound-count, and
+            // orphan detection from one set so they stay mutually consistent.
+            const keys = [...outlinkKeys(content)];
+            outlinksByFile[file] = keys;
+            for (const key of keys) {
+              allLinks.add(key);
+              inboundLinks.set(key, (inboundLinks.get(key) || 0) + 1);
             }
           }
 
@@ -1191,10 +1208,14 @@ export function registerKnowledgeTools(
               basename === "_index"
             )
               continue;
-            if ((inboundLinks.get(basename) || 0) === 0) {
+            if ((inboundLinks.get(linkKey(file)) || 0) === 0) {
               orphans.push(file);
             }
           }
+
+          // dangling = outbound target keys with no existing page, grouped by
+          // target (one stub per missing target → one garden_plant call).
+          const dangling = danglingTargets(existing, outlinksByFile);
 
           const report = [
             "## Health Check Report",
@@ -1204,10 +1225,12 @@ export function registerKnowledgeTools(
             "",
           ];
 
-          if (brokenLinks.length > 0) {
-            report.push(`### Broken Links (${brokenLinks.length})`);
-            for (const bl of brokenLinks.slice(0, 20)) {
-              report.push(`- ${bl}`);
+          if (dangling.length > 0) {
+            report.push(`### Broken Links (${dangling.length})`);
+            for (const d of dangling.slice(0, 20)) {
+              report.push(
+                `- [[${d.key}]] — referenced by: ${d.sources.join(", ")}`,
+              );
             }
             report.push("");
           }
@@ -1243,7 +1266,7 @@ export function registerKnowledgeTools(
           }
 
           const allClean =
-            brokenLinks.length === 0 &&
+            dangling.length === 0 &&
             orphans.length === 0 &&
             missingFm.length === 0 &&
             stalePages.length === 0;
@@ -1252,7 +1275,7 @@ export function registerKnowledgeTools(
             report.push("All checks passed. Wiki is healthy.");
           } else {
             report.push("### Suggested Actions");
-            if (brokenLinks.length > 0) {
+            if (dangling.length > 0) {
               report.push(
                 "- Create stub pages for broken link targets using garden_plant",
               );
@@ -1282,7 +1305,7 @@ export function registerKnowledgeTools(
             report.push("", SETUP_TIP);
           }
 
-          ctx.flags.broken_count_bucket = countBucket(brokenLinks.length);
+          ctx.flags.broken_count_bucket = countBucket(dangling.length);
           ctx.flags.orphan_count_bucket = countBucket(orphans.length);
           ctx.flags.stale_count_bucket = countBucket(stalePages.length);
           ctx.resultCount = scannedFiles.length;

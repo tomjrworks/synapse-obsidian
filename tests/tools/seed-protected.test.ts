@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerKnowledgeTools } from "../../src/tools/knowledge.js";
 import type { StorageBackend } from "../../src/utils/storage.js";
@@ -52,6 +52,13 @@ describe("taproot_seed protected-path guard (M2)", () => {
 
   beforeEach(() => {
     capture = makeServerCapture();
+    // taproot_seed is behavior-gated default-off (Pass 5); enable it so the
+    // protected-path guard (which sits BELOW the gate) is exercised.
+    vi.stubEnv("TAPROOT_KB_PIPELINE", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("refuses to write when title+folder resolve onto CLAUDE.md", async () => {

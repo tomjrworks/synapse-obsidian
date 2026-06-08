@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StorageBackend } from "../utils/storage.js";
 import { respondToolError } from "./_rate-limit.js";
+import { disabledResponse } from "./tool-gate.js";
+import { kbPipelineEnabled } from "../utils/kb-pipeline-flag.js";
 import {
   withTelemetry,
   type TelemetryContext,
@@ -986,6 +988,10 @@ export function registerInitTools(
         }),
       },
       async ({ topic }, ctx) => {
+        if (!kbPipelineEnabled()) {
+          ctx.flags.kb_pipeline_disabled = true;
+          return disabledResponse("taproot_sow");
+        }
         try {
           const { created, skipped } = await scaffoldStructuredVault(backend, {
             topic,
