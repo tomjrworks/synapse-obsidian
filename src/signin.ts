@@ -476,6 +476,7 @@ export function registerSigninRoutes(app: Express, _baseUrl: string): void {
         client_id: syntheticClientId,
         token_hash: tokenHashByteaParam(token),
         expires_at: expiresAt,
+        user_id: entry.userId,
       });
       if (insertErr) {
         console.error(
