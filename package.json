@@ -77,7 +77,8 @@
   },
   "pnpm": {
     "overrides": {
-      "hono": "^4.12.18"
+      "hono": "^4.12.18",
+      "qs": ">=6.15.2"
     }
   },
   "devDependencies": {

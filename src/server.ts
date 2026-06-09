@@ -87,7 +87,7 @@ export async function startServer(port: number): Promise<void> {
   // for "413"/payloadTooLarge/content-length found no /mcp tool that depends
   // on the default 100KB cap as backpressure (plan T11.3 §11.1).
   app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
   app.use((req, _res, next) => {
     const body = formatRequestBody(req.path, req.body);
