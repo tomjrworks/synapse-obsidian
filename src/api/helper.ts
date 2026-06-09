@@ -31,6 +31,7 @@ const HELPER_FRESHNESS_MS = 5 * 60 * 1000;
 async function mintHelperBearer(
   sb: ReturnType<typeof supabaseService>,
   workspaceId: string,
+  userId: string,
   deviceName: string,
   osPlatform: string,
   existingDeviceId?: string,
@@ -82,6 +83,9 @@ async function mintHelperBearer(
       token_hash: newHashParam,
       expires_at: expiresAt,
       scopes: ["helper"],
+      // M1-c: bind user_id so the 0033 password-change trigger revokes this
+      // helper bearer (WHERE user_id = NEW.id — NULL rows escape it).
+      user_id: userId,
     });
     if (tokenErr) return { ok: false, code: "mint_failed", cause: tokenErr };
   } else {
@@ -98,7 +102,13 @@ async function mintHelperBearer(
 
     const { error: tokenErr } = await sb
       .from("oauth_tokens")
-      .update({ token_hash: newHashParam, expires_at: expiresAt })
+      // M1-c: also set user_id so a rotated token that began life as a
+      // NULL-user_id row (minted before M1-c) gets backfilled on rotation.
+      .update({
+        token_hash: newHashParam,
+        expires_at: expiresAt,
+        user_id: userId,
+      })
       .eq("token_hash", oldBearerHashParam!)
       .eq("workspace_id", workspaceId)
       .is("revoked_at", null);
@@ -285,6 +295,7 @@ export function helperRouter(): Router {
       const mint = await mintHelperBearer(
         sb,
         workspaceId,
+        pairRow.user_id as string,
         device_name,
         os_platform,
       );
@@ -340,7 +351,7 @@ export function helperRouter(): Router {
         return;
       }
       const { device_name, os_platform } = parsed.data;
-      const { membership } = req as AuthedWorkspaceRequest;
+      const { membership, user } = req as AuthedWorkspaceRequest;
       const sb = supabaseService();
       const workspaceId = membership.workspaceId;
 
@@ -358,12 +369,19 @@ export function helperRouter(): Router {
         ? await mintHelperBearer(
             sb,
             workspaceId,
+            user.id,
             device_name,
             os_platform,
             existing.id,
             existing.device_secret_hash,
           )
-        : await mintHelperBearer(sb, workspaceId, device_name, os_platform);
+        : await mintHelperBearer(
+            sb,
+            workspaceId,
+            user.id,
+            device_name,
+            os_platform,
+          );
 
       if (!mint.ok) {
         respondError(res, 500, mint.code, mint.cause, {
